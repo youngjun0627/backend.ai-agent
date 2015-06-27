@@ -6,8 +6,8 @@ The Sorna Kernel Agent
 It manages the namespace and hooks for the Python code requested and execute it.
 '''
 
-from sorna.proto.agent_pb2 import AgentRequest, AgentResponse
-from sorna.proto.agent_pb2 import HEARTBEAT, SOCKET_INFO, EXECUTE
+from .proto.agent_pb2 import AgentRequest, AgentResponse
+from .proto.agent_pb2 import HEARTBEAT, SOCKET_INFO, EXECUTE
 import asyncio, zmq, aiozmq
 import argparse
 import builtins as builtin_mod
@@ -167,11 +167,8 @@ def handle_request(loop, server, kernel):
 
         server.write([resp.SerializeToString()])
 
-def handle_exit():
-    loop.stop()
-
-
 def main():
+
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--kernel-id', default=None)
     argparser.add_argument('--agent-port', type=int, default=5002)
@@ -180,6 +177,10 @@ def main():
     kernel_id = args.kernel_id if args.kernel_id else str(uuid.uuid4())
     kernel = Kernel('127.0.0.1', kernel_id)  # for testing
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
+
+    def handle_exit():
+        nonlocal loop
+        loop.stop()
 
     asyncio.set_event_loop_policy(aiozmq.ZmqEventLoopPolicy())
     loop = asyncio.get_event_loop()
