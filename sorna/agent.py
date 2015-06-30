@@ -26,6 +26,7 @@ ExceptionInfo = namedtuple('ExceptionInfo', [
     ('traceback', None),
 ])
 
+
 class SockWriter(object):
     def __init__(self, sock, cell_id):
         self.cell_id_encoded = '{0}'.format(cell_id).encode('ascii')
@@ -49,12 +50,22 @@ class SockWriter(object):
             self.buffer.truncate(0)
         # TODO: timeout to flush?
 
+
+class BufferWriter(object):
+    def __init__(self):
+        self.buffer = io.StringIO()
+
+    def write(self, s):
+        self.buffer.write(s)
+
+
 class SockReader(object):
     def __init__(self, sock, cell_id):
         self.sock = sock
 
     def read(self, n):
         raise NotImplementedError()
+
 
 class Kernel(object):
     '''
@@ -71,11 +82,11 @@ class Kernel(object):
         # Initialize sockets.
         context = zmq.Context.instance()
         self.stdin_socket = None  #context.socket(zmq.ROUTER)
-        self.stdin_port = 0  #self.stdin_socket.bind_to_random_port('tcp://{0}'.format(self.ip))
+        self.stdin_port   = 0     #self.stdin_socket.bind_to_random_port('tcp://{0}'.format(self.ip))
         self.stdout_socket = context.socket(zmq.PUB)
-        self.stdout_port = self.stdout_socket.bind_to_random_port('tcp://{0}'.format(self.ip))
+        self.stdout_port   = self.stdout_socket.bind_to_random_port('tcp://{0}'.format(self.ip))
         self.stderr_socket = context.socket(zmq.PUB)
-        self.stderr_port = self.stderr_socket.bind_to_random_port('tcp://{0}'.format(self.ip))
+        self.stderr_port   = self.stderr_socket.bind_to_random_port('tcp://{0}'.format(self.ip))
 
         # Initialize user module and namespaces.
         user_module = types.ModuleType('__main__',
@@ -87,13 +98,17 @@ class Kernel(object):
         self.user_global_ns.setdefault('__name__', '__main__')
         self.user_ns = user_module.__dict__
 
-    def execute_code(self, cell_id, src):
+    def execute_code(self, cell_id, src, redirect_output=False):
 
         # TODO: limit the scope of changed sys.std*
         #       (use a proxy object for sys module?)
         #self.stdin_reader = SockReader(self.stdin_socket)
-        self.stdout_writer = SockWriter(self.stdout_socket, cell_id)
-        self.stderr_writer = SockWriter(self.stderr_socket, cell_id)
+        if redirect_output:
+            self.stdout_writer = BufferWriter()
+            self.stderr_writer = BufferWriter()
+        else:
+            self.stdout_writer = SockWriter(self.stdout_socket, cell_id)
+            self.stderr_writer = SockWriter(self.stderr_socket, cell_id)
         #sys.stdin, orig_stdin   = self.stdin_reader, sys.stdin
         sys.stdout, orig_stdout = self.stdout_writer, sys.stdout
         sys.stderr, orig_stderr = self.stderr_writer, sys.stderr
@@ -103,7 +118,7 @@ class Kernel(object):
         before_exec = True
 
         def my_excepthook(type_, value, tb):
-            exception.append(ExceptionInfo(value, before_exec, tb))
+            exceptions.append(ExceptionInfo(value, before_exec, tb))
         sys.excepthook = my_excepthook
 
         try:
@@ -124,11 +139,17 @@ class Kernel(object):
 
         sys.excepthook = sys.__excepthook__
 
+        if redirect_output:
+            output = (self.stdout_writer.buffer.getvalue(), self.stderr_writer.buffer.getvalue())
+            self.stdout_writer.buffer.close()
+            self.stderr_writer.buffer.close()
+        else:
+            output = (None, None)
         #sys.stdin = orig_stdin
         sys.stdout = orig_stdout
         sys.stderr = orig_stderr
 
-        return exec_result, exceptions
+        return exec_result, exceptions, output
 
 
 @asyncio.coroutine
@@ -152,19 +173,24 @@ def handle_request(loop, server, kernel):
         elif req.req_type == EXECUTE:
             print('[{0}] EXECUTE'.format(kernel.kernel_id))
             request = json.loads(req.body)
-            result, exceptions = kernel.execute_code(request['cell_id'], request['code'])
+            redirect_output = request.get('redirect_output', False)
+            exec_result, exceptions, output = kernel.execute_code(request['cell_id'], request['code'], redirect_output)
+            if not (isinstance(exec_result, str) or exec_result is None):
+                exec_result = str(exec_result)
+            result = {
+                'eval': exec_result,
+                'exceptions': ['{0!r}'.format(e) for e in exceptions],
+                'stdout': output[0].rstrip('\n') if redirect_output else None,
+                'stderr': output[1].rstrip('\n') if redirect_output else None,
+            }
             # TODO: make a common serializer for generic types
             # TODO: allow users to define custom serializer
-            if not (isinstance(result, str) or result is None):
-                result = str(result)
-            resp.body = json.dumps({
-                'eval': result,
-                'exceptions': ['{0!r}'.format(e) for e in exceptions],
-            })
+            resp.body = json.dumps(result)
         else:
             assert False, 'Invalid kernel request type.'
 
         server.write([resp.SerializeToString()])
+
 
 def main():
 
