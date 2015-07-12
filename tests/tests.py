@@ -3,6 +3,7 @@ from subprocess import call
 from multiprocessing import Process
 import json
 
+import signal, psutil
 import zmq
 from sorna.proto.agent_pb2 import AgentRequest, AgentResponse
 from sorna.proto.agent_pb2 import HEARTBEAT, SOCKET_INFO, EXECUTE
@@ -26,8 +27,10 @@ class AgentKernelResponseTest(unittest.TestCase):
         self.socket.connect(self.agent_addr)
 
     def tearDown(self):
+        child_pid = psutil.Process(self.server.pid).children(recursive=True)
+        for pid in child_pid:  # Kill all child processes. More graceful way?
+            pid.send_signal(signal.SIGTERM)
         self.server.terminate()
-        call(['kill', str(self.server.pid+1)])  # To kill child process. Other way?
 
     def test_heartbeat_response_with_same_body_as_request(self):
         # Send test HEARTBEAT request
