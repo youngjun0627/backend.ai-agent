@@ -6,14 +6,13 @@ The Sorna Kernel Agent
 It manages the namespace and hooks for the Python code requested and execute it.
 '''
 
-from sorna.proto.agent_pb2 import AgentRequest, AgentResponse
-from sorna.proto.agent_pb2 import HEARTBEAT, SOCKET_INFO, EXECUTE
+from sorna.proto import Namespace, encode, decode
+from sorna.proto.msgtypes import AgentRequestTypes
 import asyncio, zmq, aiozmq
 import argparse
 import builtins as builtin_mod
 import code
 import io
-import json
 from namedlist import namedtuple
 import signal
 import types
@@ -156,40 +155,39 @@ class Kernel(object):
 def handle_request(loop, server, kernel):
     while True:
         req_data = yield from server.read()
-        req = AgentRequest()
-        req.ParseFromString(req_data[0])
-        resp = AgentResponse()
+        req = decode(req_data[0])
+        resp = Namespace()
 
-        if req.req_type == HEARTBEAT:
+        if req.req_type == AgentRequestTypes.HEARTBEAT:
             print('[{0}] HEARTBEAT'.format(kernel.kernel_id))
             resp.body = req.body
-        elif req.req_type == SOCKET_INFO:
+        elif req.req_type == AgentRequestTypes.SOCKET_INFO:
             print('[{0}] SOCKET_INFO'.format(kernel.kernel_id))
-            resp.body = json.dumps({
+            resp.body = {
                 'stdin': 'tcp://{0}:{1}'.format(kernel.ip, kernel.stdin_port),
                 'stdout': 'tcp://{0}:{1}'.format(kernel.ip, kernel.stdout_port),
                 'stderr': 'tcp://{0}:{1}'.format(kernel.ip, kernel.stderr_port),
-            })
-        elif req.req_type == EXECUTE:
+            }
+        elif req.req_type == AgentRequestTypes.EXECUTE:
             print('[{0}] EXECUTE'.format(kernel.kernel_id))
-            request = json.loads(req.body)
-            redirect_output = request.get('redirect_output', False)
-            exec_result, exceptions, output = kernel.execute_code(request['cell_id'], request['code'], redirect_output)
+            request = req.body
+            redirect_output = hasattr(request, 'redirect_output') and request.redirect_output
+            exec_result, exceptions, output = kernel.execute_code(request.cell_id,
+                                                                  request.code,
+                                                                  redirect_output)
             if not (isinstance(exec_result, str) or exec_result is None):
                 exec_result = str(exec_result)
             result = {
-                'eval': exec_result,
+                'eval_result': exec_result,
                 'exceptions': ['{0!r}'.format(e) for e in exceptions],
                 'stdout': output[0].rstrip('\n') if redirect_output else None,
                 'stderr': output[1].rstrip('\n') if redirect_output else None,
             }
-            # TODO: make a common serializer for generic types
-            # TODO: allow users to define custom serializer
-            resp.body = json.dumps(result)
+            resp.body = result
         else:
             assert False, 'Invalid kernel request type.'
 
-        server.write([resp.SerializeToString()])
+        server.write([encode(resp)])
 
 
 def main():
