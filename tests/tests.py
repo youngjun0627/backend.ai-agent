@@ -5,8 +5,9 @@ import json
 
 import signal, psutil
 import zmq
-from sorna.proto.agent_pb2 import AgentRequest, AgentResponse
-from sorna.proto.agent_pb2 import HEARTBEAT, SOCKET_INFO, EXECUTE
+from sorna.proto import Namespace, encode, decode
+from sorna.proto.msgtypes import AgentRequestTypes
+
 
 class AgentKernelResponseTest(unittest.TestCase):
     def setUp(self):
@@ -34,97 +35,92 @@ class AgentKernelResponseTest(unittest.TestCase):
 
     def test_heartbeat_response_with_same_body_as_request(self):
         # Send test HEARTBEAT request
-        request = AgentRequest()
-        request.req_type = HEARTBEAT
+        request = Namespace()
+        request.req_type = AgentRequestTypes.HEARTBEAT
         request.body = 'test'
-        self.socket.send(request.SerializeToString())
+        self.socket.send(encode(request))
 
         # Receive response
-        response = AgentResponse()
         response_data = self.socket.recv()
-        response.ParseFromString(response_data)
+        response = decode(response_data)
 
         # Assert its body is equal to that of request
         self.assertEqual(request.body, response.body)
 
     def test_socket_info_response_with_correct_kernel_ip(self):
         # Send test SOCKET_INFO request
-        request = AgentRequest()
-        request.req_type = SOCKET_INFO
+        request = Namespace()
+        request.req_type = AgentRequestTypes.SOCKET_INFO
         request.body = ''
-        self.socket.send(request.SerializeToString())
+        self.socket.send(encode(request))
 
         # Receive response
-        response = AgentResponse()
         response_data = self.socket.recv()
-        response.ParseFromString(response_data)
-        sock_info = json.loads(response.body)
+        response = decode(response_data)
+        sock_info = response.body
 
         # Check kernel ip address matches
-        self.assertEqual(sock_info['stdin'].rpartition(':')[0], 'tcp://' + self.kernel_ip)
-        self.assertEqual(sock_info['stdout'].rpartition(':')[0], 'tcp://' + self.kernel_ip)
-        self.assertEqual(sock_info['stderr'].rpartition(':')[0], 'tcp://' + self.kernel_ip)
+        self.assertEqual(sock_info.stdin.rpartition(':')[0], 'tcp://' + self.kernel_ip)
+        self.assertEqual(sock_info.stdout.rpartition(':')[0], 'tcp://' + self.kernel_ip)
+        self.assertEqual(sock_info.stderr.rpartition(':')[0], 'tcp://' + self.kernel_ip)
 
     def test_execute_response_with_correct_exec_result(self):
         # Send test EXECUTE request
-        request = AgentRequest()
-        request.req_type = EXECUTE
-        request.body = json.dumps({
+        request = Namespace()
+        request.req_type = AgentRequestTypes.EXECUTE
+        request.body = {
             'cell_id': 1,
             'code': 'def sum(x,y):\n\treturn x+y\na=5\nb=2\nprint(sum(a,b))',
             'redirect_output': True,
-        })
-        self.socket.send(request.SerializeToString())
+        }
+        self.socket.send(encode(request))
 
         # Receive response.
-        response = AgentResponse()
         response_data = self.socket.recv()
-        response.ParseFromString(response_data)
-        exec_result = json.loads(response.body)
+        response = decode(response_data)
+        exec_result = response.body
 
         # Check the execution result is correct
-        self.assertEqual(exec_result['stdout'], '7')
-        self.assertEqual(exec_result['stderr'], '')
+        self.assertEqual(exec_result.stdout, '7')
+        self.assertEqual(exec_result.stderr, '')
 
     def test_execution_raise_indentation_error(self):
         # Send test EXECUTE request
-        request = AgentRequest()
-        request.req_type = EXECUTE
-        request.body = json.dumps({
+        request = Namespace()
+        request.req_type = AgentRequestTypes.EXECUTE
+        request.body = {
             'cell_id': 1,
             'code': 'a=5\n\tb=2\nprint(a+b)',  # code with an indentation error
             'redirect_output': True,
-        })
-        self.socket.send(request.SerializeToString())
+        }
+        self.socket.send(encode(request))
 
         # Receive response.
-        response = AgentResponse()
         response_data = self.socket.recv()
-        response.ParseFromString(response_data)
-        exec_result = json.loads(response.body)
+        response = decode(response_data)
+        exec_result = response.body
 
         # Check the execution result is correct
-        self.assertIn('IndentationError', str(exec_result['exceptions']))
+        self.assertIn('IndentationError', str(exec_result.exceptions))
 
     def test_execution_raise_syntax_error(self):
         # Send test EXECUTE request
-        request = AgentRequest()
-        request.req_type = EXECUTE
-        request.body = json.dumps({
+        request = Namespace()
+        request.req_type = AgentRequestTypes.EXECUTE
+        request.body = {
             'cell_id': 1,
             'code': 'a=5\nc=2\nprint(a,b)',  # code with a syntax error
             'redirect_output': True,
-        })
-        self.socket.send(request.SerializeToString())
+        }
+        self.socket.send(encode(request))
 
         # Receive response.
-        response = AgentResponse()
         response_data = self.socket.recv()
-        response.ParseFromString(response_data)
-        exec_result = json.loads(response.body)
+        response = decode(response_data)
+        exec_result = response.body
 
         # Check the execution result is correct
-        self.assertIn('NameError', str(exec_result['exceptions']))
+        self.assertIn('NameError', str(exec_result.exceptions))
 
 if __name__ == '__main__':
     unittest.main()
