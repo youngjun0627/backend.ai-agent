@@ -154,7 +154,10 @@ class Kernel(object):
 @asyncio.coroutine
 def handle_request(loop, server, kernel):
     while True:
-        req_data = yield from server.read()
+        try:
+            req_data = yield from server.read()
+        except aiozmq.stream.ZmqStreamClosed:
+            break
         req = decode(req_data[0])
         resp = Namespace()
 
@@ -202,8 +205,7 @@ def main():
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
 
     def handle_exit():
-        nonlocal loop
-        loop.stop()
+        raise SystemExit()
 
     asyncio.set_event_loop_policy(aiozmq.ZmqEventLoopPolicy())
     loop = asyncio.get_event_loop()
@@ -213,10 +215,10 @@ def main():
     try:
         asyncio.async(handle_request(loop, server, kernel), loop=loop)
         loop.run_forever()
-    except KeyboardInterrupt:
-        print()
+    except (KeyboardInterrupt, SystemExit):
         pass
     server.close()
+    loop.run_until_complete(asyncio.sleep(0))
     loop.close()
     print('Exit.')
 
