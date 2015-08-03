@@ -200,7 +200,7 @@ def main():
     argparser.add_argument('--agent-port', type=int, default=5002)
     args = argparser.parse_args()
 
-    kernel_id = args.kernel_id if args.kernel_id else str(uuid.uuid4())
+    kernel_id = args.kernel_id if args.kernel_id else uuid.uuid4().hex
     kernel = Kernel('127.0.0.1', kernel_id)  # for testing
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
 
@@ -209,8 +209,8 @@ def main():
 
     asyncio.set_event_loop_policy(aiozmq.ZmqEventLoopPolicy())
     loop = asyncio.get_event_loop()
+    print('[{0}] Serving at {1}'.format(kernel_id, agent_addr))
     server = loop.run_until_complete(aiozmq.create_zmq_stream(zmq.REP, bind=agent_addr, loop=loop))
-    print('[{0}] Started serving at {1}'.format(kernel_id, agent_addr))
     loop.add_signal_handler(signal.SIGTERM, handle_exit)
     try:
         asyncio.async(handle_request(loop, server, kernel), loop=loop)
