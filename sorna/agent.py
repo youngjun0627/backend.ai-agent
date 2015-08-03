@@ -7,7 +7,7 @@ It manages the namespace and hooks for the Python code requested and execute it.
 '''
 
 from sorna.proto import Namespace, encode, decode
-from sorna.proto.msgtypes import AgentRequestTypes
+from sorna.proto.msgtypes import AgentRequestTypes, ManagerRequestTypes, ManagerResponseTypes
 import asyncio, zmq, aiozmq
 import argparse
 import builtins as builtin_mod
@@ -74,9 +74,10 @@ class Kernel(object):
     (e.g., variables and functions).
     '''
 
-    def __init__(self, ip, kernel_id):
+    def __init__(self, ip, kernel_id, manager_addr):
         self.ip = ip
         self.kernel_id = kernel_id
+        self.manager_addr = manager_addr
 
         # Initialize sockets.
         context = zmq.Context.instance()
@@ -96,6 +97,18 @@ class Kernel(object):
         self.user_global_ns = {}
         self.user_global_ns.setdefault('__name__', '__main__')
         self.user_ns = user_module.__dict__
+
+    @asyncio.coroutine
+    def send_refresh(self):
+        stream = yield from aiozmq.create_zmq_stream(zmq.REQ, connect=self.manager_addr)
+        req = Namespace()
+        req.action = ManagerRequestTypes.REFRESH
+        req.kernel_id = self.kernel_id
+        stream.write([encode(req)])
+        resp_data = yield from stream.read()
+        resp = decode(resp_data[0])
+        assert resp.reply == ManagerResponseTypes.SUCCESS
+        stream.close()
 
     def execute_code(self, cell_id, src, redirect_output=False):
 
@@ -150,7 +163,6 @@ class Kernel(object):
 
         return exec_result, exceptions, output
 
-
 @asyncio.coroutine
 def handle_request(loop, server, kernel):
     while True:
@@ -173,6 +185,7 @@ def handle_request(loop, server, kernel):
             }
         elif req.req_type == AgentRequestTypes.EXECUTE:
             print('[{0}] EXECUTE'.format(kernel.kernel_id))
+            yield from kernel.send_refresh()
             request = req.body
             redirect_output = hasattr(request, 'redirect_output') and request.redirect_output
             exec_result, exceptions, output = kernel.execute_code(request.cell_id,
@@ -197,11 +210,12 @@ def main():
 
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--kernel-id', default=None)
-    argparser.add_argument('--agent-port', type=int, default=5002)
+    argparser.add_argument('--agent-port', type=int, default=6001)
+    argparser.add_argument('--manager-addr', type=str, default='127.0.0.1')
     args = argparser.parse_args()
 
     kernel_id = args.kernel_id if args.kernel_id else uuid.uuid4().hex
-    kernel = Kernel('127.0.0.1', kernel_id)  # for testing
+    kernel = Kernel('127.0.0.1', kernel_id, args.manager_addr)  # for testing
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
 
     def handle_exit():
