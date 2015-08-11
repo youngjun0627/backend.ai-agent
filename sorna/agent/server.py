@@ -75,11 +75,16 @@ def main():
         asyncio.async(handle_request(loop, server, kernel), loop=loop)
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
-        pass
-    server.close()
-    loop.run_until_complete(asyncio.sleep(0))
-    loop.close()
-    print('Exit.')
+        server.close()
+        for t in asyncio.Task.all_tasks():
+            t.cancel()
+        try:
+            loop._run_once()
+        except asyncio.CancelledError:
+            pass
+    finally:
+        loop.close()
+        print('Exit.')
 
 
 if __name__ == '__main__':
