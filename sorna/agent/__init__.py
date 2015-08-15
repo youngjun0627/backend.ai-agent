@@ -6,7 +6,7 @@ The Sorna Kernel Agent
 It manages the namespace and hooks for the Python code requested and execute it.
 '''
 
-from sorna.proto import Namespace, encode, decode
+from sorna.proto import Message, odict
 from sorna.proto.msgtypes import ManagerRequestTypes, ManagerResponseTypes
 import asyncio, zmq, aiozmq
 import builtins as builtin_mod
@@ -97,14 +97,16 @@ class Kernel(object):
 
     @asyncio.coroutine
     def send_refresh(self):
+        if self._testing: return
         stream = yield from aiozmq.create_zmq_stream(zmq.REQ, connect=self.manager_addr)
-        req = Namespace()
-        req.action = ManagerRequestTypes.REFRESH
-        req.kernel_id = self.kernel_id
-        stream.write([encode(req)])
+        req = Message(
+            ('action', ManagerRequestTypes.REFRESH),
+            ('kernel_id', self.kernel_id),
+        )
+        stream.write([req.encode()])
         resp_data = yield from stream.read()
-        resp = decode(resp_data[0])
-        assert resp.reply == ManagerResponseTypes.SUCCESS
+        resp = Message.decode(resp_data[0])
+        assert resp['reply'] == ManagerResponseTypes.SUCCESS
         stream.close()
 
     def execute_code(self, cell_id, src, redirect_output=False):
