@@ -110,13 +110,13 @@ class AgentKernelResponseTest(unittest.TestCase):
         # Check the execution result is correct
         self.assertIn('IndentationError', str(exec_result['exceptions']))
 
-    def test_execution_raise_syntax_error(self):
+    def test_execution_raise_name_error(self):
         # Send test EXECUTE request
         request = Message(
             ('req_type', AgentRequestTypes.EXECUTE),
             ('body', odict(
                 ('cell_id', 1),
-                ('code', 'a=5\nc=2\nprint(a,b)'),  # code with a syntax error
+                ('code', 'print(this_is_nothing)'),  # code with use of undefined variable
                 ('redirect_output', True))),
         )
         self.socket.send(request.encode())
