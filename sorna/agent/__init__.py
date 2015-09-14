@@ -91,8 +91,6 @@ class Kernel(object):
         user_module.__dict__.setdefault('__builtin__', builtin_mod)
         user_module.__dict__.setdefault('__builtins__', builtin_mod)
         self.user_module = user_module
-        self.user_global_ns = {}
-        self.user_global_ns.setdefault('__name__', '__main__')
         self.user_ns = user_module.__dict__
 
     @asyncio.coroutine
@@ -144,7 +142,7 @@ class Kernel(object):
             before_exec = False
             try:
                 # TODO: distinguish whethe we should do exec or eval...
-                exec_result = exec(code_obj, self.user_global_ns, self.user_ns)
+                exec_result = exec(code_obj, self.user_ns)
             except Exception as e:
                 exceptions.append(ExceptionInfo(e, before_exec, None))
 
