@@ -18,9 +18,16 @@ import sys
 
 ExceptionInfo = namedtuple('ExceptionInfo', [
     'exc',
+    ('args', tuple()),
     ('raised_before_exec', False),
     ('traceback', None),
 ])
+
+@staticmethod
+def _create_excinfo(e, raised_before_exec, tb):
+    assert isinstance(e, Exception)
+    return ExceptionInfo(type(e).__name__, e.args, raised_before_exec, tb)
+ExceptionInfo.create = _create_excinfo
 
 
 class SockWriter(object):
@@ -31,7 +38,7 @@ class SockWriter(object):
 
     def write(self, s):
         if '\n' in s:  # flush on occurrence of a newline.
-            s1, s2 = s.split('\n')
+            s1, s2 = s.split('\n', maxsplit=1)
             s0 = self.buffer.getvalue()
             self.sock.send_multipart([self.cell_id_encoded, (s0 + s1 + '\n').encode('utf8')])
             self.buffer.seek(0)
@@ -127,7 +134,7 @@ class Kernel(object):
         before_exec = True
 
         def my_excepthook(type_, value, tb):
-            exceptions.append(ExceptionInfo(value, before_exec, tb))
+            exceptions.append(ExceptionInfo.create(value, before_exec, tb))
         sys.excepthook = my_excepthook
 
         try:
@@ -135,16 +142,16 @@ class Kernel(object):
             # TODO: attach traceback in a structured format
             code_obj = code.compile_command(src, symbol='exec')
         except IndentationError as e:
-            exceptions.append(ExceptionInfo(e, before_exec, None))
+            exceptions.append(ExceptionInfo.create(e, before_exec, None))
         except (OverflowError, SyntaxError, ValueError, TypeError, MemoryError) as e:
-            exceptions.append(ExceptionInfo(e, before_exec, None))
+            exceptions.append(ExceptionInfo.create(e, before_exec, None))
         else:
             before_exec = False
             try:
                 # TODO: distinguish whethe we should do exec or eval...
                 exec_result = exec(code_obj, self.user_ns)
             except Exception as e:
-                exceptions.append(ExceptionInfo(e, before_exec, None))
+                exceptions.append(ExceptionInfo.create(e, before_exec, None))
 
         sys.excepthook = sys.__excepthook__
 

@@ -78,6 +78,7 @@ class AgentKernelResponseTest(unittest.TestCase):
             ('body', odict(
                 ('cell_id', 1),
                 ('code', 'def sum(x,y):\n\treturn x+y\na=5\nb=2\nprint(sum(a,b))'),
+                ('lang', 'python34'),
                 ('redirect_output', True))),
         )
         self.socket.send(request.encode())
@@ -98,6 +99,7 @@ class AgentKernelResponseTest(unittest.TestCase):
             ('body', odict(
                 ('cell_id', 1),
                 ('code', 'a=5\n\tb=2\nprint(a+b)'),  # code with an indentation error
+                ('lang', 'python34'),
                 ('redirect_output', True))),
         )
         self.socket.send(request.encode())
@@ -117,6 +119,7 @@ class AgentKernelResponseTest(unittest.TestCase):
             ('body', odict(
                 ('cell_id', 1),
                 ('code', 'print(this_is_nothing)'),  # code with use of undefined variable
+                ('lang', 'python34'),
                 ('redirect_output', True))),
         )
         self.socket.send(request.encode())

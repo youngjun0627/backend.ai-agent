@@ -5,7 +5,7 @@ from sorna.proto.msgtypes import AgentRequestTypes
 import asyncio, zmq, aiozmq
 import argparse
 import signal
-from . import Kernel
+from . import Kernel, ExceptionInfo
 
 @asyncio.coroutine
 def handle_request(loop, server, kernel):
@@ -36,18 +36,28 @@ def handle_request(loop, server, kernel):
             print('[{0}] EXECUTE'.format(kernel.kernel_id))
             yield from kernel.send_refresh()
             request = req['body']
-            redirect_output = request.get('redirect_output', False)
-            exec_result, exceptions, output = kernel.execute_code(request['cell_id'],
-                                                                  request['code'],
-                                                                  redirect_output)
-            if not (isinstance(exec_result, str) or exec_result is None):
-                exec_result = str(exec_result)
-            resp['body'] = odict(
-                ('eval_result', exec_result),
-                ('stdout', output[0].rstrip('\n') if redirect_output else None),
-                ('stderr', output[1].rstrip('\n') if redirect_output else None),
-                ('exceptions', ['{0!r}'.format(e) for e in exceptions]),
-            )
+            # TODO: support polyglot programming
+            if 'lang' in request and request['lang'] == 'python34':
+                redirect_output = request.get('redirect_output', False)
+                exec_result, exceptions, output = kernel.execute_code(request['cell_id'],
+                                                                      request['code'],
+                                                                      redirect_output)
+                if not (isinstance(exec_result, str) or exec_result is None):
+                    exec_result = str(exec_result)
+                resp['body'] = odict(
+                    ('eval_result', exec_result),
+                    ('stdout', output[0].rstrip('\n') if redirect_output else None),
+                    ('stderr', output[1].rstrip('\n') if redirect_output else None),
+                    ('exceptions', exceptions),
+                )
+            else:
+                resp['body'] = odict(
+                    ('eval_result', ''),
+                    ('stdout', ''),
+                    ('stderr', ''),
+                    ('exceptions', [
+                        ExceptionInfo('UnsupportedLanguageError', raised_before_exec=True)]),
+                )
 
         else:
             assert False, 'Invalid kernel request type.'
