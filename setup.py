@@ -23,7 +23,9 @@ setup(
     packages=find_packages(exclude=['contrib', 'docs', 'tests*']),
     namespace_packages=['sorna'],
 
-    install_requires=['colorama', 'pyzmq', 'aiozmq', 'namedlist'],
+    install_requires=['colorama', 'pyzmq', 'aiozmq', 'namedlist',
+                      'aiohttp', 'aioredis', # TODO: add aiobotocore later
+                      'docker-py'],
     extras_require={
         'dev': [],
         'test': [],

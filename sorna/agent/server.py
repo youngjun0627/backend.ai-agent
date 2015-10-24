@@ -1,21 +1,14 @@
 #! /usr/bin/env python3
 
-from sorna.proto import Message, odict, generate_uuid
-from sorna.proto.msgtypes import AgentRequestTypes
 import asyncio, zmq, aiozmq
 import argparse
+import docker
 import logging
+import aiobotocore
 from namedlist import namedtuple
 import signal
-from sorna.proto import Message, odict
-from sorna.proto.msgtypes import ManagerRequestTypes, ManagerResponseTypes
-
-ExceptionInfo = namedtuple('ExceptionInfo', [
-    'exc',
-    ('args', tuple()),
-    ('raised_before_exec', False),
-    ('traceback', None),
-])
+from sorna.proto import Message, odict, generate_uuid
+from sorna.proto.msgtypes import *
 
 log = logging.getLogger(__name__)
 container_registry = dict()
@@ -30,7 +23,9 @@ def heartbeat(loop, agent_addr, manager_addr):
     '''
     global container_registry
     while True:
+        # TODO: replace explicit manager request with direct Redis calls
         msg = Message()
+        msg['req_type'] = ManagerRequestTypes.HEARTBEAT
         msg['agent_addr'] = agent_addr
         # TODO: attach the list of currently running kernels
         # TODO: add extra info (e.g., capacity available)
@@ -73,18 +68,12 @@ def run_agent(loop, server_sock, manager_addr):
         request = Message.decode(request_data[0])
         resp = Message()
 
-        # Reverse-direction heartbeat (not used yet)
-        if request['req_type'] == AgentRequestTypes.HEARTBEAT:
-
-            log.info('HEARTBEAT')
-            resp['reply'] = AgentResponseTypes.SUCCESS
-            resp['body'] = request['body']
-
-        elif request['req_type'] == AgentRequestTypes.CREATE_KERNEL:
+        if request['req_type'] == AgentRequestTypes.CREATE_KERNEL:
 
             log.info('CREATE_KERNEL ({})'.format(request['lang']))
             if request['lang'] == 'python34':
                 resp['reply'] = AgentResponseTypes.SUCCESS
+                kernel_id = generate_uuid()
                 # TODO: create a container with Python 3.4 image
                 # TODO: add to container_registry
                 # TODO: return the kernel ID
@@ -94,6 +83,7 @@ def run_agent(loop, server_sock, manager_addr):
                 }
             elif request['lang'] == 'python27':
                 resp['reply'] = AgentResponseTypes.SUCCESS
+                kernel_id = generate_uuid()
                 # TODO: create a container with Python 2.7 image
                 # TODO: add to container_registry
                 # TODO: return the kernel ID
