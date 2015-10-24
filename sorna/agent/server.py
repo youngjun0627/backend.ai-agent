@@ -72,7 +72,7 @@ def run_agent(loop, server_sock, manager_addr):
 
             log.info('CREATE_KERNEL ({})'.format(request['lang']))
             if request['lang'] == 'python34':
-                resp['reply'] = AgentResponseTypes.SUCCESS
+                resp['reply'] = SornaResponseTypes.SUCCESS
                 kernel_id = generate_uuid()
                 # TODO: create a container with Python 3.4 image
                 # TODO: add to container_registry
@@ -82,7 +82,7 @@ def run_agent(loop, server_sock, manager_addr):
                     'lang': request['lang'],
                 }
             elif request['lang'] == 'python27':
-                resp['reply'] = AgentResponseTypes.SUCCESS
+                resp['reply'] = SornaResponseTypes.SUCCESS
                 kernel_id = generate_uuid()
                 # TODO: create a container with Python 2.7 image
                 # TODO: add to container_registry
@@ -92,7 +92,7 @@ def run_agent(loop, server_sock, manager_addr):
                     'lang': request['lang'],
                 }
             else:
-                resp['reply'] = AgentResponseTypes.INVALID_INPUT
+                resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['body'] = 'Unsupported kernel language.'
 
         elif request['req_type'] == AgentRequestTypes.DESTROY_KERNEL:
@@ -108,7 +108,7 @@ def run_agent(loop, server_sock, manager_addr):
                 container_addr = container_registry[request['kernel_id']]['addr']
                 #redirect_output = request.get('redirect_output', False)
             except KeyError:
-                resp['reply'] = AgentResponseTypes.INVALID_INPUT
+                resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['body'] = 'Could not find such kernel.'
             else:
                 # TODO: read the file list in container /home/work volume
@@ -125,7 +125,7 @@ def run_agent(loop, server_sock, manager_addr):
                     # TODO: check updated files in container /home/work volume.
                     # TODO: upload updated files to s3
                     result = json.loads(result_data[0])
-                    resp['reply'] = AgentResponseTypes.SUCCESS
+                    resp['reply'] = SornaResponseTypes.SUCCESS
                     resp['body'] = odict(
                         ('eval_result': result['eval_result']),
                         ('stdout': result['stdout']),
@@ -134,7 +134,7 @@ def run_agent(loop, server_sock, manager_addr):
                         ('files': []),
                     )
                 except asyncio.TimeoutError:
-                    resp['reply'] = AgentResponseTypes.FAILED
+                    resp['reply'] = SornaResponseTypes.FAILURE
                     resp['body'] = 'TimeoutError'
                 finally:
                     container_sock.close()
