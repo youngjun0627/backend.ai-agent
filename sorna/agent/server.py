@@ -77,7 +77,7 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
                                                            '/home/work': {'bind': work_dir, 'mode': 'rw'},
                                                        }),
                                                     tty=False)
-                container_info = cli.insepct_container(container_id)
+                container_info = cli.inspect_container(container_id)
                 kernel_ip = container_info['NetworkSettings']['IPAddress']
                 container_registry[kernel_id] = {
                     'lang': request['lang'],
