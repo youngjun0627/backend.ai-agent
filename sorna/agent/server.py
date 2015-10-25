@@ -22,7 +22,7 @@ supported_langs = frozenset(['python27', 'python34'])
 
 def docker_init():
     docker_tls_verify = int(os.environ.get('DOCKER_TLS_VERIFY', '0'))
-    docker_addr = os.environ.get('DOCKER_HOST', 'tcp://127.0.0.1:2375')
+    docker_addr = os.environ.get('DOCKER_HOST', 'unix://var/run/docker.sock')
     if docker_tls_verify == 1:
         docker_cert_path = os.environ['DOCKER_CERT_PATH']
         tls_config = docker.tls.TLSConfig(
