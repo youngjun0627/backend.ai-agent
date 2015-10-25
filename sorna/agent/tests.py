@@ -3,7 +3,6 @@
 import asyncio
 import unittest, unittest.mock
 import docker
-import json
 import os
 import signal
 import subprocess
@@ -43,7 +42,6 @@ class AgentFunctionalTest(unittest.TestCase):
                 destroy_kernel(self.loop, self.docker_cli, kernel_id))
         assert kernel_id not in container_registry
 
-'''
     def test_execute_simple_python34(self):
         kernel_id = self.loop.run_until_complete(
                 create_kernel(self.loop, self.docker_cli, 'python34'))
@@ -56,8 +54,6 @@ class AgentFunctionalTest(unittest.TestCase):
         self.loop.run_until_complete(
                 destroy_kernel(self.loop, self.docker_cli, kernel_id))
         assert kernel_id not in container_registry
-'''
-
 
 '''
 class AgentKernelResponseTest(unittest.TestCase):

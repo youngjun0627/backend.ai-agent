@@ -8,6 +8,7 @@ import aiobotocore
 from namedlist import namedtuple
 import os, os.path
 import signal
+import simplejson as json
 import shutil
 import sys
 from sorna.proto import Message, odict, generate_uuid
@@ -16,7 +17,6 @@ from sorna.proto.msgtypes import *
 log = logging.getLogger('sorna.agent.server')
 log.setLevel(logging.DEBUG)
 container_registry = dict()
-container_ports_available = set(p for p in range(2001, 2100))
 volume_root = '/var/lib/sorna-volumes'
 supported_langs = frozenset(['python27', 'python34'])
 
@@ -55,16 +55,15 @@ def heartbeat(loop, agent_addr, manager_addr):
 def create_kernel(loop, docker_cli, lang):
     kernel_id = generate_uuid()
     assert kernel_id not in container_registry
-    kernel_port = container_ports_available.pop()
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
     result = docker_cli.create_container('kernel-{}'.format(lang),
                                          cpu_shares=1024, # full share
-                                         ports=[2001],
+                                         ports=[(2001, 'tcp')],
                                          host_config=docker_cli.create_host_config(
                                             mem_limit='128m',
                                             memswap_limit=0,
-                                            port_bindings={2001: ('127.0.0.1', kernel_port)},
+                                            port_bindings={2001: ('127.0.0.1', )},
                                             binds={
                                                 '/home/work': {'bind': work_dir, 'mode': 'rw'},
                                             }),
@@ -72,26 +71,30 @@ def create_kernel(loop, docker_cli, lang):
     container_id = result['Id']
     docker_cli.start(container_id)
     container_info = docker_cli.inspect_container(container_id)
+    # We can connect to the container either using
+    # tcp://kernel_ip:2001 (direct) or tcp://127.0.0.1:kernel_host_port (NAT'ed)
     kernel_ip = container_info['NetworkSettings']['IPAddress']
+    kernel_host_port = container_info['NetworkSettings']['Ports']['2001/tcp'][0]['HostPort']
     container_registry[kernel_id] = {
         'lang': lang,
         'container_id': container_id,
-        'addr': 'tcp://{0}:{1}'.format(kernel_ip, kernel_port),
+        'addr': 'tcp://{0}:{1}'.format(kernel_ip, 2001),
+        #'addr': 'tcp://{0}:{1}'.format('127.0.0.1', kernel_host_port),
         'ip': kernel_ip,
-        'port': kernel_port,
+        'port': 2001,
+        'hostport': kernel_host_port,
     }
+    print(container_registry[kernel_id])
     return kernel_id
 
 @asyncio.coroutine
 def destroy_kernel(loop, docker_cli, kernel_id):
     global container_registry
-    kernel_port = container_registry[kernel_id]['port']
     container_id = container_registry[kernel_id]['container_id']
     docker_cli.kill(container_id)  # forcibly shut-down the container
     docker_cli.remove_container(container_id)
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
-    container_ports_available.add(kernel_port)
     del container_registry[kernel_id]
 
 @asyncio.coroutine
@@ -114,7 +117,6 @@ def execute_code(loop, docker_cli, kernel_id, cell_id, code):
         # TODO: upload updated files to s3
         result = json.loads(result_data[0])
         return odict(
-            ('eval_result', result['eval_result']),
             ('stdout', result['stdout']),
             ('stderr', result['stderr']),
             ('exceptions', result['exceptions']),
