@@ -52,6 +52,11 @@ class AgentFunctionalTest(unittest.TestCase):
 
     def test_file_output(self):
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        work_dir = os.path.join(volume_root, kernel_id)
+        assert os.path.exists(work_dir)
+        untouched_path = os.path.join(work_dir, 'untouched')
+        with open(untouched_path, 'w') as f:
+            f.write('x')
         src = '''
 import os
 print(os.getcwd())
@@ -61,12 +66,11 @@ with open('test.txt', 'w', encoding='utf8') as f:
         # TODO: mock s3 upload
         result = self.loop.run_until_complete(
                 execute_code(self.loop, self.docker_cli, kernel_id, '1', src))
-        work_dir = os.path.join(volume_root, kernel_id)
         assert '/home/work' == result['stdout'].splitlines()[0].strip()
-        assert os.path.exists(work_dir)
         test_path = os.path.join(work_dir, 'test.txt')
         assert os.path.exists(test_path)
-        assert 'test.txt' == result['files'][0]
+        assert 'test.txt' in result['files']
+        assert 'untouched' not in result['files']
         with open(test_path, 'r', encoding='utf8') as f:
             data = f.read()
             assert 'hello world' in data
