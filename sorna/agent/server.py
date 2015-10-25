@@ -24,6 +24,8 @@ s3_access_key = os.environ.get('AWS_ACCESS_KEY_ID', 'dummy-access-key')
 s3_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', 'dummy-secret-key')
 s3_region = os.environ.get('AWS_REGION', 'ap-northeast-1')
 s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
+max_execution_time = 4  # in seconds
+max_upload_size = 5 * 1024 * 1024  # 5 MB
 
 def docker_init():
     docker_tls_verify = int(os.environ.get('DOCKER_TLS_VERIFY', '0'))
@@ -107,10 +109,13 @@ def scandir(root):
     file_stats = dict()
     for entry in os.scandir(root):
         if entry.is_file():
-            path = os.path.join(root, entry.name)
-            file_stats[path] = entry.stat().st_mtime
+            stat = entry.stat()
+            # Skip too large files!
+            if stat.st_size > max_upload_size:
+                continue
+            file_stats[entry.path] = stat.st_mtime
         elif entry.is_dir():
-            file_stats.update(scandir(os.path.join(root, entry.name)))
+            file_stats.update(scandir(entry.path))
     return file_stats
 
 def diff_file_stats(fs1, fs2):
@@ -138,7 +143,8 @@ def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     # Execute with a 4 second timeout.
     try:
         result_data = yield from asyncio.wait_for(container_sock.read(),
-                                                  timeout=4, loop=loop)
+                                                  timeout=max_execution_time,
+                                                  loop=loop)
         result = json.loads(result_data[0])
 
         final_file_stats = scandir(work_dir)

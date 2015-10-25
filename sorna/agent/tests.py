@@ -10,6 +10,7 @@ import zmq
 from sorna.proto import Message, odict, generate_uuid
 from sorna.proto.msgtypes import *
 from sorna.agent.server import container_registry, volume_root, docker_init
+from sorna.agent.server import max_execution_time, max_upload_size
 from sorna.agent.server import create_kernel, destroy_kernel, execute_code
 
 class AgentFunctionalTest(unittest.TestCase):
@@ -46,7 +47,7 @@ class AgentFunctionalTest(unittest.TestCase):
         with self.assertRaises(asyncio.TimeoutError):
             result = self.loop.run_until_complete(
                     execute_code(self.loop, self.docker_cli, 'test', kernel_id,
-                                 '1', 'import time; time.sleep(10)'))
+                                 '1', 'import time; time.sleep({0})'.format(max_execution_time + 2)))
         # the container should be automatically destroyed
         assert kernel_id not in container_registry
 
@@ -77,6 +78,20 @@ with open('test.txt', 'w', encoding='utf8') as f:
             assert '한글 테스트' in data
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
         assert not os.path.exists(test_path)
+        assert not os.path.exists(work_dir)
+
+    def test_file_output_too_large(self):
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        work_dir = os.path.join(volume_root, kernel_id)
+        src = '''
+with open('large.txt', 'wb') as f:
+    f.write(b'x' * {0})
+'''.format(max_upload_size + 1)
+        # TODO: mock s3 upload
+        result = self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+        assert 'large.txt' not in result['files']
+        self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
         assert not os.path.exists(work_dir)
 
 '''
