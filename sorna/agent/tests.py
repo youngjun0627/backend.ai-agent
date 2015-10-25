@@ -1,27 +1,45 @@
 #! /usr/bin/env python3
 
-import unittest
+import asyncio
+import unittest, unittest.mock
+import docker
 import json
 import os
 import signal
 import subprocess
 import zmq
 from sorna.proto import Message, odict, generate_uuid
-from sorna.proto.msgtypes import AgentRequestTypes
+from sorna.proto.msgtypes import *
+from sorna.agent.server import container_registry, docker_init
+from sorna.agent.server import create_kernel, destroy_kernel, execute_code
 
+class AgentFunctionalTest(unittest.TestCase):
+    def setUp(self):
+        self.loop = asyncio.new_event_loop()
+        self.docker_cli = docker_init()
 
+    def tearDown(self):
+        self.docker_cli.close()
+        self.loop.close()
+
+    def test_create_and_destroy_kernel(self):
+        kernel_id = self.loop.run_until_complete(
+                create_kernel(self.loop, self.docker_cli, 'python34'))
+        assert kernel_id in container_registry
+        self.loop.run_until_complete(
+                destroy_kernel(self.loop, self.docker_cli, kernel_id))
+        assert kernel_id not in container_registry
+
+'''
 class AgentKernelResponseTest(unittest.TestCase):
     def setUp(self):
-        self.kernel_ip = '127.0.0.1'
-        self.kernel_id = generate_uuid()
         self.agent_port = 6050
-        self.agent_addr = 'tcp://{0}:{1}'.format(self.kernel_ip, self.agent_port)
+        self.agent_addr = 'tcp://{0}:{1}'.format('127.0.0.1', self.agent_port)
         self.dummy_manager_addr = 'tcp://{0}:{1}'.format('127.0.0.1', 5001)
 
         # Establish an agent server in a separate process
         cmd = ['python3', '-m', 'sorna.agent.server',
-               '--kernel-id', self.kernel_id, '--agent-port', str(self.agent_port),
-               '--testing']
+               '--agent-port', str(self.agent_port)]
         self.server = subprocess.Popen(cmd, start_new_session=True,
                                        stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL)
@@ -131,6 +149,7 @@ class AgentKernelResponseTest(unittest.TestCase):
 
         # Check the execution result is correct
         self.assertIn('NameError', str(exec_result['exceptions']))
+'''
 
 if __name__ == '__main__':
     unittest.main()

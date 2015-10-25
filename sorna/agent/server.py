@@ -6,7 +6,9 @@ import docker
 import logging, logging.config
 import aiobotocore
 from namedlist import namedtuple
+import os, os.path
 import signal
+import shutil
 import sys
 from sorna.proto import Message, odict, generate_uuid
 from sorna.proto.msgtypes import *
@@ -16,8 +18,25 @@ log.setLevel(logging.DEBUG)
 container_registry = dict()
 container_ports_available = set(p for p in range(2001, 2100))
 volume_root = '/var/lib/sorna-volumes'
-docker_addr = 'tcp://127.0.0.1:2375'
 supported_langs = frozenset(['python27', 'python34'])
+
+def docker_init():
+    docker_tls_verify = int(os.environ.get('DOCKER_TLS_VERIFY', '0'))
+    docker_addr = os.environ.get('DOCKER_HOST', 'tcp://127.0.0.1:2375')
+    if docker_tls_verify == 1:
+        docker_cert_path = os.environ['DOCKER_CERT_PATH']
+        tls_config = docker.tls.TLSConfig(
+                verify=docker_tls_verify,
+                ca_cert=os.path.join(docker_cert_path, 'ca.pem'),
+                client_cert=(os.path.join(docker_cert_path, 'cert.pem'),
+                             os.path.join(docker_cert_path, 'key.pem')),
+                assert_hostname=False,
+        )
+    else:
+        tls_config = None
+    if docker_addr.startswith('tcp://') and docker_tls_verify == 1:
+        docker_addr = docker_addr.replace('tcp://', 'https://')
+    return docker.Client(docker_addr, tls=tls_config, timeout=1)
 
 @asyncio.coroutine
 def heartbeat(loop, agent_addr, manager_addr):
@@ -33,27 +52,29 @@ def heartbeat(loop, agent_addr, manager_addr):
         yield from asyncio.sleep(3, loop=loop)
 
 @asyncio.coroutine
-def create_kernel(loop):
+def create_kernel(loop, docker_cli, lang):
     kernel_id = generate_uuid()
     assert kernel_id not in container_registry
     kernel_port = container_ports_available.pop()
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
-    container_id = cli.create_container('kernel-{}'.format(request['lang']),
-                                        mem_limit='128m',
-                                        memswap_limit=0,
-                                        cpu_shares=1024, # full share
-                                        ports=[2001],
-                                        host_config=docker.utils.create_host_config(
-                                           port_bindings={2001: ('127.0.0.1', kernel_port)},
-                                           binds={
-                                               '/home/work': {'bind': work_dir, 'mode': 'rw'},
-                                           }),
-                                        tty=False)
-    container_info = cli.inspect_container(container_id)
+    result = docker_cli.create_container('kernel-{}'.format(lang),
+                                         cpu_shares=1024, # full share
+                                         ports=[2001],
+                                         host_config=docker_cli.create_host_config(
+                                            mem_limit='128m',
+                                            memswap_limit=0,
+                                            port_bindings={2001: ('127.0.0.1', kernel_port)},
+                                            binds={
+                                                '/home/work': {'bind': work_dir, 'mode': 'rw'},
+                                            }),
+                                         tty=False)
+    container_id = result['Id']
+    docker_cli.start(container_id)
+    container_info = docker_cli.inspect_container(container_id)
     kernel_ip = container_info['NetworkSettings']['IPAddress']
     container_registry[kernel_id] = {
-        'lang': request['lang'],
+        'lang': lang,
         'container_id': container_id,
         'addr': 'tcp://{0}:{1}'.format(kernel_ip, kernel_port),
         'ip': kernel_ip,
@@ -62,19 +83,19 @@ def create_kernel(loop):
     return kernel_id
 
 @asyncio.coroutine
-def destroy_kernel(loop, kernel_id):
+def destroy_kernel(loop, docker_cli, kernel_id):
     global container_registry
     kernel_port = container_registry[kernel_id]['port']
     container_id = container_registry[kernel_id]['container_id']
-    cli.kill(container_id)  # forcibly shut-down the container
-    cli.remove_container(container_id)
+    docker_cli.kill(container_id)  # forcibly shut-down the container
+    docker_cli.remove_container(container_id)
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
     container_ports_available.add(kernel_port)
     del container_registry[kernel_id]
 
 @asyncio.coroutine
-def execute_code(loop, kernel_id, cell_id, code):
+def execute_code(loop, docker_cli, kernel_id, cell_id, code):
     # TODO: read the file list in container /home/work volume
     container_id = container_registry[kernel_id]['container_id']
     work_dir = os.path.join(volume_root, container_id)
@@ -102,7 +123,7 @@ def execute_code(loop, kernel_id, cell_id, code):
     except asyncio.TimeoutError as exc:
         log.warning('Timeout detected on kernel {} (cell_id: {}).'
                     .format(kernel_id, cell_id))
-        yield from destroy_kernel(loop, kernel_id)
+        yield from destroy_kernel(loop, docker_cli, kernel_id)
         resp['reply'] = SornaResponseTypes.FAILURE
         resp['body'] = type(exc).__name__
     finally:
@@ -110,14 +131,14 @@ def execute_code(loop, kernel_id, cell_id, code):
 
 @asyncio.coroutine
 def run_agent(loop, server_sock, manager_addr, agent_addr):
-    global container_registry
+    global container_registry, docker_addr
 
     # Resolve the master address
     if manager_addr is None:
         manager_addr = 'tcp://sorna-manager.lablup:5001'
 
     # Initialize docker subsystem
-    cli = docker.Client(docker_addr, timeout=1)
+    docker_cli = docker_init()
     container_registry.clear()
 
     # Send the first heartbeat.
@@ -138,7 +159,7 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
             log.info('CREATE_KERNEL ({})'.format(request['lang']))
             if request['lang'] in supported_langs:
                 try:
-                    kernel_id = yield from create_kernel(loop)
+                    kernel_id = yield from create_kernel(loop, docker_cli, request['lang'])
                     # TODO: (asynchronously) check if container is running okay.
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
@@ -156,7 +177,7 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
             log.info('DESTROY_KERNEL ({})'.format(request['kernel_id']))
             if request['kernel_id'] in container_registry:
                 try:
-                    yield from destroy_kernel(loop, request['kernel_id'])
+                    yield from destroy_kernel(loop, docker_cli, request['kernel_id'])
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
                     resp['body'] = type(exc).__name__
@@ -173,7 +194,7 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
                                                request['cell_id']))
             if request['kernel_id'] in container_registry:
                 try:
-                    result = yield from execute_code(loop, kernel_id,
+                    result = yield from execute_code(loop, docker_cli, kernel_id,
                                                      request['cell_id'],
                                                      request['code'])
                 except Exception as exc:
