@@ -36,7 +36,7 @@ def docker_init():
         tls_config = None
     if docker_addr.startswith('tcp://') and docker_tls_verify == 1:
         docker_addr = docker_addr.replace('tcp://', 'https://')
-    return docker.Client(docker_addr, tls=tls_config, timeout=1)
+    return docker.Client(docker_addr, tls=tls_config, timeout=3)
 
 @asyncio.coroutine
 def heartbeat(loop, agent_addr, manager_addr):
@@ -58,14 +58,16 @@ def create_kernel(loop, docker_cli, lang):
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
     result = docker_cli.create_container('kernel-{}'.format(lang),
+                                         name='kernel.{}.{}'.format(lang, kernel_id),
                                          cpu_shares=1024, # full share
                                          ports=[(2001, 'tcp')],
+                                         volumes=['/home/work'],
                                          host_config=docker_cli.create_host_config(
                                             mem_limit='128m',
                                             memswap_limit=0,
                                             port_bindings={2001: ('127.0.0.1', )},
                                             binds={
-                                                '/home/work': {'bind': work_dir, 'mode': 'rw'},
+                                                work_dir: {'bind': '/home/work', 'mode': 'rw'},
                                             }),
                                          tty=False)
     container_id = result['Id']
@@ -84,7 +86,6 @@ def create_kernel(loop, docker_cli, lang):
         'port': 2001,
         'hostport': kernel_host_port,
     }
-    print(container_registry[kernel_id])
     return kernel_id
 
 @asyncio.coroutine
@@ -97,12 +98,32 @@ def destroy_kernel(loop, docker_cli, kernel_id):
     shutil.rmtree(work_dir)
     del container_registry[kernel_id]
 
+def scandir(root):
+    file_stats = dict()
+    for entry in os.scandir(root):
+        if entry.is_file():
+            path = os.path.join(root, entry.name)
+            file_stats[path] = entry.stat().st_mtime
+        elif entry.is_dir():
+            file_stats.update(scandir(os.path.join(root, entry.name)))
+    return file_stats
+
+def diff_file_stats(fs1, fs2):
+    k2 = set(fs2.keys())
+    k1 = set(fs1.keys())
+    new_files = k2 - k1
+    modified_files = set()
+    for k in (k2 - new_files):
+        if fs1[k] < fs2[k]:
+            modified_files.add(k)
+    return new_files | modified_files
+
 @asyncio.coroutine
 def execute_code(loop, docker_cli, kernel_id, cell_id, code):
     # TODO: read the file list in container /home/work volume
     container_id = container_registry[kernel_id]['container_id']
-    work_dir = os.path.join(volume_root, container_id)
-    #os.listdir(work_dir)
+    work_dir = os.path.join(volume_root, kernel_id)
+    initial_file_stats = scandir(work_dir)
 
     container_addr = container_registry[kernel_id]['addr']
     container_sock = yield from aiozmq.create_zmq_stream(zmq.REQ,
@@ -113,14 +134,16 @@ def execute_code(loop, docker_cli, kernel_id, cell_id, code):
     try:
         result_data = yield from asyncio.wait_for(container_sock.read(),
                                                   timeout=4, loop=loop)
-        # TODO: check updated files in container /home/work volume.
+        final_file_stats = scandir(work_dir)
+        diff_files = diff_file_stats(initial_file_stats, final_file_stats)
+        diff_files = [os.path.relpath(fn, work_dir) for fn in diff_files]
         # TODO: upload updated files to s3
         result = json.loads(result_data[0])
         return odict(
             ('stdout', result['stdout']),
             ('stderr', result['stderr']),
             ('exceptions', result['exceptions']),
-            ('files', []),
+            ('files', diff_files),
         )
     except asyncio.TimeoutError as exc:
         log.warning('Timeout detected on kernel {} (cell_id: {}).'

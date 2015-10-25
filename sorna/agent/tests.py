@@ -9,7 +9,7 @@ import subprocess
 import zmq
 from sorna.proto import Message, odict, generate_uuid
 from sorna.proto.msgtypes import *
-from sorna.agent.server import container_registry, docker_init
+from sorna.agent.server import container_registry, volume_root, docker_init
 from sorna.agent.server import create_kernel, destroy_kernel, execute_code
 
 class AgentFunctionalTest(unittest.TestCase):
@@ -22,38 +22,58 @@ class AgentFunctionalTest(unittest.TestCase):
         self.loop.close()
 
     def test_create_and_destroy_kernel(self):
-        kernel_id = self.loop.run_until_complete(
-                create_kernel(self.loop, self.docker_cli, 'python34'))
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
         assert kernel_id in container_registry
-        self.loop.run_until_complete(
-                destroy_kernel(self.loop, self.docker_cli, kernel_id))
+        self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
         assert kernel_id not in container_registry
 
     def test_execute_simple_python27(self):
-        kernel_id = self.loop.run_until_complete(
-                create_kernel(self.loop, self.docker_cli, 'python27'))
-        assert kernel_id in container_registry
-
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python27'))
         result = self.loop.run_until_complete(
                 execute_code(self.loop, self.docker_cli, kernel_id, '1', 'print "asdf"'))
         assert 'asdf' in result['stdout']
-
-        self.loop.run_until_complete(
-                destroy_kernel(self.loop, self.docker_cli, kernel_id))
-        assert kernel_id not in container_registry
+        self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
     def test_execute_simple_python34(self):
-        kernel_id = self.loop.run_until_complete(
-                create_kernel(self.loop, self.docker_cli, 'python34'))
-        assert kernel_id in container_registry
-
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
         result = self.loop.run_until_complete(
                 execute_code(self.loop, self.docker_cli, kernel_id, '1', 'print("asdf")'))
         assert 'asdf' in result['stdout']
+        self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
-        self.loop.run_until_complete(
-                destroy_kernel(self.loop, self.docker_cli, kernel_id))
+    def test_execute_timeout(self):
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        with self.assertRaises(asyncio.TimeoutError):
+            result = self.loop.run_until_complete(
+                    execute_code(self.loop, self.docker_cli, kernel_id,
+                                 '1', 'import time; time.sleep(10)'))
+        # the container should be automatically destroyed
         assert kernel_id not in container_registry
+
+    def test_file_output(self):
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        src = '''
+import os
+print(os.getcwd())
+with open('test.txt', 'w', encoding='utf8') as f:
+    print('hello world 한글 테스트', file=f)
+'''
+        # TODO: mock s3 upload
+        result = self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, kernel_id, '1', src))
+        work_dir = os.path.join(volume_root, kernel_id)
+        assert '/home/work' == result['stdout'].splitlines()[0].strip()
+        assert os.path.exists(work_dir)
+        test_path = os.path.join(work_dir, 'test.txt')
+        assert os.path.exists(test_path)
+        assert 'test.txt' == result['files'][0]
+        with open(test_path, 'r', encoding='utf8') as f:
+            data = f.read()
+            assert 'hello world' in data
+            assert '한글 테스트' in data
+        self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
+        assert not os.path.exists(test_path)
+        assert not os.path.exists(work_dir)
 
 '''
 class AgentKernelResponseTest(unittest.TestCase):
