@@ -30,14 +30,14 @@ class AgentFunctionalTest(unittest.TestCase):
     def test_execute_simple_python27(self):
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python27'))
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, kernel_id, '1', 'print "asdf"'))
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print "asdf"'))
         assert 'asdf' in result['stdout']
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
     def test_execute_simple_python34(self):
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, kernel_id, '1', 'print("asdf")'))
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print("asdf")'))
         assert 'asdf' in result['stdout']
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
@@ -45,7 +45,7 @@ class AgentFunctionalTest(unittest.TestCase):
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
         with self.assertRaises(asyncio.TimeoutError):
             result = self.loop.run_until_complete(
-                    execute_code(self.loop, self.docker_cli, kernel_id,
+                    execute_code(self.loop, self.docker_cli, 'test', kernel_id,
                                  '1', 'import time; time.sleep(10)'))
         # the container should be automatically destroyed
         assert kernel_id not in container_registry
@@ -65,7 +65,7 @@ with open('test.txt', 'w', encoding='utf8') as f:
 '''
         # TODO: mock s3 upload
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, kernel_id, '1', src))
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
         assert '/home/work' == result['stdout'].splitlines()[0].strip()
         test_path = os.path.join(work_dir, 'test.txt')
         assert os.path.exists(test_path)

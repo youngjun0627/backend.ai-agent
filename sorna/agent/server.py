@@ -19,6 +19,11 @@ log.setLevel(logging.DEBUG)
 container_registry = dict()
 volume_root = '/var/lib/sorna-volumes'
 supported_langs = frozenset(['python27', 'python34'])
+# the names of following AWS variables follow boto3 convention.
+s3_access_key = os.environ.get('AWS_ACCESS_KEY_ID', 'dummy-access-key')
+s3_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', 'dummy-secret-key')
+s3_region = os.environ.get('AWS_REGION', 'ap-northeast-1')
+s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
 
 def docker_init():
     docker_tls_verify = int(os.environ.get('DOCKER_TLS_VERIFY', '0'))
@@ -119,10 +124,10 @@ def diff_file_stats(fs1, fs2):
     return new_files | modified_files
 
 @asyncio.coroutine
-def execute_code(loop, docker_cli, kernel_id, cell_id, code):
-    # TODO: read the file list in container /home/work volume
+def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     container_id = container_registry[kernel_id]['container_id']
     work_dir = os.path.join(volume_root, kernel_id)
+    # TODO: import "connected" files from S3
     initial_file_stats = scandir(work_dir)
 
     container_addr = container_registry[kernel_id]['addr']
@@ -134,11 +139,26 @@ def execute_code(loop, docker_cli, kernel_id, cell_id, code):
     try:
         result_data = yield from asyncio.wait_for(container_sock.read(),
                                                   timeout=4, loop=loop)
+        result = json.loads(result_data[0])
+
         final_file_stats = scandir(work_dir)
         diff_files = diff_file_stats(initial_file_stats, final_file_stats)
         diff_files = [os.path.relpath(fn, work_dir) for fn in diff_files]
-        # TODO: upload updated files to s3
-        result = json.loads(result_data[0])
+        if diff_files:
+            session = aiobotocore.get_session(loop=loop)
+            client = session.create_client('s3', region_name=s3_region,
+                                           aws_secret_access_key=s3_secret_key,
+                                           aws_access_key_id=s3_access_key)
+            for fname in diff_files:
+                key = 'bucket/{}/{}'.format(entry_id, fname)
+                # TODO: put the file chunk-by-chunk.
+                with open(os.path.join(work_dir, fname), 'rb') as f:
+                    content = f.read()
+                resp = yield from client.put_object(Bucket=s3_bucket,
+                                                    Key=key,
+                                                    Body=content,
+                                                    ACL='public-read')
+            client.close()
         return odict(
             ('stdout', result['stdout']),
             ('stderr', result['stderr']),
@@ -218,7 +238,9 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
                                                request['cell_id']))
             if request['kernel_id'] in container_registry:
                 try:
-                    result = yield from execute_code(loop, docker_cli, kernel_id,
+                    result = yield from execute_code(loop, docker_cli,
+                                                     request['entry_id'],
+                                                     request['kernel_id'],
                                                      request['cell_id'],
                                                      request['code'])
                 except Exception as exc:
