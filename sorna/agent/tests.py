@@ -30,6 +30,35 @@ class AgentFunctionalTest(unittest.TestCase):
                 destroy_kernel(self.loop, self.docker_cli, kernel_id))
         assert kernel_id not in container_registry
 
+    def test_execute_simple_python27(self):
+        kernel_id = self.loop.run_until_complete(
+                create_kernel(self.loop, self.docker_cli, 'python27'))
+        assert kernel_id in container_registry
+
+        result = self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, kernel_id, '1', 'print "asdf"'))
+        assert 'asdf' in result['stdout']
+
+        self.loop.run_until_complete(
+                destroy_kernel(self.loop, self.docker_cli, kernel_id))
+        assert kernel_id not in container_registry
+
+'''
+    def test_execute_simple_python34(self):
+        kernel_id = self.loop.run_until_complete(
+                create_kernel(self.loop, self.docker_cli, 'python34'))
+        assert kernel_id in container_registry
+
+        result = self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, kernel_id, '1', 'print("asdf")'))
+        assert 'asdf' in result['stdout']
+
+        self.loop.run_until_complete(
+                destroy_kernel(self.loop, self.docker_cli, kernel_id))
+        assert kernel_id not in container_registry
+'''
+
+
 '''
 class AgentKernelResponseTest(unittest.TestCase):
     def setUp(self):

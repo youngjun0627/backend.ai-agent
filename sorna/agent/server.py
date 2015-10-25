@@ -104,7 +104,7 @@ def execute_code(loop, docker_cli, kernel_id, cell_id, code):
     container_addr = container_registry[kernel_id]['addr']
     container_sock = yield from aiozmq.create_zmq_stream(zmq.REQ,
             connect=container_addr, loop=loop)
-    container_sock.write([cell_id, code])
+    container_sock.write([cell_id.encode('ascii'), code.encode('utf8')])
 
     # Execute with a 4 second timeout.
     try:
@@ -124,8 +124,7 @@ def execute_code(loop, docker_cli, kernel_id, cell_id, code):
         log.warning('Timeout detected on kernel {} (cell_id: {}).'
                     .format(kernel_id, cell_id))
         yield from destroy_kernel(loop, docker_cli, kernel_id)
-        resp['reply'] = SornaResponseTypes.FAILURE
-        resp['body'] = type(exc).__name__
+        raise exc  # re-raise so that the loop return failure.
     finally:
         container_sock.close()
 
