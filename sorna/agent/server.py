@@ -2,6 +2,7 @@
 
 import asyncio, zmq, aiozmq
 import argparse
+import botocore
 import docker
 import logging, logging.config
 import aiobotocore
@@ -45,8 +46,7 @@ def docker_init():
         docker_addr = docker_addr.replace('tcp://', 'https://')
     return docker.Client(docker_addr, tls=tls_config, timeout=3)
 
-@asyncio.coroutine
-def heartbeat(loop, agent_addr, manager_addr):
+async def heartbeat(loop, agent_addr, manager_addr):
     '''
     Send a heartbeat mesasge to the master (sorna.manager).
     This message includes my socket information so that the manager can
@@ -56,10 +56,9 @@ def heartbeat(loop, agent_addr, manager_addr):
     while True:
         # TODO: attach the list of currently running kernels
         # TODO: add extra info (e.g., capacity available)
-        yield from asyncio.sleep(3, loop=loop)
+        await asyncio.sleep(3, loop=loop)
 
-@asyncio.coroutine
-def create_kernel(loop, docker_cli, lang):
+async def create_kernel(loop, docker_cli, lang):
     kernel_id = generate_uuid()
     assert kernel_id not in container_registry
     work_dir = os.path.join(volume_root, kernel_id)
@@ -95,8 +94,7 @@ def create_kernel(loop, docker_cli, lang):
     }
     return kernel_id
 
-@asyncio.coroutine
-def destroy_kernel(loop, docker_cli, kernel_id):
+async def destroy_kernel(loop, docker_cli, kernel_id):
     global container_registry
     container_id = container_registry[kernel_id]['container_id']
     docker_cli.kill(container_id)  # forcibly shut-down the container
@@ -128,23 +126,23 @@ def diff_file_stats(fs1, fs2):
             modified_files.add(k)
     return new_files | modified_files
 
-@asyncio.coroutine
-def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
+async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     container_id = container_registry[kernel_id]['container_id']
     work_dir = os.path.join(volume_root, kernel_id)
     # TODO: import "connected" files from S3
     initial_file_stats = scandir(work_dir)
 
     container_addr = container_registry[kernel_id]['addr']
-    container_sock = yield from aiozmq.create_zmq_stream(zmq.REQ,
+    container_sock = await aiozmq.create_zmq_stream(zmq.REQ,
             connect=container_addr, loop=loop)
+    container_sock.transport.setsockopt(zmq.LINGER, 50)
     container_sock.write([cell_id.encode('ascii'), code.encode('utf8')])
 
     # Execute with a 4 second timeout.
     try:
-        result_data = yield from asyncio.wait_for(container_sock.read(),
-                                                  timeout=max_execution_time,
-                                                  loop=loop)
+        result_data = await asyncio.wait_for(container_sock.read(),
+                                             timeout=max_execution_time,
+                                             loop=loop)
         result = json.loads(result_data[0])
 
         final_file_stats = scandir(work_dir)
@@ -160,10 +158,13 @@ def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
                 # TODO: put the file chunk-by-chunk.
                 with open(os.path.join(work_dir, fname), 'rb') as f:
                     content = f.read()
-                resp = yield from client.put_object(Bucket=s3_bucket,
-                                                    Key=key,
-                                                    Body=content,
-                                                    ACL='public-read')
+                try:
+                    resp = await client.put_object(Bucket=s3_bucket,
+                                                   Key=key,
+                                                   Body=content,
+                                                   ACL='public-read')
+                except botocore.exceptions.ClientError as exc:
+                    log.exception(exc)
             client.close()
         return odict(
             ('stdout', result['stdout']),
@@ -174,13 +175,12 @@ def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     except asyncio.TimeoutError as exc:
         log.warning('Timeout detected on kernel {} (cell_id: {}).'
                     .format(kernel_id, cell_id))
-        yield from destroy_kernel(loop, docker_cli, kernel_id)
+        await destroy_kernel(loop, docker_cli, kernel_id)
         raise exc  # re-raise so that the loop return failure.
     finally:
         container_sock.close()
 
-@asyncio.coroutine
-def run_agent(loop, server_sock, manager_addr, agent_addr):
+async def run_agent(loop, server_sock, manager_addr, agent_addr):
     global container_registry, docker_addr
 
     # Resolve the master address
@@ -192,13 +192,13 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
     container_registry.clear()
 
     # Send the first heartbeat.
-    asyncio.async(heartbeat(loop, agent_addr, manager_addr), loop=loop)
-    yield from asyncio.sleep(0, loop=loop)
+    asyncio.ensure_future(heartbeat(loop, agent_addr, manager_addr), loop=loop)
+    await asyncio.sleep(0, loop=loop)
 
     # Then start running the agent loop.
     while True:
         try:
-            request_data = yield from server_sock.read()
+            request_data = await server_sock.read()
         except aiozmq.stream.ZmqStreamClosed:
             break
         request = Message.decode(request_data[0])
@@ -209,7 +209,7 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
             log.info('CREATE_KERNEL ({})'.format(request['lang']))
             if request['lang'] in supported_langs:
                 try:
-                    kernel_id = yield from create_kernel(loop, docker_cli, request['lang'])
+                    kernel_id = await create_kernel(loop, docker_cli, request['lang'])
                     # TODO: (asynchronously) check if container is running okay.
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
@@ -227,7 +227,7 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
             log.info('DESTROY_KERNEL ({})'.format(request['kernel_id']))
             if request['kernel_id'] in container_registry:
                 try:
-                    yield from destroy_kernel(loop, docker_cli, request['kernel_id'])
+                    await destroy_kernel(loop, docker_cli, request['kernel_id'])
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
                     resp['body'] = type(exc).__name__
@@ -244,11 +244,11 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
                                                request['cell_id']))
             if request['kernel_id'] in container_registry:
                 try:
-                    result = yield from execute_code(loop, docker_cli,
-                                                     request['entry_id'],
-                                                     request['kernel_id'],
-                                                     request['cell_id'],
-                                                     request['code'])
+                    result = await execute_code(loop, docker_cli,
+                                                request['entry_id'],
+                                                request['kernel_id'],
+                                                request['cell_id'],
+                                                request['code'])
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
                     resp['body'] = type(exc).__name__
@@ -263,7 +263,7 @@ def run_agent(loop, server_sock, manager_addr, agent_addr):
             assert False, 'Invalid kernel request type.'
 
         server_sock.write([resp.encode()])
-        yield from server_sock.drain()
+        await server_sock.drain()
 
 
 def main():
@@ -284,17 +284,15 @@ def main():
             'null': {
                 'class': 'logging.NullHandler',
             },
-            # TODO: refactor sorna.logging
-            #'logstash': {
-            #    'class': 'sorna.logging.LogstashHandler',
-            #    'level': 'INFO',
-            #    'endpoint': 'tcp://logger.lablup:2121',
-            #},
+            'logstash': {
+                'class': 'sorna.logging.LogstashHandler',
+                'level': 'INFO',
+                'endpoint': 'tcp://logger.lablup:2121',
+            },
         },
         'loggers': {
             'sorna': {
-                #'handlers': ['console', 'logstash'],
-                'handlers': ['console'],
+                'handlers': ['console', 'logstash'],
                 'level': 'DEBUG',
             },
         },
@@ -302,6 +300,7 @@ def main():
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
     loop = asyncio.get_event_loop()
     server_sock = loop.run_until_complete(aiozmq.create_zmq_stream(zmq.REP, bind=agent_addr, loop=loop))
+    server_sock.transport.setsockopt(zmq.LINGER, 50)
     log.info('serving at {0}'.format(agent_addr))
     try:
         asyncio.async(run_agent(loop, server_sock, args.manager_addr, agent_addr), loop=loop)
