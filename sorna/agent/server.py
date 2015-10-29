@@ -1,17 +1,20 @@
 #! /usr/bin/env python3
 
-import asyncio, zmq, aiozmq
+import asyncio, zmq, aiozmq, aioredis
+import aiobotocore
 import argparse
 import botocore
 import docker
+from itertools import chain
 import logging, logging.config
-import aiobotocore
 from namedlist import namedtuple
 import os, os.path
 import signal
 import simplejson as json
 import shutil
 import sys
+import urllib.parse
+from sorna import utils, defs
 from sorna.proto import Message, odict, generate_uuid
 from sorna.proto.msgtypes import *
 
@@ -46,17 +49,47 @@ def docker_init():
         docker_addr = docker_addr.replace('tcp://', 'https://')
     return docker.Client(docker_addr, tls=tls_config, timeout=3)
 
-async def heartbeat(loop, agent_addr, manager_addr):
+async def heartbeat(loop, manager_addr, interval=3.0):
     '''
     Send a heartbeat mesasge to the master (sorna.manager).
     This message includes my socket information so that the manager can
     register or update its instance registry.
     '''
     global container_registry
+    my_id = await utils.get_instance_id()
+    my_ip = await utils.get_instance_ip()
+    my_type = await utils.get_instance_type()
+    manager_ip = urllib.parse.urlparse(manager_addr).hostname
+    log.info('my id = {}, my ip = {}, my instance type = {}'.format(my_id, my_ip, my_type))
+    log.info('using manager at {}'.format(manager_ip))
     while True:
-        # TODO: attach the list of currently running kernels
-        # TODO: add extra info (e.g., capacity available)
-        await asyncio.sleep(3, loop=loop)
+        try:
+            redis = await asyncio.wait_for(
+                    aioredis.create_redis((manager_ip, 6379), loop=loop), timeout=1)
+        except asyncio.TimeoutError:
+            log.warn('could not contact manager redis.')
+        else:
+            total_cpu_shares = sum(c['cpu_shares'] for c in container_registry.values())
+            state = {
+                'status': 'ok',
+                'id': my_id,
+                'ip': my_ip,
+                'type': my_type,
+                'used_cpu': total_cpu_shares,
+            }
+            running_kernels = [k for k in container_registry.keys()]
+            my_kernels_key = '{}.kernels'.format(my_id)
+            await redis.select(defs.SORNA_INSTANCE_DB)
+            pipe = redis.pipeline()
+            pipe.hmset(my_id, *chain.from_iterable((k, v) for k, v in state.items()))
+            pipe.delete(my_kernels_key)
+            if running_kernels:
+                pipe.rpush(my_kernels_key, running_kernels[0], *running_kernels[1:])
+            pipe.expire(my_id, float(interval * 2))
+            pipe.expire(my_kernels_key, float(interval * 2))
+            await pipe.execute()
+            await redis.quit()
+        await asyncio.sleep(interval, loop=loop)
 
 async def create_kernel(loop, docker_cli, lang):
     kernel_id = generate_uuid()
@@ -91,6 +124,7 @@ async def create_kernel(loop, docker_cli, lang):
         'ip': kernel_ip,
         'port': 2001,
         'hostport': kernel_host_port,
+        'cpu_shares': 1024,
     }
     return kernel_id
 
@@ -180,8 +214,8 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     finally:
         container_sock.close()
 
-async def run_agent(loop, server_sock, manager_addr, agent_addr):
-    global container_registry, docker_addr
+async def run_agent(loop, server_sock, manager_addr):
+    global container_registry
 
     # Resolve the master address
     if manager_addr is None:
@@ -192,7 +226,7 @@ async def run_agent(loop, server_sock, manager_addr, agent_addr):
     container_registry.clear()
 
     # Send the first heartbeat.
-    asyncio.ensure_future(heartbeat(loop, agent_addr, manager_addr), loop=loop)
+    asyncio.ensure_future(heartbeat(loop, manager_addr), loop=loop)
     await asyncio.sleep(0, loop=loop)
 
     # Then start running the agent loop.
@@ -303,7 +337,7 @@ def main():
     server_sock.transport.setsockopt(zmq.LINGER, 50)
     log.info('serving at {0}'.format(agent_addr))
     try:
-        asyncio.async(run_agent(loop, server_sock, args.manager_addr, agent_addr), loop=loop)
+        asyncio.async(run_agent(loop, server_sock, args.manager_addr), loop=loop)
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
         server_sock.close()
