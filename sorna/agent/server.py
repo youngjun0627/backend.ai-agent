@@ -49,11 +49,12 @@ def docker_init():
         docker_addr = docker_addr.replace('tcp://', 'https://')
     return docker.Client(docker_addr, tls=tls_config, timeout=3)
 
-async def heartbeat(loop, manager_addr, interval=3.0):
+async def heartbeat(loop, agent_port, manager_addr, interval=3.0):
     '''
-    Send a heartbeat mesasge to the master (sorna.manager).
-    This message includes my socket information so that the manager can
-    register or update its instance registry.
+    Record my status information to the manager database (Redis).
+    This information automatically expires after 2x interval, so that failure
+    of executing this method automatically removes the instance from the
+    manager database.
     '''
     global container_registry
     my_id = await utils.get_instance_id()
@@ -73,7 +74,7 @@ async def heartbeat(loop, manager_addr, interval=3.0):
             state = {
                 'status': 'ok',
                 'id': my_id,
-                'ip': my_ip,
+                'addr': 'tcp://{}:{}'.format(my_ip, agent_port),
                 'type': my_type,
                 'used_cpu': total_cpu_shares,
             }
@@ -214,7 +215,7 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     finally:
         container_sock.close()
 
-async def run_agent(loop, server_sock, manager_addr):
+async def run_agent(loop, server_sock, agent_port, manager_addr):
     global container_registry
 
     # Resolve the master address
@@ -226,7 +227,7 @@ async def run_agent(loop, server_sock, manager_addr):
     container_registry.clear()
 
     # Send the first heartbeat.
-    asyncio.ensure_future(heartbeat(loop, manager_addr), loop=loop)
+    asyncio.ensure_future(heartbeat(loop, agent_port, manager_addr), loop=loop)
     await asyncio.sleep(0, loop=loop)
 
     # Then start running the agent loop.
@@ -337,7 +338,7 @@ def main():
     server_sock.transport.setsockopt(zmq.LINGER, 50)
     log.info('serving at {0}'.format(agent_addr))
     try:
-        asyncio.async(run_agent(loop, server_sock, args.manager_addr), loop=loop)
+        asyncio.async(run_agent(loop, server_sock, args.agent_port, args.manager_addr), loop=loop)
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
         server_sock.close()
