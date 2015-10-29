@@ -30,6 +30,7 @@ s3_region = os.environ.get('AWS_REGION', 'ap-northeast-1')
 s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
 max_execution_time = 4  # in seconds
 max_upload_size = 5 * 1024 * 1024  # 5 MB
+max_kernels = 1
 
 def docker_init():
     docker_tls_verify = int(os.environ.get('DOCKER_TLS_VERIFY', '0'))
@@ -66,7 +67,7 @@ async def heartbeat(loop, agent_port, manager_addr, interval=3.0):
     while True:
         try:
             redis = await asyncio.wait_for(
-                    aioredis.create_redis((manager_ip, 6379), loop=loop), timeout=1)
+                    aioredis.create_redis((manager_ip, 6379), encoding='utf8', loop=loop), timeout=1)
         except asyncio.TimeoutError:
             log.warn('could not contact manager redis.')
         else:
@@ -77,6 +78,7 @@ async def heartbeat(loop, agent_port, manager_addr, interval=3.0):
                 'addr': 'tcp://{}:{}'.format(my_ip, agent_port),
                 'type': my_type,
                 'used_cpu': total_cpu_shares,
+                'max_kernels': max_kernels,
             }
             running_kernels = [k for k in container_registry.keys()]
             my_kernels_key = '{}.kernels'.format(my_id)
@@ -302,9 +304,12 @@ async def run_agent(loop, server_sock, agent_port, manager_addr):
 
 
 def main():
+    global max_kernels
+
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--agent-port', type=int, default=6001)
     argparser.add_argument('--manager-addr', type=str, default=None)
+    argparser.add_argument('--max-kernels', type=int, default=1)
     args = argparser.parse_args()
 
     logging.config.dictConfig({
@@ -333,6 +338,7 @@ def main():
         },
     })
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
+    max_kernels = args.max_kernels
     loop = asyncio.get_event_loop()
     server_sock = loop.run_until_complete(aiozmq.create_zmq_stream(zmq.REP, bind=agent_addr, loop=loop))
     server_sock.transport.setsockopt(zmq.LINGER, 50)
