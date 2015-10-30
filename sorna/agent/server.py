@@ -293,14 +293,14 @@ async def run_agent(loop, server_sock, manager_addr):
                     # TODO: (asynchronously) check if container is running okay.
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
-                    resp['body'] = type(exc).__name__
+                    resp['cause'] = type(exc).__name__
                     log.exception(exc)
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
                     resp['kernel_id'] = kernel_id
             else:
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
-                resp['body'] = 'Unsupported kernel language.'
+                resp['cause'] = 'Unsupported kernel language.'
 
         elif request['req_type'] == AgentRequestTypes.DESTROY_KERNEL:
 
@@ -310,13 +310,13 @@ async def run_agent(loop, server_sock, manager_addr):
                     await destroy_kernel(loop, docker_cli, request['kernel_id'])
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
-                    resp['body'] = type(exc).__name__
+                    resp['cause'] = type(exc).__name__
                     log.exception(exc)
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
             else:
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
-                resp['body'] = 'No such kernel.'
+                resp['cause'] = 'No such kernel.'
 
         elif request['req_type'] == AgentRequestTypes.EXECUTE:
 
@@ -331,16 +331,16 @@ async def run_agent(loop, server_sock, manager_addr):
                                                 request['code'])
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
-                    resp['body'] = type(exc).__name__
+                    resp['cause'] = type(exc).__name__
                     log.exception(exc)
                 else:
                     reps['reply'] = SornaResponseTypes.SUCCESS
-                    resp['body'] = result
+                    resp['result'] = result
                     container_registry[request['kernel_id']]['last_used'] \
                             = datetime.now(tzutc())
             else:
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
-                resp['body'] = 'Could not find such kernel.'
+                resp['cause'] = 'Could not find such kernel.'
         else:
             assert False, 'Invalid kernel request type.'
 
