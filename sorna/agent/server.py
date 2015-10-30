@@ -36,7 +36,7 @@ max_kernels = 1
 inst_id = None
 agent_addr = None
 agent_ip = None
-agent_port = None
+agent_port = 6001
 inst_type = None
 manager_ip = None
 
@@ -66,6 +66,13 @@ async def heartbeat(loop, interval=3.0):
     manager database.
     '''
     global container_registry
+    global inst_id, inst_type, agent_ip
+    if not inst_id:
+        inst_id = await utils.get_instance_id()
+    if not inst_type:
+        inst_type = await utils.get_instance_type()
+    if not agent_ip:
+        agent_ip = await utils.get_instance_ip()
     log.info('myself: {} ({}), ip: {}'.format(inst_id, inst_type, agent_ip))
     log.info('using manager at {}'.format(manager_ip))
     while True:
@@ -143,7 +150,9 @@ async def create_kernel(loop, docker_cli, lang):
 
 async def destroy_kernel(loop, docker_cli, kernel_id):
     global container_registry
-    inst_id = await utils.get_instance_id()
+    global inst_id
+    if not inst_id:
+        inst_id = await utils.get_instance_id()
     container_id = container_registry[kernel_id]['container_id']
     docker_cli.kill(container_id)  # forcibly shut-down the container
     docker_cli.remove_container(container_id)
@@ -258,8 +267,8 @@ async def run_agent(loop, server_sock, manager_addr):
     global inst_id, agent_ip, inst_type, manager_ip
 
     inst_id = await utils.get_instance_id()
-    agent_ip = await utils.get_instance_ip()
     inst_type = await utils.get_instance_type()
+    agent_ip = await utils.get_instance_ip()
 
     # Resolve the master address
     if manager_addr is None:
@@ -353,7 +362,7 @@ def main():
     global agent_addr, agent_port
 
     argparser = argparse.ArgumentParser()
-    argparser.add_argument('--agent-port', type=int, default=6001)
+    argparser.add_argument('--agent-port', type=int, default=agent_port)
     argparser.add_argument('--manager-addr', type=str, default=None)
     argparser.add_argument('--max-kernels', type=int, default=1)
     args = argparser.parse_args()
