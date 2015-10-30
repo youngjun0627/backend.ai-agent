@@ -33,6 +33,12 @@ s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
 max_execution_time = 4  # in seconds
 max_upload_size = 5 * 1024 * 1024  # 5 MB
 max_kernels = 1
+inst_id = None
+agent_addr = None
+agent_ip = None
+agent_port = None
+inst_type = None
+manager_ip = None
 
 def docker_init():
     docker_tls_verify = int(os.environ.get('DOCKER_TLS_VERIFY', '0'))
@@ -52,7 +58,7 @@ def docker_init():
         docker_addr = docker_addr.replace('tcp://', 'https://')
     return docker.Client(docker_addr, tls=tls_config, timeout=3)
 
-async def heartbeat(loop, agent_port, manager_addr, interval=3.0):
+async def heartbeat(loop, interval=3.0):
     '''
     Record my status information to the manager database (Redis).
     This information automatically expires after 2x interval, so that failure
@@ -60,16 +66,15 @@ async def heartbeat(loop, agent_port, manager_addr, interval=3.0):
     manager database.
     '''
     global container_registry
-    my_id = await utils.get_instance_id()
-    my_ip = await utils.get_instance_ip()
-    my_type = await utils.get_instance_type()
-    manager_ip = urllib.parse.urlparse(manager_addr).hostname
-    log.info('my id = {}, my ip = {}, my instance type = {}'.format(my_id, my_ip, my_type))
+    log.info('myself: {} ({}), ip: {}'.format(inst_id, inst_type, agent_ip))
     log.info('using manager at {}'.format(manager_ip))
     while True:
         try:
             redis = await asyncio.wait_for(
-                    aioredis.create_redis((manager_ip, 6379), encoding='utf8', loop=loop), timeout=1)
+                    aioredis.create_redis((manager_ip, 6379),
+                                          encoding='utf8',
+                                          db=defs.SORNA_INSTANCE_DB,
+                                          loop=loop), timeout=1)
         except asyncio.TimeoutError:
             log.warn('could not contact manager redis.')
         else:
@@ -77,22 +82,23 @@ async def heartbeat(loop, agent_port, manager_addr, interval=3.0):
             running_kernels = [k for k in container_registry.keys()]
             state = {
                 'status': 'ok',
-                'id': my_id,
-                'addr': 'tcp://{}:{}'.format(my_ip, agent_port),
-                'type': my_type,
+                'id': inst_id,
+                'addr': 'tcp://{}:{}'.format(agent_ip, agent_port),
+                'type': inst_type,
                 'used_cpu': total_cpu_shares,
                 'num_kernels': len(running_kernels),
                 'max_kernels': max_kernels,
             }
-            my_kernels_key = '{}.kernels'.format(my_id)
-            await redis.select(defs.SORNA_INSTANCE_DB)
+            my_kernels_key = '{}.kernels'.format(inst_id)
             pipe = redis.pipeline()
-            pipe.hmset(my_id, *chain.from_iterable((k, v) for k, v in state.items()))
+            pipe.hmset(inst_id, *chain.from_iterable((k, v) for k, v in state.items()))
             pipe.delete(my_kernels_key)
             if running_kernels:
-                pipe.rpush(my_kernels_key, running_kernels[0], *running_kernels[1:])
-            pipe.expire(my_id, float(interval * 2))
-            pipe.expire(my_kernels_key, float(interval * 2))
+                pipe.sadd(my_kernels_key, running_kernels[0], *running_kernels[1:])
+            # Create a "shadow" key that actually expires.
+            # This allows access to values upon expiration events.
+            pipe.set('shadow:' + inst_id, '')
+            pipe.expire('shadow:' + inst_id, float(interval * 2))
             await pipe.execute()
             await redis.quit()
         await asyncio.sleep(interval, loop=loop)
@@ -137,13 +143,27 @@ async def create_kernel(loop, docker_cli, lang):
 
 async def destroy_kernel(loop, docker_cli, kernel_id):
     global container_registry
+    inst_id = await utils.get_instance_id()
     container_id = container_registry[kernel_id]['container_id']
     docker_cli.kill(container_id)  # forcibly shut-down the container
     docker_cli.remove_container(container_id)
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
     del container_registry[kernel_id]
-    # TODO: update kernel list in the manager
+    try:
+        redis = await asyncio.wait_for(
+                aioredis.create_redis((manager_ip, 6379),
+                                      encoding='utf8',
+                                      db=defs.SORNA_INSTANCE_DB,
+                                      loop=loop), timeout=1)
+    except asyncio.TimeoutError:
+        log.warn('could not contact manager redis.')
+    else:
+        pipe = redis.pipeline()
+        pipe.hincrby(inst_id, 'num_kernels', -1)
+        pipe.srem(inst_id + '.kernels', kernel_id)
+        await pipe.execute()
+        await redis.quit()
 
 def scandir(root):
     file_stats = dict()
@@ -233,19 +253,25 @@ async def cleanup_timer(loop, docker_cli):
                 await destroy_kernel(loop, docker_cli, kern_id)
         await asyncio.sleep(10, loop=loop)
 
-async def run_agent(loop, server_sock, agent_port, manager_addr):
+async def run_agent(loop, server_sock, manager_addr):
     global container_registry
+    global inst_id, agent_ip, inst_type, manager_ip
+
+    inst_id = await utils.get_instance_id()
+    agent_ip = await utils.get_instance_ip()
+    inst_type = await utils.get_instance_type()
 
     # Resolve the master address
     if manager_addr is None:
         manager_addr = 'tcp://sorna-manager.lablup:5001'
+    manager_ip = urllib.parse.urlparse(manager_addr).hostname
 
     # Initialize docker subsystem
     docker_cli = docker_init()
     container_registry.clear()
 
     # Send the first heartbeat.
-    asyncio.ensure_future(heartbeat(loop, agent_port, manager_addr), loop=loop)
+    asyncio.ensure_future(heartbeat(loop), loop=loop)
     asyncio.ensure_future(cleanup_timer(loop, docker_cli), loop=loop)
     await asyncio.sleep(0, loop=loop)
 
@@ -324,6 +350,7 @@ async def run_agent(loop, server_sock, agent_port, manager_addr):
 
 def main():
     global max_kernels
+    global agent_addr, agent_port
 
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--agent-port', type=int, default=6001)
@@ -357,6 +384,7 @@ def main():
         },
     })
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
+    agent_port = args.agent_port
     max_kernels = args.max_kernels
     loop = asyncio.get_event_loop()
     server_sock = loop.run_until_complete(aiozmq.create_zmq_stream(zmq.REP, bind=agent_addr, loop=loop))
