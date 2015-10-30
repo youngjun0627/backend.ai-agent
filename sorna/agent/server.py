@@ -4,6 +4,8 @@ import asyncio, zmq, aiozmq, aioredis
 import aiobotocore
 import argparse
 import botocore
+from datetime import datetime, timedelta
+from dateutil.tz import tzutc
 import docker
 from itertools import chain
 import logging, logging.config
@@ -72,15 +74,16 @@ async def heartbeat(loop, agent_port, manager_addr, interval=3.0):
             log.warn('could not contact manager redis.')
         else:
             total_cpu_shares = sum(c['cpu_shares'] for c in container_registry.values())
+            running_kernels = [k for k in container_registry.keys()]
             state = {
                 'status': 'ok',
                 'id': my_id,
                 'addr': 'tcp://{}:{}'.format(my_ip, agent_port),
                 'type': my_type,
                 'used_cpu': total_cpu_shares,
+                'num_kernels': len(running_kernels),
                 'max_kernels': max_kernels,
             }
-            running_kernels = [k for k in container_registry.keys()]
             my_kernels_key = '{}.kernels'.format(my_id)
             await redis.select(defs.SORNA_INSTANCE_DB)
             pipe = redis.pipeline()
@@ -128,6 +131,7 @@ async def create_kernel(loop, docker_cli, lang):
         'port': 2001,
         'hostport': kernel_host_port,
         'cpu_shares': 1024,
+        'last_used': datetime.now(tzutc()),
     }
     return kernel_id
 
@@ -139,6 +143,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
     del container_registry[kernel_id]
+    # TODO: update kernel list in the manager
 
 def scandir(root):
     file_stats = dict()
@@ -217,6 +222,17 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     finally:
         container_sock.close()
 
+async def cleanup_timer(loop, docker_cli):
+    while True:
+        now = datetime.now(tzutc())
+        # clone keys to avoid "dictionary size changed during iteration" error.
+        keys = tuple(container_registry.keys())
+        for kern_id in keys:
+            if now - container_registry[kern_id]['last_used'] > timedelta(seconds=60):
+                log.info('destroying kernel {} as clean-up'.format(kern_id))
+                await destroy_kernel(loop, docker_cli, kern_id)
+        await asyncio.sleep(10, loop=loop)
+
 async def run_agent(loop, server_sock, agent_port, manager_addr):
     global container_registry
 
@@ -230,6 +246,7 @@ async def run_agent(loop, server_sock, agent_port, manager_addr):
 
     # Send the first heartbeat.
     asyncio.ensure_future(heartbeat(loop, agent_port, manager_addr), loop=loop)
+    asyncio.ensure_future(cleanup_timer(loop, docker_cli), loop=loop)
     await asyncio.sleep(0, loop=loop)
 
     # Then start running the agent loop.
@@ -293,6 +310,8 @@ async def run_agent(loop, server_sock, agent_port, manager_addr):
                 else:
                     reps['reply'] = SornaResponseTypes.SUCCESS
                     resp['body'] = result
+                    container_registry[request['kernel_id']]['last_used'] \
+                            = datetime.now(tzutc())
             else:
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['body'] = 'Could not find such kernel.'
