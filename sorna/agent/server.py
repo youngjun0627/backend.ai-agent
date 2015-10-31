@@ -97,7 +97,7 @@ async def heartbeat(loop, interval=3.0):
                 'max_kernels': max_kernels,
             }
             my_kernels_key = '{}.kernels'.format(inst_id)
-            pipe = redis.pipeline()
+            pipe = redis.multi_exec()
             pipe.hmset(inst_id, *chain.from_iterable((k, v) for k, v in state.items()))
             pipe.delete(my_kernels_key)
             if running_kernels:
@@ -168,7 +168,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     except asyncio.TimeoutError:
         log.warn('could not contact manager redis.')
     else:
-        pipe = redis.pipeline()
+        pipe = redis.multi_exec()
         pipe.hincrby(inst_id, 'num_kernels', -1)
         pipe.srem(inst_id + '.kernels', kernel_id)
         await pipe.execute()
@@ -395,12 +395,13 @@ def main():
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
     agent_port = args.agent_port
     max_kernels = args.max_kernels
+
     loop = asyncio.get_event_loop()
     server_sock = loop.run_until_complete(aiozmq.create_zmq_stream(zmq.REP, bind=agent_addr, loop=loop))
     server_sock.transport.setsockopt(zmq.LINGER, 50)
     log.info('serving at {0}'.format(agent_addr))
     try:
-        asyncio.ensure_future(run_agent(loop, server_sock, args.agent_port, args.manager_addr), loop=loop)
+        asyncio.ensure_future(run_agent(loop, server_sock, args.manager_addr), loop=loop)
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
         server_sock.close()
