@@ -95,6 +95,25 @@ with open('large.txt', 'wb') as f:
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
         assert not os.path.exists(work_dir)
 
+    def test_restricted_networking(self):
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        work_dir = os.path.join(volume_root, kernel_id)
+        src = '''
+import socket
+socket.setdefaulttimeout(1.0)
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.connect(('google.com', 80))
+    print('connected')
+    s.close()
+except OSError:
+    print('failed')
+'''.format(max_upload_size + 1)
+        result = self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+        assert 'failed' in result['stdout']
+        self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
+
 '''
 class AgentKernelResponseTest(unittest.TestCase):
     def setUp(self):

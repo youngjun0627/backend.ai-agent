@@ -139,7 +139,6 @@ async def create_kernel(loop, docker_cli, lang):
         'lang': lang,
         'container_id': container_id,
         'addr': 'tcp://{0}:{1}'.format(kernel_ip, 2001),
-        #'addr': 'tcp://{0}:{1}'.format('127.0.0.1', kernel_host_port),
         'ip': kernel_ip,
         'port': 2001,
         'hostport': kernel_host_port,
