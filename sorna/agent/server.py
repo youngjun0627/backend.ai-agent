@@ -4,8 +4,6 @@ import asyncio, zmq, aiozmq, aioredis
 import aiobotocore
 import argparse
 import botocore
-from datetime import datetime, timedelta
-from dateutil.tz import tzutc
 import docker
 from itertools import chain
 import logging, logging.config
@@ -15,6 +13,7 @@ import signal
 import simplejson as json
 import shutil
 import sys
+import time
 import urllib.parse
 from sorna import utils, defs
 from sorna.proto import Message, odict, generate_uuid
@@ -39,6 +38,7 @@ agent_ip = None
 agent_port = 6001
 inst_type = None
 manager_ip = None
+docker_cli = None
 
 def docker_init():
     docker_tls_verify = int(os.environ.get('DOCKER_TLS_VERIFY', '0'))
@@ -143,7 +143,7 @@ async def create_kernel(loop, docker_cli, lang):
         'port': 2001,
         'hostport': kernel_host_port,
         'cpu_shares': 1024,
-        'last_used': datetime.now(tzutc()),
+        'last_used': time.monotonic(),
     }
     return kernel_id
 
@@ -162,15 +162,17 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
         redis = await asyncio.wait_for(
                 aioredis.create_redis((manager_ip, 6379),
                                       encoding='utf8',
-                                      db=defs.SORNA_INSTANCE_DB,
                                       loop=loop), loop=loop, timeout=1)
     except asyncio.TimeoutError:
         log.warn('could not contact manager redis.')
     else:
+        redis.select(defs.SORNA_INSTANCE_DB)
         pipe = redis.multi_exec()
         pipe.hincrby(inst_id, 'num_kernels', -1)
         pipe.srem(inst_id + '.kernels', kernel_id)
         await pipe.execute()
+        redis.select(defs.SORNA_KERNEL_DB)
+        redis.delete(kernel_id)
         await redis.quit()
 
 def scandir(root):
@@ -252,18 +254,25 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
 
 async def cleanup_timer(loop, docker_cli):
     while True:
-        now = datetime.now(tzutc())
+        now = time.monotonic()
         # clone keys to avoid "dictionary size changed during iteration" error.
         keys = tuple(container_registry.keys())
         for kern_id in keys:
-            if now - container_registry[kern_id]['last_used'] > timedelta(seconds=60):
+            if now - container_registry[kern_id]['last_used'] > 60.0:
                 log.info('destroying kernel {} as clean-up'.format(kern_id))
                 await destroy_kernel(loop, docker_cli, kern_id)
         await asyncio.sleep(10, loop=loop)
 
+async def clean_all_kernels(loop):
+    log.info('cleaning all kernels...')
+    global docker_cli
+    kern_ids= tuple(container_registry.keys())
+    for kern_id in kern_ids:
+        await destroy_kernel(loop, docker_cli, kern_id)
+
 async def run_agent(loop, server_sock, manager_addr):
     global container_registry
-    global inst_id, agent_ip, inst_type, manager_ip
+    global docker_cli, inst_id, agent_ip, inst_type, manager_ip
 
     inst_id = await utils.get_instance_id()
     inst_type = await utils.get_instance_type()
@@ -328,8 +337,8 @@ async def run_agent(loop, server_sock, manager_addr):
 
         elif request['action'] == AgentRequestTypes.EXECUTE:
 
-            log.info('EXECUTE ({}, {})'.format(request['kernel_id'],
-                                               request['cell_id']))
+            log.info('EXECUTE (k:{}, c:{})'.format(request['kernel_id'],
+                                                   request['cell_id']))
             if request['kernel_id'] in container_registry:
                 try:
                     result = await execute_code(loop, docker_cli,
@@ -342,10 +351,10 @@ async def run_agent(loop, server_sock, manager_addr):
                     resp['cause'] = type(exc).__name__
                     log.exception(exc)
                 else:
-                    reps['reply'] = SornaResponseTypes.SUCCESS
+                    resp['reply'] = SornaResponseTypes.SUCCESS
                     resp['result'] = result
                     container_registry[request['kernel_id']]['last_used'] \
-                            = datetime.now(tzutc())
+                            = time.monotonic()
             else:
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['cause'] = 'Could not find such kernel.'
@@ -403,6 +412,7 @@ def main():
         asyncio.ensure_future(run_agent(loop, server_sock, args.manager_addr), loop=loop)
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
+        loop.run_until_complete(clean_all_kernels(loop))
         server_sock.close()
         for t in asyncio.Task.all_tasks():
             if not t.done():
