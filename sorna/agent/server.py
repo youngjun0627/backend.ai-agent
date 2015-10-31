@@ -9,6 +9,7 @@ from itertools import chain
 import logging, logging.config
 from namedlist import namedtuple
 import os, os.path
+import requests
 import signal
 import simplejson as json
 import shutil
@@ -153,8 +154,23 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     if not inst_id:
         inst_id = await utils.get_instance_id()
     container_id = container_registry[kernel_id]['container_id']
-    docker_cli.kill(container_id)  # forcibly shut-down the container
-    docker_cli.remove_container(container_id)
+    retries = 0
+    while True:
+        try:
+            docker_cli.kill(container_id)  # forcibly shut-down the container
+            docker_cli.remove_container(container_id)
+            break
+        except docker.errors.NotFound:
+            # Maybe terminated already? Just pass.
+            break
+        except requests.exceptions.Timeout:
+            # docker might be overloaded, try again!
+            if retries == 3:
+                log.critical(_f('could not destroy container {} used by kernel {}',
+                                container_id, kernel_id))
+                break
+            retries += 1
+            await asyncio.sleep(0.4)
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
     del container_registry[kernel_id]
