@@ -68,11 +68,11 @@ async def heartbeat(loop, interval=3.0):
     global container_registry
     global inst_id, inst_type, agent_ip
     if not inst_id:
-        inst_id = await utils.get_instance_id()
+        inst_id = await utils.get_instance_id(loop)
     if not inst_type:
-        inst_type = await utils.get_instance_type()
+        inst_type = await utils.get_instance_type(loop)
     if not agent_ip:
-        agent_ip = await utils.get_instance_ip()
+        agent_ip = await utils.get_instance_ip(loop)
     log.info('myself: {} ({}), ip: {}'.format(inst_id, inst_type, agent_ip))
     log.info('using manager at {}'.format(manager_ip))
     while True:
@@ -152,7 +152,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     global container_registry
     global inst_id
     if not inst_id:
-        inst_id = await utils.get_instance_id()
+        inst_id = await utils.get_instance_id(loop)
     container_id = container_registry[kernel_id]['container_id']
     docker_cli.kill(container_id)  # forcibly shut-down the container
     docker_cli.remove_container(container_id)
@@ -164,7 +164,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
                 aioredis.create_redis((manager_ip, 6379),
                                       encoding='utf8',
                                       db=defs.SORNA_INSTANCE_DB,
-                                      loop=loop), timeout=1)
+                                      loop=loop), loop=loop, timeout=1)
     except asyncio.TimeoutError:
         log.warn('could not contact manager redis.')
     else:
@@ -266,9 +266,9 @@ async def run_agent(loop, server_sock, manager_addr):
     global container_registry
     global inst_id, agent_ip, inst_type, manager_ip
 
-    inst_id = await utils.get_instance_id()
-    inst_type = await utils.get_instance_type()
-    agent_ip = await utils.get_instance_ip()
+    inst_id = await utils.get_instance_id(loop)
+    inst_type = await utils.get_instance_type(loop)
+    agent_ip = await utils.get_instance_ip(loop)
 
     # Resolve the master address
     if manager_addr is None:
@@ -400,7 +400,7 @@ def main():
     server_sock.transport.setsockopt(zmq.LINGER, 50)
     log.info('serving at {0}'.format(agent_addr))
     try:
-        asyncio.async(run_agent(loop, server_sock, args.agent_port, args.manager_addr), loop=loop)
+        asyncio.ensure_future(run_agent(loop, server_sock, args.agent_port, args.manager_addr), loop=loop)
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
         server_sock.close()
