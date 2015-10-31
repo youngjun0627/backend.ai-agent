@@ -16,6 +16,7 @@ from sorna.agent.server import create_kernel, destroy_kernel, execute_code
 class AgentFunctionalTest(unittest.TestCase):
     def setUp(self):
         self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
         self.docker_cli = docker_init()
 
     def tearDown(self):

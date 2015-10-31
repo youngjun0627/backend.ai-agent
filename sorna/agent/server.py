@@ -68,11 +68,11 @@ async def heartbeat(loop, interval=3.0):
     global container_registry
     global inst_id, inst_type, agent_ip
     if not inst_id:
-        inst_id = await utils.get_instance_id(loop)
+        inst_id = await utils.get_instance_id()
     if not inst_type:
-        inst_type = await utils.get_instance_type(loop)
+        inst_type = await utils.get_instance_type()
     if not agent_ip:
-        agent_ip = await utils.get_instance_ip(loop)
+        agent_ip = await utils.get_instance_ip()
     log.info('myself: {} ({}), ip: {}'.format(inst_id, inst_type, agent_ip))
     log.info('using manager at {}'.format(manager_ip))
     while True:
@@ -152,7 +152,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     global container_registry
     global inst_id
     if not inst_id:
-        inst_id = await utils.get_instance_id(loop)
+        inst_id = await utils.get_instance_id()
     container_id = container_registry[kernel_id]['container_id']
     docker_cli.kill(container_id)  # forcibly shut-down the container
     docker_cli.remove_container(container_id)
@@ -266,9 +266,9 @@ async def run_agent(loop, server_sock, manager_addr):
     global container_registry
     global inst_id, agent_ip, inst_type, manager_ip
 
-    inst_id = await utils.get_instance_id(loop)
-    inst_type = await utils.get_instance_type(loop)
-    agent_ip = await utils.get_instance_ip(loop)
+    inst_id = await utils.get_instance_id()
+    inst_type = await utils.get_instance_type()
+    agent_ip = await utils.get_instance_ip()
 
     # Resolve the master address
     if manager_addr is None:
@@ -293,7 +293,7 @@ async def run_agent(loop, server_sock, manager_addr):
         request = Message.decode(request_data[0])
         resp = Message()
 
-        if request['req_type'] == AgentRequestTypes.CREATE_KERNEL:
+        if request['action'] == AgentRequestTypes.CREATE_KERNEL:
 
             log.info('CREATE_KERNEL ({})'.format(request['lang']))
             if request['lang'] in supported_langs:
@@ -311,7 +311,7 @@ async def run_agent(loop, server_sock, manager_addr):
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['cause'] = 'Unsupported kernel language.'
 
-        elif request['req_type'] == AgentRequestTypes.DESTROY_KERNEL:
+        elif request['action'] == AgentRequestTypes.DESTROY_KERNEL:
 
             log.info('DESTROY_KERNEL ({})'.format(request['kernel_id']))
             if request['kernel_id'] in container_registry:
@@ -327,7 +327,7 @@ async def run_agent(loop, server_sock, manager_addr):
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['cause'] = 'No such kernel.'
 
-        elif request['req_type'] == AgentRequestTypes.EXECUTE:
+        elif request['action'] == AgentRequestTypes.EXECUTE:
 
             log.info('EXECUTE ({}, {})'.format(request['kernel_id'],
                                                request['cell_id']))
