@@ -289,9 +289,14 @@ async def cleanup_timer(loop, docker_cli):
         # clone keys to avoid "dictionary size changed during iteration" error.
         keys = tuple(container_registry.keys())
         for kern_id in keys:
-            if now - container_registry[kern_id]['last_used'] > 60.0:
-                log.info('destroying kernel {} as clean-up'.format(kern_id))
-                await destroy_kernel(loop, docker_cli, kern_id)
+            try:
+                if now - container_registry[kern_id]['last_used'] > 60.0:
+                    log.info('destroying kernel {} as clean-up'.format(kern_id))
+                    await destroy_kernel(loop, docker_cli, kern_id)
+            except KeyError:
+                # The kernel may be destroyed by other means?
+                # TODO: check this situation more thoroughly.
+                pass
         await asyncio.sleep(10, loop=loop)
 
 async def clean_all_kernels(loop):
