@@ -153,6 +153,20 @@ if __name__ == '__main__':
         # it should have been automaitcally deleted
         assert kernel_id not in container_registry
 
+    def test_oom(self):
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        src = '''big_array = 'x' * (2**40)'''  # try to allocate 1 TB array (!!)
+        result = self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+        for exc in result['exceptions']:
+            if exc[0] == 'MemoryError':
+                break
+        else:
+            self.fail('MemoryError is not detected.')
+        self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
+
+
+
 '''
 class AgentKernelResponseTest(unittest.TestCase):
     def setUp(self):

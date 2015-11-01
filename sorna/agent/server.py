@@ -158,6 +158,21 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     while True:
         try:
             docker_cli.kill(container_id)  # forcibly shut-down the container
+            break
+        except docker.errors.NotFound:
+            # Maybe terminated already? Just pass.
+            break
+        except requests.exceptions.Timeout:
+            # docker might be overloaded, try again!
+            if retries == 3:
+                log.critical(_f('could not kill container {} used by kernel {}',
+                                container_id, kernel_id))
+                break
+            retries += 1
+            await asyncio.sleep(0.2)
+    retries = 0
+    while True:
+        try:
             docker_cli.remove_container(container_id)
             break
         except docker.errors.NotFound:
@@ -166,11 +181,11 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
         except requests.exceptions.Timeout:
             # docker might be overloaded, try again!
             if retries == 3:
-                log.critical(_f('could not destroy container {} used by kernel {}',
+                log.critical(_f('could not remove container {} used by kernel {}',
                                 container_id, kernel_id))
                 break
             retries += 1
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.2)
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
     del container_registry[kernel_id]
