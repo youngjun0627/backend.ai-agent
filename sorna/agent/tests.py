@@ -108,10 +108,17 @@ try:
 except OSError:
     print('failed')
 '''
-        result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
-        assert 'failed' in result['stdout']
-        self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
+        kernel_timeout = False
+        try:
+            result = self.loop.run_until_complete(
+                    execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+        except asyncio.TimeoutError:
+            kernel_timeout = True
+        if not kernel_timeout:
+            assert 'failed' in result['stdout']
+            self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
+        else:
+            assert kernel_id not in container_registry
 
     def test_heavy_code(self):
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
@@ -165,6 +172,21 @@ if __name__ == '__main__':
             self.fail('MemoryError is not detected.')
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
+    def test_crash(self):
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        src = '''
+import ctypes
+i = ctypes.c_char(b'a')
+j = ctypes.pointer(i)
+c = 0
+while True:
+    j[c] = b'a'
+    c += 1
+j'''
+        with self.assertRaises(asyncio.TimeoutError):
+            result = self.loop.run_until_complete(
+                    execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+        assert kernel_id not in container_registry
 
 
 '''

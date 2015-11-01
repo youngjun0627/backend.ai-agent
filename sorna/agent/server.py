@@ -159,7 +159,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
         try:
             docker_cli.kill(container_id)  # forcibly shut-down the container
             break
-        except docker.errors.NotFound:
+        except (docker.errors.NotFound, docker.errors.APIError):
             # Maybe terminated already? Just pass.
             break
         except requests.exceptions.Timeout:
@@ -175,7 +175,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
         try:
             docker_cli.remove_container(container_id)
             break
-        except docker.errors.NotFound:
+        except (docker.errors.NotFound, docker.errors.APIError):
             # Maybe terminated already? Just pass.
             break
         except requests.exceptions.Timeout:
