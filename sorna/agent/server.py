@@ -446,10 +446,14 @@ def main():
     agent_port = args.agent_port
     max_kernels = args.max_kernels
 
+    def sigterm_handler():
+       raise SystemExit
+
     loop = asyncio.get_event_loop()
     server_sock = loop.run_until_complete(aiozmq.create_zmq_stream(zmq.REP, bind=agent_addr, loop=loop))
     server_sock.transport.setsockopt(zmq.LINGER, 50)
     log.info('serving at {0}'.format(agent_addr))
+    loop.add_signal_handler(signal.SIGTERM, sigterm_handler)
     try:
         asyncio.ensure_future(run_agent(loop, server_sock, args.manager_addr), loop=loop)
         loop.run_forever()
