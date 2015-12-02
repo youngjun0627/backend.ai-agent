@@ -17,6 +17,7 @@ import sys
 import time
 import urllib.parse
 from sorna import utils, defs
+from sorna.argparse import port_no, host_port_pair, positive_int
 from sorna.proto import Message, odict, generate_uuid
 from sorna.proto.msgtypes import *
 
@@ -36,9 +37,10 @@ max_kernels = 1
 inst_id = None
 agent_addr = None
 agent_ip = None
-agent_port = 6001
+agent_port = 0
 inst_type = None
-manager_ip = None
+redis_addr = (None, 6379)
+boot2docker_ip = None
 docker_cli = None
 
 def docker_init():
@@ -67,7 +69,7 @@ async def heartbeat(loop, interval=3.0):
     manager database.
     '''
     global container_registry
-    global inst_id, inst_type, agent_ip
+    global inst_id, inst_type, agent_ip, redis_addr
     if not inst_id:
         inst_id = await utils.get_instance_id()
     if not inst_type:
@@ -75,11 +77,11 @@ async def heartbeat(loop, interval=3.0):
     if not agent_ip:
         agent_ip = await utils.get_instance_ip()
     log.info('myself: {} ({}), ip: {}'.format(inst_id, inst_type, agent_ip))
-    log.info('using manager at {}'.format(manager_ip))
+    log.info('using manager redis at {}'.format(redis_addr))
     while True:
         try:
             redis = await asyncio.wait_for(
-                    aioredis.create_redis((manager_ip, 6379),
+                    aioredis.create_redis(redis_addr,
                                           encoding='utf8',
                                           db=defs.SORNA_INSTANCE_DB,
                                           loop=loop), timeout=1)
@@ -124,7 +126,7 @@ async def create_kernel(loop, docker_cli, lang):
                                          host_config=docker_cli.create_host_config(
                                             mem_limit='128m',
                                             memswap_limit=0,
-                                            port_bindings={2001: ('127.0.0.1', )},
+                                            port_bindings={2001: ('0.0.0.0', )},
                                             binds={
                                                 work_dir: {'bind': '/home/work', 'mode': 'rw'},
                                             }),
@@ -133,19 +135,25 @@ async def create_kernel(loop, docker_cli, lang):
     docker_cli.start(container_id)
     container_info = docker_cli.inspect_container(container_id)
     # We can connect to the container either using
-    # tcp://kernel_ip:2001 (direct) or tcp://127.0.0.1:kernel_host_port (NAT'ed)
-    kernel_ip = container_info['NetworkSettings']['IPAddress']
+    # tcp://<NetworkSettings.IPAddress>:2001 (direct)
+    # or tcp://127.0.0.1:<NetworkSettings.Ports.2011/tcp.0.HostPort> (NAT'ed)
+    if boot2docker_ip:
+        kernel_ip = boot2docker_ip
+    else:
+        #kernel_ip = container_info['NetworkSettings']['IPAddress']
+        kernel_ip = '127.0.0.1'
     kernel_host_port = container_info['NetworkSettings']['Ports']['2001/tcp'][0]['HostPort']
     container_registry[kernel_id] = {
         'lang': lang,
         'container_id': container_id,
-        'addr': 'tcp://{0}:{1}'.format(kernel_ip, 2001),
+        'addr': 'tcp://{0}:{1}'.format(kernel_ip, kernel_host_port),
         'ip': kernel_ip,
         'port': 2001,
         'hostport': kernel_host_port,
         'cpu_shares': 1024,
         'last_used': time.monotonic(),
     }
+    log.info('kernel access address: {0}:{1}'.format(kernel_ip, kernel_host_port))
     return kernel_id
 
 async def destroy_kernel(loop, docker_cli, kernel_id):
@@ -191,7 +199,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     del container_registry[kernel_id]
     try:
         redis = await asyncio.wait_for(
-                aioredis.create_redis((manager_ip, 6379),
+                aioredis.create_redis(redis_addr,
                                       encoding='utf8',
                                       loop=loop), loop=loop, timeout=1)
     except asyncio.TimeoutError:
@@ -306,18 +314,13 @@ async def clean_all_kernels(loop):
     for kern_id in kern_ids:
         await destroy_kernel(loop, docker_cli, kern_id)
 
-async def run_agent(loop, server_sock, manager_addr):
+async def run_agent(loop, server_sock):
     global container_registry
-    global docker_cli, inst_id, agent_ip, inst_type, manager_ip
+    global docker_cli, inst_id, agent_ip, inst_type, redis_addr
 
     inst_id = await utils.get_instance_id()
     inst_type = await utils.get_instance_type()
     agent_ip = await utils.get_instance_ip()
-
-    # Resolve the master address
-    if manager_addr is None:
-        manager_addr = 'tcp://sorna-manager.lablup:5001'
-    manager_ip = urllib.parse.urlparse(manager_addr).hostname
 
     # Initialize docker subsystem
     docker_cli = docker_init()
@@ -404,11 +407,13 @@ async def run_agent(loop, server_sock, manager_addr):
 def main():
     global max_kernels
     global agent_addr, agent_port
+    global redis_addr, boot2docker_ip
 
     argparser = argparse.ArgumentParser()
-    argparser.add_argument('--agent-port', type=int, default=agent_port)
-    argparser.add_argument('--manager-addr', type=str, default=None)
-    argparser.add_argument('--max-kernels', type=int, default=1)
+    argparser.add_argument('--agent-port', type=port_no, default=6001)
+    argparser.add_argument('--redis-addr', type=host_port_pair, default=('localhost', 6379))
+    argparser.add_argument('--boot2docker-ip', type=str, default=None)
+    argparser.add_argument('--max-kernels', type=positive_int, default=1)
     args = argparser.parse_args()
 
     logging.config.dictConfig({
@@ -445,6 +450,8 @@ def main():
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
     agent_port = args.agent_port
     max_kernels = args.max_kernels
+    redis_addr = args.redis_addr if args.redis_addr else ('sorna-manager.lablup', 6379)
+    boot2docker_ip = args.boot2docker_ip
 
     def sigterm_handler():
        raise SystemExit
@@ -455,7 +462,7 @@ def main():
     log.info('serving at {0}'.format(agent_addr))
     loop.add_signal_handler(signal.SIGTERM, sigterm_handler)
     try:
-        asyncio.ensure_future(run_agent(loop, server_sock, args.manager_addr), loop=loop)
+        asyncio.ensure_future(run_agent(loop, server_sock), loop=loop)
         loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
         loop.run_until_complete(clean_all_kernels(loop))
