@@ -41,26 +41,17 @@ agent_ip = None
 agent_port = 0
 inst_type = None
 redis_addr = (None, 6379)
-boot2docker_ip = None
+docker_ip = None
 docker_cli = None
 
 def docker_init():
-    docker_tls_verify = int(os.environ.get('DOCKER_TLS_VERIFY', '0'))
-    docker_addr = os.environ.get('DOCKER_HOST', 'unix://var/run/docker.sock')
-    if docker_tls_verify == 1:
-        docker_cert_path = os.environ['DOCKER_CERT_PATH']
-        tls_config = docker.tls.TLSConfig(
-                verify=docker_tls_verify,
-                ca_cert=os.path.join(docker_cert_path, 'ca.pem'),
-                client_cert=(os.path.join(docker_cert_path, 'cert.pem'),
-                             os.path.join(docker_cert_path, 'key.pem')),
-                assert_hostname=False,
-        )
+    global docker_ip
+    docker_args = docker.utils.kwargs_from_env()
+    if 'base_url' in docker_args:
+        docker_ip = urllib.parse.urlparse(docker_args['base_url']).hostname
     else:
-        tls_config = None
-    if docker_addr.startswith('tcp://') and docker_tls_verify == 1:
-        docker_addr = docker_addr.replace('tcp://', 'https://')
-    return docker.Client(docker_addr, tls=tls_config, timeout=3)
+        docker_ip = '127.0.0.1'
+    return docker.Client(timeout=3, **docker_args)
 
 async def heartbeat(loop, interval=3.0):
     '''
@@ -140,8 +131,8 @@ async def create_kernel(loop, docker_cli, lang):
     # We can connect to the container either using
     # tcp://<NetworkSettings.IPAddress>:2001 (direct)
     # or tcp://127.0.0.1:<NetworkSettings.Ports.2011/tcp.0.HostPort> (NAT'ed)
-    if boot2docker_ip:
-        kernel_ip = boot2docker_ip
+    if docker_ip:
+        kernel_ip = docker_ip
     else:
         #kernel_ip = container_info['NetworkSettings']['IPAddress']
         kernel_ip = '127.0.0.1'
@@ -401,7 +392,8 @@ async def run_agent(loop, server_sock):
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['cause'] = 'Could not find such kernel.'
         else:
-            assert False, 'Invalid kernel request type.'
+            resp['reply'] = SornaResponseTypes.INVALID_INPUT
+            resp['cause'] = 'Invalid request.'
 
         server_sock.write([resp.encode()])
         await server_sock.drain()
@@ -410,12 +402,11 @@ async def run_agent(loop, server_sock):
 def main():
     global max_kernels
     global agent_addr, agent_port
-    global redis_addr, boot2docker_ip
+    global redis_addr, docker_ip
 
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--agent-port', type=port_no, default=6001)
     argparser.add_argument('--redis-addr', type=host_port_pair, default=('localhost', 6379))
-    argparser.add_argument('--boot2docker-ip', type=str, default=None)
     argparser.add_argument('--max-kernels', type=positive_int, default=1)
     args = argparser.parse_args()
 
@@ -454,7 +445,6 @@ def main():
     agent_port = args.agent_port
     max_kernels = args.max_kernels
     redis_addr = args.redis_addr if args.redis_addr else ('sorna-manager.lablup', 6379)
-    boot2docker_ip = args.boot2docker_ip
 
     def sigterm_handler():
        raise SystemExit
