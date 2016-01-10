@@ -24,6 +24,7 @@ from sorna.proto.msgtypes import *
 log = logging.getLogger('sorna.agent.server')
 log.setLevel(logging.DEBUG)
 container_registry = dict()
+apparmor_profile_path = '/etc/apparmor.d/docker-ptrace'
 volume_root = '/var/lib/sorna-volumes'
 supported_langs = frozenset(['python27', 'python34', 'php55'])
 # the names of following AWS variables follow boto3 convention.
@@ -118,6 +119,7 @@ async def create_kernel(loop, docker_cli, lang):
     assert kernel_id not in container_registry
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
+    security_opt = ['apparmor:docker-ptrace'] if os.path.exists(apparmor_profile_path) else []
     result = docker_cli.create_container('kernel-{}'.format(lang),
                                          name='kernel.{}.{}'.format(lang, kernel_id),
                                          cpu_shares=1024, # full share
@@ -126,6 +128,7 @@ async def create_kernel(loop, docker_cli, lang):
                                          host_config=docker_cli.create_host_config(
                                             mem_limit='128m',
                                             memswap_limit=0,
+                                            security_opt=security_opt,
                                             port_bindings={2001: ('0.0.0.0', )},
                                             binds={
                                                 work_dir: {'bind': '/home/work', 'mode': 'rw'},
