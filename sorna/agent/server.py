@@ -461,7 +461,7 @@ def main():
         'nodejs': 'nodejs4',
         'javascript': 'nodejs4',
     })
-    if args.aliases:  # for when we want to add extra
+    if args.kernel_aliases:  # for when we want to add extra
         with open(args.kernel_aliases, 'r') as f:
             for line in f:
                 alias, target = line.strip().split()
