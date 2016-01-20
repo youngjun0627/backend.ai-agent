@@ -26,7 +26,8 @@ log.setLevel(logging.DEBUG)
 container_registry = dict()
 apparmor_profile_path = '/etc/apparmor.d/docker-ptrace'
 volume_root = '/var/lib/sorna-volumes'
-supported_langs = frozenset(['python2', 'python3', 'php5', 'nodejs4'])
+supported_langs = {'python2', 'python3', 'php5', 'nodejs4'}
+lang_aliases = dict()
 # the names of following AWS variables follow boto3 convention.
 s3_access_key = os.environ.get('AWS_ACCESS_KEY_ID', 'dummy-access-key')
 s3_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', 'dummy-secret-key')
@@ -337,9 +338,10 @@ async def run_agent(loop, server_sock):
         if request['action'] == AgentRequestTypes.CREATE_KERNEL:
 
             log.info('CREATE_KERNEL ({})'.format(request['lang']))
-            if request['lang'] in supported_langs:
+            if request['lang'] in lang_aliases:
                 try:
-                    kernel_id = await create_kernel(loop, docker_cli, request['lang'])
+                    lang = lang_aliases[request['lang']]
+                    kernel_id = await create_kernel(loop, docker_cli, lang)
                     # TODO: (asynchronously) check if container is running okay.
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
@@ -403,11 +405,13 @@ def main():
     global max_kernels
     global agent_addr, agent_port
     global redis_addr, docker_ip
+    global lang_aliases
 
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--agent-port', type=port_no, default=6001)
     argparser.add_argument('--redis-addr', type=host_port_pair, default=('localhost', 6379))
     argparser.add_argument('--max-kernels', type=positive_int, default=1)
+    argparser.add_argument('--kernel-aliases', type=str, default=None)
     args = argparser.parse_args()
 
     logging.config.dictConfig({
@@ -445,6 +449,24 @@ def main():
     agent_port = args.agent_port
     max_kernels = args.max_kernels
     redis_addr = args.redis_addr if args.redis_addr else ('sorna-manager.lablup', 6379)
+
+    # Load language aliases config.
+    lang_aliases = {lang: lang for lang in supported_langs}
+    lang_aliases.update({
+        'python': 'python3',
+        'python27': 'python2',
+        'python35': 'python3',
+        'php': 'php5',
+        'node': 'nodejs4',
+        'nodejs': 'nodejs4',
+        'javascript': 'nodejs4',
+    })
+    if args.aliases:  # for when we want to add extra
+        with open(args.kernel_aliases, 'r') as f:
+            for line in f:
+                alias, target = line.strip().split()
+                assert target in supported_langs
+                lang_aliases[alias] = target
 
     def sigterm_handler():
        raise SystemExit
