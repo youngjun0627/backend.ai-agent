@@ -26,7 +26,7 @@ log.setLevel(logging.DEBUG)
 container_registry = dict()
 apparmor_profile_path = '/etc/apparmor.d/docker-ptrace'
 volume_root = '/var/lib/sorna-volumes'
-supported_langs = frozenset(['python2', 'python3', 'php55', 'nodejs4'])
+supported_langs = frozenset(['python2', 'python3', 'php5', 'nodejs4'])
 # the names of following AWS variables follow boto3 convention.
 s3_access_key = os.environ.get('AWS_ACCESS_KEY_ID', 'dummy-access-key')
 s3_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', 'dummy-secret-key')
