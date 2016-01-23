@@ -454,7 +454,9 @@ def main():
     lang_aliases = {lang: lang for lang in supported_langs}
     lang_aliases.update({
         'python': 'python3',
+        'python26': 'python2',
         'python27': 'python2',
+        'python34': 'python3',
         'python35': 'python3',
         'php': 'php5',
         'node': 'nodejs4',
