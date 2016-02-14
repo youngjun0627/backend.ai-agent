@@ -335,7 +335,12 @@ async def run_agent(loop, server_sock):
         request = Message.decode(request_data[0])
         resp = Message()
 
-        if request['action'] == AgentRequestTypes.CREATE_KERNEL:
+        if request['action'] == AgentRequestTypes.PING:
+
+            resp['reply'] = SornaResponseTypes.PONG
+            resp['body'] = request['body']
+
+        elif request['action'] == AgentRequestTypes.CREATE_KERNEL:
 
             log.info('CREATE_KERNEL ({})'.format(request['lang']))
             if request['lang'] in lang_aliases:
