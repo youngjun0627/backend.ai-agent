@@ -20,6 +20,7 @@ from sorna import utils, defs
 from sorna.argparse import port_no, host_port_pair, positive_int
 from sorna.proto import Message, odict, generate_uuid
 from sorna.proto.msgtypes import *
+from .helper import call_docker_with_retries
 
 log = logging.getLogger('sorna.agent.server')
 log.setLevel(logging.DEBUG)
@@ -112,22 +113,36 @@ async def create_kernel(loop, docker_cli, lang):
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
     security_opt = ['apparmor:docker-ptrace'] if os.path.exists(apparmor_profile_path) else []
-    result = docker_cli.create_container('kernel-{}'.format(lang),
-                                         name='kernel.{}.{}'.format(lang, kernel_id),
-                                         cpu_shares=1024, # full share
-                                         ports=[(2001, 'tcp')],
-                                         volumes=['/home/work'],
-                                         host_config=docker_cli.create_host_config(
-                                            mem_limit='128m',
-                                            memswap_limit=0,
-                                            security_opt=security_opt,
-                                            port_bindings={2001: ('0.0.0.0', )},
-                                            binds={
-                                                work_dir: {'bind': '/home/work', 'mode': 'rw'},
-                                            }),
-                                         tty=False)
-    container_id = result['Id']
-    docker_cli.start(container_id)
+    ret = await call_docker_with_retries(
+        lambda: docker_cli.create_container(
+            'kernel-{}'.format(lang),
+             name='kernel.{}.{}'.format(lang, kernel_id),
+             cpu_shares=1024, # full share
+             ports=[(2001, 'tcp')],
+             volumes=['/home/work'],
+             host_config=docker_cli.create_host_config(
+                mem_limit='128m',
+                memswap_limit=0,
+                security_opt=security_opt,
+                port_bindings={2001: ('0.0.0.0', )},
+                binds={
+                    work_dir: {'bind': '/home/work', 'mode': 'rw'},
+                }),
+             tty=False
+        ),
+        lambda: log.critical(_f('could not create container for kernel {} (timeout)', kernel_id)),
+        lambda err: log.critical(_f('could not create container for kernel {} ({!r})', kernel_id, err))
+    )
+    if isinstance(ret, Exception):
+        raise RuntimeError('docker.create_container failed') from ret
+    container_id = ret['Id']
+    ret = await call_docker_with_retries(
+        lambda: docker_cli.start(container_id),
+        lambda: log.critical(_f('could not start container {} for kernel {} (timeout)', container_id, kernel_id)),
+        lambda err: log.critical(_f('could not start container {} for kernel {} ({!r})', container_id, kernel_id, err)),
+    )
+    if isinstance(ret, Exception):
+        raise RuntimeError('docker.start failed') from ret
     container_info = docker_cli.inspect_container(container_id)
     # We can connect to the container either using
     # tcp://<NetworkSettings.IPAddress>:2001 (direct)
@@ -157,38 +172,17 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     if not inst_id:
         inst_id = await utils.get_instance_id()
     container_id = container_registry[kernel_id]['container_id']
-    retries = 0
-    while True:
-        try:
-            docker_cli.kill(container_id)  # forcibly shut-down the container
-            break
-        except (docker.errors.NotFound, docker.errors.APIError):
-            # Maybe terminated already? Just pass.
-            break
-        except requests.exceptions.Timeout:
-            # docker might be overloaded, try again!
-            if retries == 3:
-                log.critical(_f('could not kill container {} used by kernel {}',
-                                container_id, kernel_id))
-                break
-            retries += 1
-            await asyncio.sleep(0.2)
-    retries = 0
-    while True:
-        try:
-            docker_cli.remove_container(container_id)
-            break
-        except (docker.errors.NotFound, docker.errors.APIError):
-            # Maybe terminated already? Just pass.
-            break
-        except requests.exceptions.Timeout:
-            # docker might be overloaded, try again!
-            if retries == 3:
-                log.critical(_f('could not remove container {} used by kernel {}',
-                                container_id, kernel_id))
-                break
-            retries += 1
-            await asyncio.sleep(0.2)
+    await call_docker_with_retries(
+        lambda: docker_cli.kill(container_id),
+        lambda: log.warning(_f('could not kill container {} used by kernel {} (timeout)', container_id, kernel_id)),
+        lambda err: log.warning(_f('could not kill container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
+    )
+    await call_docker_with_retries(
+        lambda: docker_cli.remove_container(container_id),
+        lambda: log.warning(_f('could not remove container {} used by kernel {} (timeout)', container_id, kernel_id)),
+        lambda err: log.warning(_f('could not remove container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
+    )
+    # We ignore returned exceptions above, because anyway we should proceed to clean up other things.
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
     del container_registry[kernel_id]
