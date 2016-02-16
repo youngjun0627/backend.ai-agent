@@ -46,6 +46,10 @@ redis_addr = (None, 6379)
 docker_ip = None
 docker_cli = None
 
+# Shortcut for str.format
+_f = lambda fmt, *args, **kwargs: fmt.format(*args, **kwargs)
+
+
 def docker_init():
     global docker_ip
     docker_args = docker.utils.kwargs_from_env()
@@ -54,6 +58,7 @@ def docker_init():
     else:
         docker_ip = '127.0.0.1'
     return docker.Client(timeout=3, **docker_args)
+
 
 async def heartbeat(loop, interval=3.0):
     '''
@@ -107,6 +112,7 @@ async def heartbeat(loop, interval=3.0):
             await redis.quit()
         await asyncio.sleep(interval, loop=loop)
 
+
 async def create_kernel(loop, docker_cli, lang):
     kernel_id = generate_uuid()
     assert kernel_id not in container_registry
@@ -124,6 +130,7 @@ async def create_kernel(loop, docker_cli, lang):
                 mem_limit='128m',
                 memswap_limit=0,
                 security_opt=security_opt,
+                ulimits=[{'name': 'nproc', 'soft': 64, 'hard': 64}],
                 port_bindings={2001: ('0.0.0.0', )},
                 binds={
                     work_dir: {'bind': '/home/work', 'mode': 'rw'},
@@ -166,6 +173,7 @@ async def create_kernel(loop, docker_cli, lang):
     log.info('kernel access address: {0}:{1}'.format(kernel_ip, kernel_host_port))
     return kernel_id
 
+
 async def destroy_kernel(loop, docker_cli, kernel_id):
     global container_registry
     global inst_id
@@ -203,6 +211,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
         redis.delete(kernel_id)
         await redis.quit()
 
+
 def scandir(root):
     file_stats = dict()
     for entry in os.scandir(root):
@@ -216,6 +225,7 @@ def scandir(root):
             file_stats.update(scandir(entry.path))
     return file_stats
 
+
 def diff_file_stats(fs1, fs2):
     k2 = set(fs2.keys())
     k1 = set(fs1.keys())
@@ -225,6 +235,7 @@ def diff_file_stats(fs1, fs2):
         if fs1[k] < fs2[k]:
             modified_files.add(k)
     return new_files | modified_files
+
 
 async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     container_id = container_registry[kernel_id]['container_id']
@@ -280,6 +291,7 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     finally:
         container_sock.close()
 
+
 async def cleanup_timer(loop, docker_cli):
     while True:
         now = time.monotonic()
@@ -296,12 +308,14 @@ async def cleanup_timer(loop, docker_cli):
                 pass
         await asyncio.sleep(10, loop=loop)
 
+
 async def clean_all_kernels(loop):
     log.info('cleaning all kernels...')
     global docker_cli
     kern_ids= tuple(container_registry.keys())
     for kern_id in kern_ids:
         await destroy_kernel(loop, docker_cli, kern_id)
+
 
 async def run_agent(loop, server_sock):
     global container_registry
