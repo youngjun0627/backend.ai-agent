@@ -130,7 +130,10 @@ async def create_kernel(loop, docker_cli, lang):
                 mem_limit='128m',
                 memswap_limit=0,
                 security_opt=security_opt,
-                ulimits=[{'name': 'nproc', 'soft': 64, 'hard': 64}],
+                # Linux's nproc ulimit applies *per-user*, which means that it
+                # limits the total numbero of processes in all our containers. :(
+                # TODO: count the child proc/threads in sorna-repl/jail
+                #ulimits=[{'name': 'nproc', 'soft': 64, 'hard': 64}],
                 port_bindings={2001: ('0.0.0.0', )},
                 binds={
                     work_dir: {'bind': '/home/work', 'mode': 'rw'},
