@@ -122,7 +122,7 @@ _extra_volumes = {
 
 def get_extra_volumes(docker_cli, lang):
     avail_volumes = set(v['Name'] for v in docker_cli.volumes()['Volumes'])
-    volume_list = _extra_volumes.get(lang, None)
+    volume_list = _extra_volumes.get(lang, [])
     mount_list = []
     for vol in volume_list:
         if vol.name in avail_volumes:
