@@ -415,6 +415,8 @@ async def run_agent(loop, server_sock):
                                                    request['cell_id']))
             if request['kernel_id'] in container_registry:
                 try:
+                    container_registry[request['kernel_id']]['last_used'] \
+                            = time.monotonic()
                     result = await execute_code(loop, docker_cli,
                                                 request['entry_id'],
                                                 request['kernel_id'],
@@ -427,8 +429,6 @@ async def run_agent(loop, server_sock):
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
                     resp['result'] = result
-                    container_registry[request['kernel_id']]['last_used'] \
-                            = time.monotonic()
             else:
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['cause'] = 'Could not find such kernel.'
