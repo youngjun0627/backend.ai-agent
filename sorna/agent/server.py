@@ -113,31 +113,54 @@ async def heartbeat(loop, interval=3.0):
         await asyncio.sleep(interval, loop=loop)
 
 
+VolumeInfo = namedtuple('VolumeInfo', 'name container_path mode')
+_extra_volumes = {
+    'python3-deeplearning': [
+        VolumeInfo('deeplearning-samples', '/home/work/samples', 'ro'),
+    ],
+}
+
+def get_extra_volumes(docker_cli, lang):
+    avail_volumes = set(v['Name'] for v in docker_cli.volumes()['Volumes'])
+    volume_list = _extra_volumes.get(lang, None)
+    mount_list = []
+    for vol in volume_list:
+        if vol.name in avail_volumes:
+            mount_list.append(vol)
+        else:
+            log.warning(_f('could not attach volume {} to '
+                           'a kernel using language {} (volume not found)',
+                           vol.name, lang))
+    return mount_list
+
+
 async def create_kernel(loop, docker_cli, lang):
     kernel_id = generate_uuid()
     assert kernel_id not in container_registry
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
     security_opt = ['apparmor:docker-ptrace'] if os.path.exists(apparmor_profile_path) else []
+    mount_list = get_extra_volumes(docker_cli, lang)
+    binds = {work_dir: {'bind': '/home/work', 'mode': 'rw'}}
+    binds.update({v.name: {'bind': v.container_path, 'mode': v.mode} for v in mount_list})
     ret = await call_docker_with_retries(
         lambda: docker_cli.create_container(
             'kernel-{}'.format(lang),
              name='kernel.{}.{}'.format(lang, kernel_id),
              cpu_shares=1024, # full share
              ports=[(2001, 'tcp')],
-             volumes=['/home/work'],
+             volumes=['/home/work'] + [v.container_path for v in mount_list],
              host_config=docker_cli.create_host_config(
-                mem_limit='128m',
-                memswap_limit=0,
-                security_opt=security_opt,
-                # Linux's nproc ulimit applies *per-user*, which means that it
-                # limits the total numbero of processes in all our containers. :(
-                # TODO: count the child proc/threads in sorna-repl/jail
-                #ulimits=[{'name': 'nproc', 'soft': 64, 'hard': 64}],
-                port_bindings={2001: ('0.0.0.0', )},
-                binds={
-                    work_dir: {'bind': '/home/work', 'mode': 'rw'},
-                }),
+                 mem_limit='128m',
+                 memswap_limit=0,
+                 security_opt=security_opt,
+                 # Linux's nproc ulimit applies *per-user*, which means that it
+                 # limits the total numbero of processes in all our containers. :(
+                 # TODO: count the child proc/threads in sorna-repl/jail
+                 #ulimits=[{'name': 'nproc', 'soft': 64, 'hard': 64}],
+                 port_bindings={2001: ('0.0.0.0', )},
+                 binds=binds,
+             ),
              tty=False
         ),
         lambda: log.critical(_f('could not create container for kernel {} (timeout)', kernel_id)),
