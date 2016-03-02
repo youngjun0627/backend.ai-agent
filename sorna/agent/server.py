@@ -151,7 +151,7 @@ async def create_kernel(loop, docker_cli, lang):
              ports=[(2001, 'tcp')],
              volumes=['/home/work'] + [v.container_path for v in mount_list],
              host_config=docker_cli.create_host_config(
-                 mem_limit='128m',
+                 mem_limit='512m',
                  memswap_limit=0,
                  security_opt=security_opt,
                  # Linux's nproc ulimit applies *per-user*, which means that it
@@ -161,7 +161,7 @@ async def create_kernel(loop, docker_cli, lang):
                  port_bindings={2001: ('0.0.0.0', )},
                  binds=binds,
              ),
-             tty=False
+             tty=True
         ),
         lambda: log.critical(_f('could not create container for kernel {} (timeout)', kernel_id)),
         lambda err: log.critical(_f('could not create container for kernel {} ({!r})', kernel_id, err))
