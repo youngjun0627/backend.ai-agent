@@ -4,6 +4,7 @@ import asyncio, zmq, aiozmq, aioredis
 import aiobotocore
 import argparse
 import botocore
+from distutils.version import StrictVersion
 import docker
 from itertools import chain
 import logging, logging.config
@@ -34,7 +35,6 @@ s3_access_key = os.environ.get('AWS_ACCESS_KEY_ID', 'dummy-access-key')
 s3_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', 'dummy-secret-key')
 s3_region = os.environ.get('AWS_REGION', 'ap-northeast-1')
 s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
-max_execution_time = 10  # in seconds
 max_upload_size = 5 * 1024 * 1024  # 5 MB
 max_kernels = 1
 inst_id = None
@@ -45,19 +45,23 @@ inst_type = None
 redis_addr = (None, 6379)
 docker_ip = None
 docker_cli = None
+docker_version = None
 
 # Shortcut for str.format
 _f = lambda fmt, *args, **kwargs: fmt.format(*args, **kwargs)
 
 
 def docker_init():
-    global docker_ip
+    global docker_ip, docker_version
     docker_args = docker.utils.kwargs_from_env()
     if 'base_url' in docker_args:
         docker_ip = urllib.parse.urlparse(docker_args['base_url']).hostname
     else:
         docker_ip = '127.0.0.1'
-    return docker.Client(timeout=3, **docker_args)
+    docker_cli = docker.Client(timeout=3, **docker_args)
+    docker_version = StrictVersion(docker_cli.version()['Version'])
+    log.info('detected docker version: {}'.format(docker_version))
+    return docker_cli
 
 
 async def heartbeat(loop, interval=3.0):
@@ -139,19 +143,34 @@ async def create_kernel(loop, docker_cli, lang):
     assert kernel_id not in container_registry
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
-    security_opt = ['apparmor:docker-ptrace'] if os.path.exists(apparmor_profile_path) else []
+    if docker_version >= StrictVersion('1.10'):
+        # We already have our own jail!
+        security_opt = ['seccomp:unconfined']
+    else:
+        security_opt = ['apparmor:docker-ptrace'] if os.path.exists(apparmor_profile_path) else []
     mount_list = get_extra_volumes(docker_cli, lang)
     binds = {work_dir: {'bind': '/home/work', 'mode': 'rw'}}
     binds.update({v.name: {'bind': v.container_path, 'mode': v.mode} for v in mount_list})
+    image_name = 'kernel-{}'.format(lang)
+    ret = await call_docker_with_retries(
+        lambda: docker_cli.inspect_image(image_name),
+        lambda: log.critical(_f('could not query image info for {} (timeout)', image_name)),
+        lambda err: log.critical(_f('could not query image info for {} ({!r})', image_name, err))
+    )
+    if isinstance(ret, Exception):
+        raise RuntimeError('docker.inspect_image failed') from ret
+    mem_limit    = ret['ContainerConfig']['Labels'].get('com.lablup.sorna.maxmem', '128m')
+    exec_timeout = int(ret['ContainerConfig']['Labels'].get('com.lablup.sorna.timeout', '10'))
+    log.info('creation params: mem_limit={}, exec_timeout={}'.format(mem_limit, exec_timeout))
     ret = await call_docker_with_retries(
         lambda: docker_cli.create_container(
-            'kernel-{}'.format(lang),
+             image_name,
              name='kernel.{}.{}'.format(lang, kernel_id),
              cpu_shares=1024, # full share
              ports=[(2001, 'tcp')],
              volumes=['/home/work'] + [v.container_path for v in mount_list],
              host_config=docker_cli.create_host_config(
-                 mem_limit='512m',
+                 mem_limit=mem_limit,
                  memswap_limit=0,
                  security_opt=security_opt,
                  # Linux's nproc ulimit applies *per-user*, which means that it
@@ -194,6 +213,8 @@ async def create_kernel(loop, docker_cli, lang):
         'port': 2001,
         'hostport': kernel_host_port,
         'cpu_shares': 1024,
+        'memory_limit': mem_limit,
+        'exec_timeout': exec_timeout,
         'last_used': time.monotonic(),
     }
     log.info('kernel access address: {0}:{1}'.format(kernel_ip, kernel_host_port))
@@ -211,11 +232,11 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
         lambda: log.warning(_f('could not kill container {} used by kernel {} (timeout)', container_id, kernel_id)),
         lambda err: log.warning(_f('could not kill container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
     )
-    await call_docker_with_retries(
-        lambda: docker_cli.remove_container(container_id),
-        lambda: log.warning(_f('could not remove container {} used by kernel {} (timeout)', container_id, kernel_id)),
-        lambda err: log.warning(_f('could not remove container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
-    )
+    #await call_docker_with_retries(
+    #    lambda: docker_cli.remove_container(container_id),
+    #    lambda: log.warning(_f('could not remove container {} used by kernel {} (timeout)', container_id, kernel_id)),
+    #    lambda err: log.warning(_f('could not remove container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
+    #)
     # We ignore returned exceptions above, because anyway we should proceed to clean up other things.
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
@@ -274,12 +295,16 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
             connect=container_addr, loop=loop)
     container_sock.transport.setsockopt(zmq.LINGER, 50)
     container_sock.write([cell_id.encode('ascii'), code.encode('utf8')])
+    exec_timeout = container_registry[kernel_id]['exec_timeout']
 
     # Execute with a 4 second timeout.
     try:
+        begin_time = time.monotonic()
         result_data = await asyncio.wait_for(container_sock.read(),
-                                             timeout=max_execution_time,
+                                             timeout=exec_timeout,
                                              loop=loop)
+        finish_time = time.monotonic()
+        log.info(_f('execution time: {:.2f} / {} sec', finish_time - begin_time, exec_timeout))
         result = json.loads(result_data[0])
 
         final_file_stats = scandir(work_dir)
