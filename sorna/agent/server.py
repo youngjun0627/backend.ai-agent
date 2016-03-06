@@ -232,11 +232,11 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
         lambda: log.warning(_f('could not kill container {} used by kernel {} (timeout)', container_id, kernel_id)),
         lambda err: log.warning(_f('could not kill container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
     )
-    #await call_docker_with_retries(
-    #    lambda: docker_cli.remove_container(container_id),
-    #    lambda: log.warning(_f('could not remove container {} used by kernel {} (timeout)', container_id, kernel_id)),
-    #    lambda err: log.warning(_f('could not remove container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
-    #)
+    await call_docker_with_retries(
+        lambda: docker_cli.remove_container(container_id),
+        lambda: log.warning(_f('could not remove container {} used by kernel {} (timeout)', container_id, kernel_id)),
+        lambda err: log.warning(_f('could not remove container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
+    )
     # We ignore returned exceptions above, because anyway we should proceed to clean up other things.
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
