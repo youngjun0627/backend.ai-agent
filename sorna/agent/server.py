@@ -10,6 +10,7 @@ from itertools import chain
 import logging, logging.config
 from namedlist import namedtuple
 import os, os.path
+import re
 import requests
 import signal
 import simplejson as json
@@ -368,6 +369,40 @@ async def clean_all_kernels(loop):
         await destroy_kernel(loop, docker_cli, kern_id)
 
 
+def match_result(result, match):
+    try:
+        op = match['op']
+        target = match['target']
+        value = match['value']
+    except KeyError:
+        raise TypeError('Wrong match object format.')
+    assert op in ('contains', 'equal', 'regex'), 'Invalid match operator.'
+    assert target in ('stdout', 'stderr', 'exception'), 'Invalid match target.'
+    assert isinstance(value, str), 'Match value must be a string.'
+    if target in ('stdout', 'stderr'):
+        content = result[target]
+    elif target == 'exception':
+        if len(result['exceptions']) > 0:
+            content = result['exceptions'][-1][0]  # exception name
+        else:
+            # Expected exception, but there was none.
+            return False
+    if op == 'contains':
+        matched = (value in content)
+    elif op == 'equal':
+        matched = (value == content)
+    elif op == 'regex':
+        matched = (re.search(value, content) is not None)
+    return matched
+
+
+def format_pyexc(e):
+    if e.args:
+        return '{0}: {1}'.format(type(e).__name__, ', '.join(map(str, e.args)))
+    else:
+        return type(e).__name__
+
+
 async def run_agent(loop, server_sock):
     global container_registry
     global docker_cli, inst_id, agent_ip, inst_type, redis_addr
@@ -409,7 +444,7 @@ async def run_agent(loop, server_sock):
                     # TODO: (asynchronously) check if container is running okay.
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
-                    resp['cause'] = type(exc).__name__
+                    resp['cause'] = format_pyexc(exc)
                     log.exception(exc)
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
@@ -426,7 +461,7 @@ async def run_agent(loop, server_sock):
                     await destroy_kernel(loop, docker_cli, request['kernel_id'])
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
-                    resp['cause'] = type(exc).__name__
+                    resp['cause'] = format_pyexc(exc)
                     log.exception(exc)
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
@@ -447,9 +482,11 @@ async def run_agent(loop, server_sock):
                                                 request['kernel_id'],
                                                 request['cell_id'],
                                                 request['code'])
+                    if 'match' in request:
+                        resp['match_result'] = match_result(result, request['match'])
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
-                    resp['cause'] = type(exc).__name__
+                    resp['cause'] = format_pyexc(exc)
                     log.exception(exc)
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS

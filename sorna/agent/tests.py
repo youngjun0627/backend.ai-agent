@@ -10,8 +10,8 @@ import zmq
 from sorna.proto import Message, odict, generate_uuid
 from sorna.proto.msgtypes import *
 from sorna.agent.server import container_registry, volume_root, docker_init
-from sorna.agent.server import max_execution_time, max_upload_size
-from sorna.agent.server import create_kernel, destroy_kernel, execute_code
+from sorna.agent.server import max_upload_size
+from sorna.agent.server import create_kernel, destroy_kernel, execute_code, match_result
 
 class AgentFunctionalTest(unittest.TestCase):
     def setUp(self):
@@ -20,40 +20,60 @@ class AgentFunctionalTest(unittest.TestCase):
         self.docker_cli = docker_init()
 
     def tearDown(self):
+        for kernel_id in tuple(container_registry.keys()):
+            self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
         self.docker_cli.close()
         self.loop.close()
 
     def test_create_and_destroy_kernel(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         assert kernel_id in container_registry
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
         assert kernel_id not in container_registry
 
-    def test_execute_simple_python27(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python27'))
+    def test_execute_simple_python2(self):
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python2'))
         result = self.loop.run_until_complete(
                 execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print "asdf"'))
         assert 'asdf' in result['stdout']
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
-    def test_execute_simple_python34(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+    def test_execute_simple_python3(self):
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         result = self.loop.run_until_complete(
                 execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print("asdf")'))
         assert 'asdf' in result['stdout']
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
+    def test_match_result(self):
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
+        result = self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print("asdf")'))
+        assert 'asdf' in result['stdout']
+        self.assertTrue(match_result(result, {'op': 'contains', 'target': 'stdout', 'value': 'sd'}))
+        self.assertTrue(match_result(result, {'op': 'equal', 'target': 'stdout', 'value': 'asdf\n'}))
+        self.assertTrue(match_result(result, {'op': 'regex', 'target': 'stdout', 'value': r'^a.+$'}))
+        self.assertFalse(match_result(result, {'op': 'contains', 'target': 'stderr', 'value': 'sd'}))
+        self.assertFalse(match_result(result, {'op': 'contains', 'target': 'exception', 'value': ''}))
+        result = self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'raise RuntimeError("abc", 123)'))
+        self.assertTrue(match_result(result, {'op': 'contains', 'target': 'exception', 'value': 'RuntimeError'}))
+        self.assertTrue(match_result(result, {'op': 'equal', 'target': 'exception', 'value': 'RuntimeError'}))
+        self.assertTrue(match_result(result, {'op': 'regex', 'target': 'exception', 'value': '^Runtime'}))
+        self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
+
     def test_execute_timeout(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
+        exec_timeout = container_registry[kernel_id]['exec_timeout']
         with self.assertRaises(asyncio.TimeoutError):
             result = self.loop.run_until_complete(
                     execute_code(self.loop, self.docker_cli, 'test', kernel_id,
-                                 '1', 'import time; time.sleep({0})'.format(max_execution_time + 2)))
+                                 '1', 'import time; time.sleep({0})'.format(exec_timeout + 2)))
         # the container should be automatically destroyed
         assert kernel_id not in container_registry
 
     def test_file_output(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         work_dir = os.path.join(volume_root, kernel_id)
         assert os.path.exists(work_dir)
         untouched_path = os.path.join(work_dir, 'untouched')
@@ -82,7 +102,7 @@ with open('test.txt', 'w', encoding='utf8') as f:
         assert not os.path.exists(work_dir)
 
     def test_file_output_too_large(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         work_dir = os.path.join(volume_root, kernel_id)
         src = '''
 with open('large.txt', 'wb') as f:
@@ -96,7 +116,7 @@ with open('large.txt', 'wb') as f:
         assert not os.path.exists(work_dir)
 
     def test_restricted_networking(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         src = '''
 import socket
 socket.setdefaulttimeout(1.0)
@@ -121,7 +141,7 @@ except OSError:
             assert kernel_id not in container_registry
 
     def test_heavy_code(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         src = '''
 # alphametics.py
 import re
@@ -161,7 +181,7 @@ if __name__ == '__main__':
         assert kernel_id not in container_registry
 
     def test_oom(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         src = '''big_array = 'x' * (2**40)'''  # try to allocate 1 TB array (!!)
         result = self.loop.run_until_complete(
                 execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
@@ -173,7 +193,7 @@ if __name__ == '__main__':
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
     def test_crash(self):
-        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python34'))
+        kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         src = '''
 import ctypes
 i = ctypes.c_char(b'a')
