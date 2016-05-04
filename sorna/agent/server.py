@@ -29,7 +29,13 @@ log.setLevel(logging.DEBUG)
 container_registry = dict()
 apparmor_profile_path = '/etc/apparmor.d/docker-ptrace'
 volume_root = '/var/lib/sorna-volumes'
-supported_langs = {'python2', 'python3', 'python3-deeplearning', 'r3', 'php5', 'nodejs4'}
+supported_langs = {
+    'python2',
+    'python3', 'python3-tensorflow',
+    'r3',
+    'php5',
+    'nodejs4',
+}
 lang_aliases = dict()
 # the names of following AWS variables follow boto3 convention.
 s3_access_key = os.environ.get('AWS_ACCESS_KEY_ID', 'dummy-access-key')
@@ -120,7 +126,7 @@ async def heartbeat(loop, interval=3.0):
 
 VolumeInfo = namedtuple('VolumeInfo', 'name container_path mode')
 _extra_volumes = {
-    'python3-deeplearning': [
+    'python3-tensorflow': [
         VolumeInfo('deeplearning-samples', '/home/work/samples', 'ro'),
     ],
 }
@@ -559,6 +565,7 @@ def main():
         'python27': 'python2',
         'python34': 'python3',
         'python35': 'python3',
+        'python3-deeplearning': 'python3-tensorflow',  # temporary alias
         'r': 'r3',
         'R': 'r3',
         'Rscript': 'r3',
