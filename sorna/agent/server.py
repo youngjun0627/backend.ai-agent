@@ -31,9 +31,10 @@ apparmor_profile_path = '/etc/apparmor.d/docker-ptrace'
 volume_root = '/var/lib/sorna-volumes'
 supported_langs = {
     'python2',
-    'python3', 'python3-tensorflow',
+    'python3', 'python3-tensorflow', 'python3-caffe',
     'r3',
     'php5',
+    'php7',
     'nodejs4',
 }
 lang_aliases = dict()
