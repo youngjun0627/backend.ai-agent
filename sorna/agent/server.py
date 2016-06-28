@@ -567,11 +567,12 @@ def main():
         'python34': 'python3',
         'python35': 'python3',
         'python3-deeplearning': 'python3-tensorflow', # temporary alias
-        'tensorflow-python3': 'python3-tensorflow',   # package-oriented alias
+        'tensorflow-python3':   'python3-tensorflow', # package-oriented alias
+        'caffe-python3':        'python3-caffe',      # package-oriented alias
         'r': 'r3',
         'R': 'r3',
         'Rscript': 'r3',
-        'php': 'php5',
+        'php': 'php7',
         'node': 'nodejs4',
         'nodejs': 'nodejs4',
         'javascript': 'nodejs4',
