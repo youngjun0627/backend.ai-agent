@@ -4,7 +4,7 @@ import asyncio, zmq, aiozmq, aioredis, uvloop
 import aiobotocore
 import argparse
 import botocore
-from distutils.version import StrictVersion
+from distutils.version import LooseVersion
 import docker
 from itertools import chain
 import logging, logging.config
@@ -67,7 +67,7 @@ def docker_init():
     else:
         docker_ip = '127.0.0.1'
     docker_cli = docker.Client(timeout=3, **docker_args)
-    docker_version = StrictVersion(docker_cli.version()['Version'])
+    docker_version = LooseVersion(docker_cli.version()['Version'])
     log.info('detected docker version: {}'.format(docker_version))
     return docker_cli
 
@@ -151,7 +151,7 @@ async def create_kernel(loop, docker_cli, lang):
     assert kernel_id not in container_registry
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
-    if docker_version >= StrictVersion('1.10'):
+    if docker_version >= LooseVersion('1.10'):
         # We already have our own jail!
         security_opt = ['seccomp:unconfined']
     else:
