@@ -23,9 +23,10 @@ setup(
     packages=['sorna.agent'],
     namespace_packages=['sorna'],
 
-    install_requires=['colorama', 'pyzmq', 'aiozmq', 'namedlist',
+    install_requires=['colorama', 'pyzmq', 'aiozmq',
                       'aiohttp', 'aioredis', 'aiobotocore',
-                      'docker-py'],
+                      'namedlist', 'simplejson', 'docker-py',
+                      'uvloop'],
     dependency_links=[
         'git+https://github.com/jettify/aiobotocore.git@master#egg=aiobotocore'
     ],
