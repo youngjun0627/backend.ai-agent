@@ -1,6 +1,6 @@
 #! /usr/bin/env python3
 
-import asyncio, zmq, aiozmq, aioredis
+import asyncio, zmq, aiozmq, aioredis, uvloop
 import aiobotocore
 import argparse
 import botocore
@@ -587,6 +587,7 @@ def main():
     def sigterm_handler():
        raise SystemExit
 
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     loop = asyncio.get_event_loop()
     server_sock = loop.run_until_complete(aiozmq.create_zmq_stream(zmq.REP, bind=agent_addr, loop=loop))
     server_sock.transport.setsockopt(zmq.LINGER, 50)
