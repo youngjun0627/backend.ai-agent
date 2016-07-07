@@ -28,7 +28,7 @@ log = logging.getLogger('sorna.agent.server')
 log.setLevel(logging.DEBUG)
 container_registry = dict()
 apparmor_profile_path = '/etc/apparmor.d/docker-ptrace'
-volume_root = '/var/lib/sorna-volumes'
+volume_root = None
 supported_langs = {
     'python2',
     'python3', 'python3-tensorflow', 'python3-caffe',
@@ -62,10 +62,11 @@ _f = lambda fmt, *args, **kwargs: fmt.format(*args, **kwargs)
 def docker_init():
     global docker_ip, docker_version
     docker_args = docker.utils.kwargs_from_env()
-    if 'base_url' in docker_args:
-        docker_ip = urllib.parse.urlparse(docker_args['base_url']).hostname
-    else:
-        docker_ip = '127.0.0.1'
+    if docker_ip is None:  # if not overriden
+        if 'base_url' in docker_args:
+            docker_ip = urllib.parse.urlparse(docker_args['base_url']).hostname
+        else:
+            docker_ip = '127.0.0.1'
     docker_cli = docker.Client(timeout=3, **docker_args)
     docker_version = LooseVersion(docker_cli.version()['Version'])
     log.info('detected docker version: {}'.format(docker_version))
@@ -212,20 +213,20 @@ async def create_kernel(loop, docker_cli, lang):
     else:
         #kernel_ip = container_info['NetworkSettings']['IPAddress']
         kernel_ip = '127.0.0.1'
-    kernel_host_port = container_info['NetworkSettings']['Ports']['2001/tcp'][0]['HostPort']
+    host_side_port = container_info['NetworkSettings']['Ports']['2001/tcp'][0]['HostPort']
     container_registry[kernel_id] = {
         'lang': lang,
         'container_id': container_id,
-        'addr': 'tcp://{0}:{1}'.format(kernel_ip, kernel_host_port),
+        'addr': 'tcp://{0}:{1}'.format(kernel_ip, host_side_port),
         'ip': kernel_ip,
         'port': 2001,
-        'hostport': kernel_host_port,
+        'hostport': host_side_port,
         'cpu_shares': 1024,
         'memory_limit': mem_limit,
         'exec_timeout': exec_timeout,
         'last_used': time.monotonic(),
     }
-    log.info('kernel access address: {0}:{1}'.format(kernel_ip, kernel_host_port))
+    log.info('kernel access address: {0}:{1}'.format(kernel_ip, host_side_port))
     return kernel_id
 
 
@@ -512,14 +513,20 @@ async def run_agent(loop, server_sock):
 def main():
     global max_kernels
     global agent_addr, agent_port
-    global redis_addr, docker_ip
+    global redis_addr
     global lang_aliases
+    global volume_root
 
     argparser = argparse.ArgumentParser()
-    argparser.add_argument('--agent-port', type=port_no, default=6001)
-    argparser.add_argument('--redis-addr', type=host_port_pair, default=('localhost', 6379))
+    argparser.add_argument('--agent-port', type=port_no, default=6001,
+                           help='The port number to listen on.')
+    argparser.add_argument('--redis-addr', type=host_port_pair, default=('localhost', 6379),
+                           help='The host:port pair of the Redis (agent registry) server.')
     argparser.add_argument('--max-kernels', type=positive_int, default=1)
-    argparser.add_argument('--kernel-aliases', type=str, default=None)
+    argparser.add_argument('--kernel-aliases', type=str, default=None,
+                           help='The filename for additional kernel aliases')
+    argparser.add_argument('--volume-root', type=str, default='/var/lib/sorna-volumes',
+                           help='The scratch directory to store container working directories.')
     args = argparser.parse_args()
 
     logging.config.dictConfig({
@@ -557,6 +564,9 @@ def main():
     agent_port = args.agent_port
     max_kernels = args.max_kernels
     redis_addr = args.redis_addr if args.redis_addr else ('sorna-manager.lablup', 6379)
+
+    assert os.path.isdir(args.volume_root)
+    volume_root = args.volume_root
 
     # Load language aliases config.
     lang_aliases = {lang: lang for lang in supported_langs}
