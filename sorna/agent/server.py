@@ -340,6 +340,7 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
         return odict(
             ('stdout', result['stdout']),
             ('stderr', result['stderr']),
+            ('media', result['media'] if 'media' in result else []),
             ('exceptions', result['exceptions']),
             ('files', diff_files),
         )
