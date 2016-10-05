@@ -36,6 +36,7 @@ supported_langs = {
     'php5',
     'php7',
     'nodejs4',
+    'git',
 }
 lang_aliases = dict()
 # the names of following AWS variables follow boto3 convention.
