@@ -20,7 +20,8 @@ import time
 import urllib.parse
 from sorna import utils, defs
 from sorna.argparse import port_no, host_port_pair, positive_int
-from sorna.proto import Message, odict, generate_uuid
+from sorna.proto import Message
+from sorna.utils import odict, generate_uuid, nmget
 from sorna.proto.msgtypes import *
 from .helper import call_docker_with_retries
 

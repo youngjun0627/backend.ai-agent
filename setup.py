@@ -27,9 +27,6 @@ setup(
                       'aiohttp', 'aioredis', 'aiobotocore',
                       'namedlist', 'simplejson', 'docker-py',
                       'uvloop'],
-    dependency_links=[
-        'git+https://github.com/jettify/aiobotocore.git@master#egg=aiobotocore'
-    ],
     extras_require={
         'dev': [],
         'test': [],
