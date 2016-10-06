@@ -317,33 +317,35 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
         finish_time = time.monotonic()
         log.info(_f('execution time: {:.2f} / {} sec', finish_time - begin_time, exec_timeout))
         result = json.loads(result_data[0])
-
-        final_file_stats = scandir(work_dir)
-        diff_files = diff_file_stats(initial_file_stats, final_file_stats)
-        diff_files = [os.path.relpath(fn, work_dir) for fn in diff_files]
-        if diff_files:
-            session = aiobotocore.get_session(loop=loop)
-            client = session.create_client('s3', region_name=s3_region,
-                                           aws_secret_access_key=s3_secret_key,
-                                           aws_access_key_id=s3_access_key)
-            for fname in diff_files:
-                key = 'bucket/{}/{}'.format(entry_id, fname)
-                # TODO: put the file chunk-by-chunk.
-                with open(os.path.join(work_dir, fname), 'rb') as f:
-                    content = f.read()
-                try:
-                    resp = await client.put_object(Bucket=s3_bucket,
-                                                   Key=key,
-                                                   Body=content,
-                                                   ACL='public-read')
-                except botocore.exceptions.ClientError as exc:
-                    log.exception(exc)
-            client.close()
+        diff_files = []
+        if nmget(result, 'options.upload_output_files', True):
+            final_file_stats = scandir(work_dir)
+            diff_files = diff_file_stats(initial_file_stats, final_file_stats)
+            diff_files = [os.path.relpath(fn, work_dir) for fn in diff_files]
+            if diff_files:
+                session = aiobotocore.get_session(loop=loop)
+                client = session.create_client('s3', region_name=s3_region,
+                                               aws_secret_access_key=s3_secret_key,
+                                               aws_access_key_id=s3_access_key)
+                for fname in diff_files:
+                    key = 'bucket/{}/{}'.format(entry_id, fname)
+                    # TODO: put the file chunk-by-chunk.
+                    with open(os.path.join(work_dir, fname), 'rb') as f:
+                        content = f.read()
+                    try:
+                        resp = await client.put_object(Bucket=s3_bucket,
+                                                       Key=key,
+                                                       Body=content,
+                                                       ACL='public-read')
+                    except botocore.exceptions.ClientError as exc:
+                        log.exception(exc)
+                client.close()
         return odict(
             ('stdout', result['stdout']),
             ('stderr', result['stderr']),
-            ('media', result['media'] if 'media' in result else []),
-            ('exceptions', result['exceptions']),
+            ('media', nmget(result, 'media', [])),
+            ('options', nmget(result, 'options', None)),
+            ('exceptions', nmget(result, 'exceptions', [])),
             ('files', diff_files),
         )
     except asyncio.TimeoutError as exc:
