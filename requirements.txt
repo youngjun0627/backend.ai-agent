@@ -1,0 +1,10 @@
+colorama
+namedlist
+simplejson
+uvloop>=0.5.4
+pyzmq
+aiozmq
+aiohttp>=1.0
+aioredis>=0.2.8
+aiobotocore
+docker-py>=1.10
