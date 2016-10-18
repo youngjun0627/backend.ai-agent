@@ -104,9 +104,11 @@ async def heartbeat(loop, interval=3.0):
         else:
             total_cpu_shares = sum(c['cpu_shares'] for c in container_registry.values())
             running_kernels = [k for k in container_registry.keys()]
+            # should match with sorna.manager.structs.Instance
             state = {
                 'status': 'ok',
                 'id': inst_id,
+                'ip': agent_ip,
                 'addr': 'tcp://{}:{}'.format(agent_ip, agent_port),
                 'type': inst_type,
                 'used_cpu': total_cpu_shares,
@@ -178,7 +180,11 @@ async def create_kernel(loop, docker_cli, lang):
              image_name,
              name='kernel.{}.{}'.format(lang, kernel_id),
              cpu_shares=1024, # full share
-             ports=[(2001, 'tcp')],
+             ports=[
+                 (2001, 'tcp'),
+                 (2002, 'tcp'),
+                 (2003, 'tcp'),
+             ],
              volumes=['/home/work'] + [v.container_path for v in mount_list],
              host_config=docker_cli.create_host_config(
                  mem_limit=mem_limit,
@@ -188,7 +194,11 @@ async def create_kernel(loop, docker_cli, lang):
                  # limits the total numbero of processes in all our containers. :(
                  # TODO: count the child proc/threads in sorna-repl/jail
                  #ulimits=[{'name': 'nproc', 'soft': 64, 'hard': 64}],
-                 port_bindings={2001: ('0.0.0.0', )},
+                 port_bindings={
+                     2001: ('0.0.0.0', ),
+                     2002: ('0.0.0.0', ),
+                     2003: ('0.0.0.0', ),
+                 },
                  binds=binds,
              ),
              tty=True
@@ -216,19 +226,25 @@ async def create_kernel(loop, docker_cli, lang):
         #kernel_ip = container_info['NetworkSettings']['IPAddress']
         kernel_ip = '127.0.0.1'
     host_side_port = container_info['NetworkSettings']['Ports']['2001/tcp'][0]['HostPort']
+    stdin_port  = container_info['NetworkSettings']['Ports']['2002/tcp'][0]['HostPort']
+    stdout_port = container_info['NetworkSettings']['Ports']['2003/tcp'][0]['HostPort']
     container_registry[kernel_id] = {
         'lang': lang,
         'container_id': container_id,
         'addr': 'tcp://{0}:{1}'.format(kernel_ip, host_side_port),
         'ip': kernel_ip,
         'port': 2001,
-        'hostport': host_side_port,
+        'host_port': host_side_port,
+        'stdin_port': stdin_port,
+        'stdout_port': stdout_port,
         'cpu_shares': 1024,
         'memory_limit': mem_limit,
         'exec_timeout': exec_timeout,
         'last_used': time.monotonic(),
     }
     log.info('kernel access address: {0}:{1}'.format(kernel_ip, host_side_port))
+    log.info('kernel stdin address: {0}:{1}'.format(kernel_ip, stdin_port))
+    log.info('kernel stdout address: {0}:{1}'.format(kernel_ip, stdout_port))
     return kernel_id
 
 
@@ -462,6 +478,8 @@ async def run_agent(loop, server_sock):
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
                     resp['kernel_id'] = kernel_id
+                    resp['stdin_port'] = container_registry[kernel_id]['stdin_port']
+                    resp['stdout_port'] = container_registry[kernel_id]['stdout_port']
             else:
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['cause'] = 'Unsupported kernel language.'
