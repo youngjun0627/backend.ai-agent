@@ -380,9 +380,14 @@ async def cleanup_timer(loop, docker_cli):
         keys = tuple(container_registry.keys())
         for kern_id in keys:
             try:
-                if now - container_registry[kern_id]['last_used'] > 60.0:
-                    log.info('destroying kernel {} as clean-up'.format(kern_id))
-                    await destroy_kernel(loop, docker_cli, kern_id)
+                if container_registry[kern_id]['lang'] == 'git':
+                    if now - container_registry[kern_id]['last_used'] > 7200.0:
+                        log.info('destroying kernel {} as clean-up'.format(kern_id))
+                        await destroy_kernel(loop, docker_cli, kern_id)
+                else:
+                    if now - container_registry[kern_id]['last_used'] > 60.0:
+                        log.info('destroying kernel {} as clean-up'.format(kern_id))
+                        await destroy_kernel(loop, docker_cli, kern_id)
             except KeyError:
                 # The kernel may be destroyed by other means?
                 # TODO: check this situation more thoroughly.
