@@ -380,14 +380,9 @@ async def cleanup_timer(loop, docker_cli):
         keys = tuple(container_registry.keys())
         for kern_id in keys:
             try:
-                if container_registry[kern_id]['lang'] == 'git':
-                    if now - container_registry[kern_id]['last_used'] > 7200.0:
-                        log.info('destroying kernel {} as clean-up'.format(kern_id))
-                        await destroy_kernel(loop, docker_cli, kern_id)
-                else:
-                    if now - container_registry[kern_id]['last_used'] > 60.0:
-                        log.info('destroying kernel {} as clean-up'.format(kern_id))
-                        await destroy_kernel(loop, docker_cli, kern_id)
+                if now - container_registry[kern_id]['last_used'] > 60.0:
+                    log.info('destroying kernel {} as clean-up'.format(kern_id))
+                    await destroy_kernel(loop, docker_cli, kern_id)
             except KeyError:
                 # The kernel may be destroyed by other means?
                 # TODO: check this situation more thoroughly.
@@ -398,7 +393,7 @@ async def cleanup_timer(loop, docker_cli):
 async def clean_all_kernels(loop):
     log.info('cleaning all kernels...')
     global docker_cli
-    kern_ids= tuple(container_registry.keys())
+    kern_ids = tuple(container_registry.keys())
     for kern_id in kern_ids:
         await destroy_kernel(loop, docker_cli, kern_id)
 
@@ -450,8 +445,8 @@ async def run_agent(loop, server_sock):
     container_registry.clear()
 
     # Send the first heartbeat.
-    asyncio.ensure_future(heartbeat(loop), loop=loop)
-    asyncio.ensure_future(cleanup_timer(loop, docker_cli), loop=loop)
+    hb_task    = asyncio.ensure_future(heartbeat(loop), loop=loop)
+    timer_task = asyncio.ensure_future(cleanup_timer(loop, docker_cli), loop=loop)
     await asyncio.sleep(0, loop=loop)
 
     # Then start running the agent loop.
@@ -459,6 +454,8 @@ async def run_agent(loop, server_sock):
         try:
             request_data = await server_sock.read()
         except aiozmq.stream.ZmqStreamClosed:
+            hb_task.cancel()
+            timer_task.cancel()
             break
         request = Message.decode(request_data[0])
         resp = Message()
@@ -538,6 +535,11 @@ async def run_agent(loop, server_sock):
         await server_sock.drain()
 
 
+def handle_signal(loop, term_ev):
+    if not term_ev.is_set():
+        loop.stop()
+
+
 def main():
     global max_kernels
     global agent_addr, agent_port
@@ -560,31 +562,35 @@ def main():
     logging.config.dictConfig({
         'version': 1,
         'disable_existing_loggers': False,
-        'formatters': { 'precise': {
-                'format': '%(asctime)s %(levelname)-8s %(name)-15s %(message)s',
-                'datefmt': '%Y-%m-%d %H:%M:%S',
+        'formatters': {
+            'colored': {
+                '()': 'coloredlogs.ColoredFormatter',
+                'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
+                'field_styles': {'levelname': {'color':'black', 'bold':True},
+                                 'name': {'color':'black', 'bold':True},
+                                 'asctime': {'color':'black'}},
+                'level_styles': {'info': {'color':'cyan'},
+                                 'debug': {'color':'green'},
+                                 'warning': {'color':'yellow'},
+                                 'error': {'color':'red'},
+                                 'critical': {'color':'red', 'bold':True}},
             },
         },
         'handlers': {
             'console': {
                 'class': 'logging.StreamHandler',
                 'level': 'DEBUG',
-                'formatter': 'precise',
+                'formatter': 'colored',
                 'stream': 'ext://sys.stdout',
             },
             'null': {
                 'class': 'logging.NullHandler',
             },
-            'logstash': {
-                'class': 'sorna.logging.LogstashHandler',
-                'level': 'INFO',
-                'endpoint': 'tcp://logger.lablup:2121',
-            },
         },
         'loggers': {
             'sorna': {
-                'handlers': ['console', 'logstash'],
-                'level': 'DEBUG',
+                'handlers': ['console'],
+                'level': 'INFO',
             },
         },
     })
@@ -622,28 +628,22 @@ def main():
                 assert target in supported_langs
                 lang_aliases[alias] = target
 
-    def sigterm_handler():
-       raise SystemExit
-
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     loop = asyncio.get_event_loop()
     server_sock = loop.run_until_complete(aiozmq.create_zmq_stream(zmq.REP, bind=agent_addr, loop=loop))
     server_sock.transport.setsockopt(zmq.LINGER, 50)
-    log.info('serving at {0}'.format(agent_addr))
-    loop.add_signal_handler(signal.SIGTERM, sigterm_handler)
+
+    term_ev = asyncio.Event()
+    loop.add_signal_handler(signal.SIGTERM, handle_signal, loop, term_ev)
+    loop.add_signal_handler(signal.SIGINT, handle_signal, loop, term_ev)
+    asyncio.ensure_future(run_agent(loop, server_sock), loop=loop)
     try:
-        asyncio.ensure_future(run_agent(loop, server_sock), loop=loop)
+        log.info('serving at {0}'.format(agent_addr))
         loop.run_forever()
-    except (KeyboardInterrupt, SystemExit):
         loop.run_until_complete(clean_all_kernels(loop))
+        term_ev.set()
         server_sock.close()
-        for t in asyncio.Task.all_tasks():
-            if not t.done():
-                t.cancel()
-        try:
-            loop.run_until_complete(asyncio.sleep(0, loop=loop))
-        except asyncio.CancelledError:
-            pass
+        loop.run_until_complete(asyncio.sleep(0.1))
     finally:
         loop.close()
         log.info('exit.')
