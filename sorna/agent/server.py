@@ -640,8 +640,8 @@ def main():
     try:
         log.info('serving at {0}'.format(agent_addr))
         loop.run_forever()
-        loop.run_until_complete(clean_all_kernels(loop))
         term_ev.set()
+        loop.run_until_complete(clean_all_kernels(loop))
         server_sock.close()
         loop.run_until_complete(asyncio.sleep(0.1))
     finally:
