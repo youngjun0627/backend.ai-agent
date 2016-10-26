@@ -8,4 +8,6 @@ aiohttp>=1.0
 aioredis>=0.2.8
 aiobotocore
 docker-py>=1.10
-sorna-common>=0.5
+pytest
+-e git+ssh://git@github.com/lablup/sorna-common#egg=sorna-common
+-e .
