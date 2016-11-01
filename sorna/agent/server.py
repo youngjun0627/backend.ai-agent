@@ -291,6 +291,9 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
 def scandir(root):
     file_stats = dict()
     for entry in os.scandir(root):
+        # Skip hidden files.
+        if entry.name.startswith('.'):
+            continue
         if entry.is_file():
             stat = entry.stat()
             # Skip too large files!
