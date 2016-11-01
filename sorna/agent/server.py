@@ -297,7 +297,10 @@ def scandir(root):
                 continue
             file_stats[entry.path] = stat.st_mtime
         elif entry.is_dir():
-            file_stats.update(scandir(entry.path))
+            try:
+                file_stats.update(scandir(entry.path))
+            except PermissionError:
+                pass
     return file_stats
 
 
