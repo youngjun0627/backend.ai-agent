@@ -39,6 +39,7 @@ supported_langs = {
     'nodejs4',
     'git',
     'julia',
+    'lua5'
 }
 lang_aliases = dict()
 # the names of following AWS variables follow boto3 convention.
@@ -624,6 +625,7 @@ def main():
         'node': 'nodejs4',
         'nodejs': 'nodejs4',
         'javascript': 'nodejs4',
+        'lua': 'lua5',
     })
     if args.kernel_aliases:  # for when we want to add extra
         with open(args.kernel_aliases, 'r') as f:
