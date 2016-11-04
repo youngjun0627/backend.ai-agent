@@ -140,11 +140,14 @@ _extra_volumes = {
 }
 
 def get_extra_volumes(docker_cli, lang):
-    avail_volumes = set(v['Name'] for v in docker_cli.volumes()['Volumes'])
+    avail_volumes = docker_cli.volumes()['Volumes']
+    if not avail_volumes:
+        return []
+    volume_names = set(v['Name'] for v in avail_volumes)
     volume_list = _extra_volumes.get(lang, [])
     mount_list = []
     for vol in volume_list:
-        if vol.name in avail_volumes:
+        if vol.name in volume_names:
             mount_list.append(vol)
         else:
             log.warning(_f('could not attach volume {} to '
