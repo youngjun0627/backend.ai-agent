@@ -2,9 +2,18 @@
 from setuptools import setup, find_packages
 # To use a consistent encoding
 from codecs import open
-from os import path
+from pathlib import Path
+import re
 
-here = path.abspath(path.dirname(__file__))
+here = Path(__file__).resolve().parent
+
+def _get_version():
+    root_src = (here / 'sorna' / 'agent' / '__init__.py').read_text()
+    try:
+        version = re.findall(r"^__version__ = '([^']+)'\r?$", root_src, re.M)[0]
+    except IndexError:
+        raise RuntimeError('Unable to determine myself version.')
+    return version
 
 setup(
     name='sorna-agent',
@@ -12,7 +21,7 @@ setup(
     # Versions should comply with PEP440.  For a discussion on single-sourcing
     # the version across setup.py and the project code, see
     # https://packaging.python.org/en/latest/single_source_version.html
-    version='0.5.0',
+    version=_get_version(),
     description='Sorna agent',
     long_description='',
     url='https://github.com/lablup/sorna-agent',
