@@ -137,6 +137,9 @@ _extra_volumes = {
     'python3-tensorflow': [
         VolumeInfo('deeplearning-samples', '/home/work/samples', 'ro'),
     ],
+    'python3-tensorflow-gpu': [
+        VolumeInfo('deeplearning-samples', '/home/work/samples', 'ro'),
+    ],
 }
 
 def get_extra_volumes(docker_cli, lang):
@@ -169,7 +172,7 @@ async def create_kernel(loop, docker_cli, lang):
     mount_list = get_extra_volumes(docker_cli, lang)
     binds = {work_dir: {'bind': '/home/work', 'mode': 'rw'}}
     binds.update({v.name: {'bind': v.container_path, 'mode': v.mode} for v in mount_list})
-    image_name = 'kernel-{}'.format(lang)
+    image_name = 'lablup/kernel-{}'.format(lang)
     ret = await call_docker_with_retries(
         lambda: docker_cli.inspect_image(image_name),
         lambda: log.critical(_f('could not query image info for {} (timeout)', image_name)),
