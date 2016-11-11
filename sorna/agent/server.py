@@ -188,9 +188,14 @@ async def create_kernel(loop, docker_cli, lang):
     )
     if isinstance(ret, Exception):
         raise RuntimeError('docker.inspect_image failed') from ret
-    mem_limit    = ret['ContainerConfig']['Labels'].get('com.lablup.sorna.maxmem', '128m')
-    exec_timeout = int(ret['ContainerConfig']['Labels'].get('com.lablup.sorna.timeout', '10'))
-    log.info('creation params: mem_limit={}, exec_timeout={}'.format(mem_limit, exec_timeout))
+    mem_limit    = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
+    exec_timeout = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
+    max_cores    = int(ret['ContainerConfig']['Labels'].get('io.sorna.maxcores', '1'))
+    # TODO: NUMA-aware balanced CPU allocation
+    cores = '0-{}'.format(min(os.cpu_count(), max_cores) - 1)
+    log.info('container config: mem_limit={}, exec_timeout={}, max_cores={}'
+             .format(mem_limit, exec_timeout, max_cores))
+
     ret = await call_docker_with_retries(
         lambda: docker_cli.create_container(
              image_name,
@@ -203,13 +208,10 @@ async def create_kernel(loop, docker_cli, lang):
              ],
              volumes=['/home/work'] + [v.container_path for v in mount_list],
              host_config=docker_cli.create_host_config(
+                 cpuset_cpus=cores,
                  mem_limit=mem_limit,
                  memswap_limit=0,
                  security_opt=security_opt,
-                 # Linux's nproc ulimit applies *per-user*, which means that it
-                 # limits the total numbero of processes in all our containers. :(
-                 # TODO: count the child proc/threads in sorna-repl/jail
-                 #ulimits=[{'name': 'nproc', 'soft': 64, 'hard': 64}],
                  port_bindings={
                      2001: ('0.0.0.0', ),
                      2002: ('0.0.0.0', ),
