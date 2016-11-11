@@ -1,28 +1,33 @@
 #! /usr/bin/env python3
 
-import asyncio, zmq, aiozmq, aioredis, uvloop
-import aiobotocore
 import argparse
-import botocore
+import asyncio
 from distutils.version import LooseVersion
-import docker
 from itertools import chain
 import logging, logging.config
-from namedlist import namedtuple
 import os, os.path
 import re
-import requests
 import signal
-import simplejson as json
 import shutil
 import sys
 import time
 import urllib.parse
+
+import zmq, aiozmq
+import aioredis
+import botocore, aiobotocore
+import docker
+from namedlist import namedtuple
+import requests
+import simplejson as json
+import uvloop
+
 from sorna import utils, defs
 from sorna.argparse import port_no, host_port_pair, positive_int
 from sorna.proto import Message
 from sorna.utils import odict, generate_uuid, nmget
 from sorna.proto.msgtypes import *
+from . import __version__
 from .helper import call_docker_with_retries
 
 log = logging.getLogger('sorna.agent.server')
@@ -653,6 +658,7 @@ def main():
     loop.add_signal_handler(signal.SIGINT, handle_signal, loop, term_ev)
     asyncio.ensure_future(run_agent(loop, server_sock), loop=loop)
     try:
+        log.info('sorna-agent version {}'.format(__version__))
         log.info('serving at {0}'.format(agent_addr))
         loop.run_forever()
         term_ev.set()
