@@ -180,6 +180,9 @@ async def create_kernel(loop, docker_cli, lang):
     mount_list = get_extra_volumes(docker_cli, lang)
     binds = {work_dir: {'bind': '/home/work', 'mode': 'rw'}}
     binds.update({v.name: {'bind': v.container_path, 'mode': v.mode} for v in mount_list})
+    volumes = ['/home/work']
+    volumes.extend(v.container_path for v in mount_list)
+    devices = []
     image_name = 'lablup/kernel-{}'.format(lang)
     ret = await call_docker_with_retries(
         lambda: docker_cli.inspect_image(image_name),
@@ -196,6 +199,11 @@ async def create_kernel(loop, docker_cli, lang):
     log.info('container config: mem_limit={}, exec_timeout={}, max_cores={}'
              .format(mem_limit, exec_timeout, max_cores))
 
+    if 'yes' == ret['ContainerConfig']['Labels'].get('io.sorna.nvidia.enabled', 'no'):
+        extra_binds, extra_devices = prepare_nvidia(docker_cli)
+        binds.update(extra_binds)
+        devices.extend(extra_devices)
+
     ret = await call_docker_with_retries(
         lambda: docker_cli.create_container(
              image_name,
@@ -206,7 +214,7 @@ async def create_kernel(loop, docker_cli, lang):
                  (2002, 'tcp'),
                  (2003, 'tcp'),
              ],
-             volumes=['/home/work'] + [v.container_path for v in mount_list],
+             volumes=volumes,
              host_config=docker_cli.create_host_config(
                  cpuset_cpus=cores,
                  mem_limit=mem_limit,
@@ -217,6 +225,7 @@ async def create_kernel(loop, docker_cli, lang):
                      2002: ('0.0.0.0', ),
                      2003: ('0.0.0.0', ),
                  },
+                 devices=devices,
                  binds=binds,
              ),
              tty=True
@@ -333,6 +342,31 @@ def diff_file_stats(fs1, fs2):
         if fs1[k] < fs2[k]:
             modified_files.add(k)
     return new_files | modified_files
+
+
+def prepare_nvidia(docker_cli):
+    r = requests.get('http://localhost:3476/docker/cli/json')
+    nvidia_params = r.json()
+    existing_volumes = set(vol['Name'] for vol in docker_cli.volumes()['Volumes'])
+    required_volumes = set(vol.split(':')[0] for vol in nvidia_params['Volumes'])
+    missing_volumes = required_volumes - existing_volumes
+    binds = {}
+    for vol_name in missing_volumes:
+        for vol_param in nvidia_params['Volumes']:
+            if vol_param.startswith(vol_name + ':'):
+                _, _, permission = vol_param.split(':')
+                driver = nvidia_params['VolumeDriver']
+                docker_cli.create_volume(name=vol_name, driver=driver)
+    for vol_name in required_volumes:
+        for vol_param in nvidia_params['Volumes']:
+            if vol_param.startswith(vol_name + ':'):
+                _, mount_pt, permission = vol_param.split(':')
+                binds[vol_name] = {
+                    'bind': mount_pt,
+                    'mode': permission,
+                }
+    devices = ['{0}:{0}:rwm'.format(dev) for dev in nvidia_params['Devices']]
+    return binds, devices
 
 
 async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
