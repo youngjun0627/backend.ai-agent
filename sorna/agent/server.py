@@ -37,7 +37,10 @@ apparmor_profile_path = '/etc/apparmor.d/docker-ptrace'
 volume_root = None
 supported_langs = {
     'python2',
-    'python3', 'python3-tensorflow', 'python3-caffe',
+    'python3',
+    'python3-tensorflow',
+    'python3-tensorflow-gpu',
+    'python3-caffe',
     'r3',
     'php5',
     'php7',
@@ -629,9 +632,10 @@ def main():
         'python27': 'python2',
         'python34': 'python3',
         'python35': 'python3',
-        'python3-deeplearning': 'python3-tensorflow', # temporary alias
-        'tensorflow-python3':   'python3-tensorflow', # package-oriented alias
-        'caffe-python3':        'python3-caffe',      # package-oriented alias
+        'python3-deeplearning':   'python3-tensorflow',     # temporary alias
+        'tensorflow-python3':     'python3-tensorflow',     # package-oriented alias
+        'tensorflow-gpu-python3': 'python3-tensorflow-gpu', # package-oriented alias
+        'caffe-python3':          'python3-caffe',          # package-oriented alias
         'r': 'r3',
         'R': 'r3',
         'Rscript': 'r3',
