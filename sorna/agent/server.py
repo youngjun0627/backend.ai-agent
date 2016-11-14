@@ -202,7 +202,7 @@ async def create_kernel(loop, docker_cli, lang):
     mem_limit       = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
     exec_timeout    = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
     requested_cores = int(ret['ContainerConfig']['Labels'].get('io.sorna.maxcores', '1'))
-    num_cores       = min(len(container_cpu_map.num_cores), requested_cores)
+    num_cores       = min(container_cpu_map.num_cores, requested_cores)
     numa_node, core_set = container_cpu_map.alloc(num_cores)
     log.info('container config: mem_limit={}, exec_timeout={}, cores={!r}@{}'
              .format(mem_limit, exec_timeout, core_set, numa_node))

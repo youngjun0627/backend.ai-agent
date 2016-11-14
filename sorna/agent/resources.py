@@ -51,7 +51,8 @@ class CPUAllocMap:
         self.num_cores = len(libnuma.get_available_cores())
         self.num_nodes = libnuma.num_nodes()
         self.alloc_per_node = [0 for _ in range(self.num_nodes)]
-        self.core_shares = [0 for _ in range(self.num_cores)]
+        self.core_shares = tuple([0 for _ in self.core_topo[node]]
+                                 for node in range(self.num_nodes))
 
     def alloc(self, num_cores):
         '''
@@ -64,13 +65,13 @@ class CPUAllocMap:
                                   key=operator.itemgetter(1))
         self.alloc_per_node[node] = current_alloc + num_cores
 
-        shares = self.core_shares.copy()
+        shares = self.core_shares[node].copy()
         allocated_cores = set()
         for _ in range(num_cores):
-            core, _ = min(enumerate(shares), key=operator.itemgetter(1))
-            allocated_cores.add(core)
-            shares[core] = sys.maxsize   # prune allocated one
-            self.core_shares[core] += 1  # update the original share
+            core_idx, _ = min(enumerate(shares), key=operator.itemgetter(1))
+            allocated_cores.add(self.core_topo[node][core_idx])
+            shares[core_idx] = sys.maxsize   # prune allocated one
+            self.core_shares[node][core_idx] += 1  # update the original share
         return node, allocated_cores
 
     def free(self, core_set):
@@ -82,4 +83,5 @@ class CPUAllocMap:
         node = libnuma.node_of_cpu(any_core)
         self.alloc_per_node[node] -= len(core_set)
         for c in core_set:
-            self.core_shares[c] -= 1
+            core_idx = self.core_topo[node].find(c)
+            self.core_shares[node][core_idx] -= 1
