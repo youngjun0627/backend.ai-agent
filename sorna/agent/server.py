@@ -6,6 +6,7 @@ from distutils.version import LooseVersion
 from itertools import chain
 import logging, logging.config
 import os, os.path
+from pathlib import Path
 import re
 import signal
 import shutil
@@ -28,11 +29,16 @@ from sorna.proto import Message
 from sorna.utils import odict, generate_uuid, nmget
 from sorna.proto.msgtypes import *
 from . import __version__
+from .resources import libnuma, CPUAllocMap
 from .helper import call_docker_with_retries
+
 
 log = logging.getLogger('sorna.agent.server')
 log.setLevel(logging.DEBUG)
+
 container_registry = dict()
+container_cpu_map = None
+
 apparmor_profile_path = '/etc/apparmor.d/docker-ptrace'
 volume_root = None
 supported_langs = {
@@ -169,6 +175,7 @@ def get_extra_volumes(docker_cli, lang):
 
 
 async def create_kernel(loop, docker_cli, lang):
+    global container_registry, container_cpu_map
     kernel_id = generate_uuid()
     assert kernel_id not in container_registry
     work_dir = os.path.join(volume_root, kernel_id)
@@ -192,18 +199,35 @@ async def create_kernel(loop, docker_cli, lang):
     )
     if isinstance(ret, Exception):
         raise RuntimeError('docker.inspect_image failed') from ret
-    mem_limit    = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
-    exec_timeout = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
-    max_cores    = int(ret['ContainerConfig']['Labels'].get('io.sorna.maxcores', '1'))
-    # TODO: NUMA-aware balanced CPU allocation
-    cores = '0-{}'.format(min(os.cpu_count(), max_cores) - 1)
-    log.info('container config: mem_limit={}, exec_timeout={}, max_cores={}'
-             .format(mem_limit, exec_timeout, max_cores))
+    mem_limit       = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
+    exec_timeout    = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
+    requested_cores = int(ret['ContainerConfig']['Labels'].get('io.sorna.maxcores', '1'))
+    num_cores       = min(len(container_cpu_map.num_cores), requested_cores)
+    numa_node, core_set = container_cpu_map.alloc(num_cores)
+    log.info('container config: mem_limit={}, exec_timeout={}, cores={!r}@{}'
+             .format(mem_limit, exec_timeout, core_set, numa_node))
 
     if 'yes' == ret['ContainerConfig']['Labels'].get('io.sorna.nvidia.enabled', 'no'):
-        extra_binds, extra_devices = prepare_nvidia(docker_cli)
+        extra_binds, extra_devices = prepare_nvidia(docker_cli, numa_node)
         binds.update(extra_binds)
         devices.extend(extra_devices)
+
+    host_config = docker_cli.create_host_config(
+        cpuset_cpus=','.join(map(str, sorted(core_set))),
+        mem_limit=mem_limit,
+        memswap_limit=0,
+        security_opt=security_opt,
+        port_bindings={
+            2001: ('0.0.0.0', ),
+            2002: ('0.0.0.0', ),
+            2003: ('0.0.0.0', ),
+        },
+        devices=devices,
+        binds=binds,
+    )
+    # docker-py is missing support this in the create_container API.
+    # (only in update_contaienr API...)
+    host_config['CpusetMems'] = '{}'.format(numa_node)
 
     ret = await call_docker_with_retries(
         lambda: docker_cli.create_container(
@@ -216,19 +240,7 @@ async def create_kernel(loop, docker_cli, lang):
                  (2003, 'tcp'),
              ],
              volumes=volumes,
-             host_config=docker_cli.create_host_config(
-                 cpuset_cpus=cores,
-                 mem_limit=mem_limit,
-                 memswap_limit=0,
-                 security_opt=security_opt,
-                 port_bindings={
-                     2001: ('0.0.0.0', ),
-                     2002: ('0.0.0.0', ),
-                     2003: ('0.0.0.0', ),
-                 },
-                 devices=devices,
-                 binds=binds,
-             ),
+             host_config=host_config,
              tty=True
         ),
         lambda: log.critical(_f('could not create container for kernel {} (timeout)', kernel_id)),
@@ -266,6 +278,8 @@ async def create_kernel(loop, docker_cli, lang):
         'stdin_port': stdin_port,
         'stdout_port': stdout_port,
         'cpu_shares': 1024,
+        'numa_node': numa_node,
+        'core_set': core_set,
         'memory_limit': mem_limit,
         'exec_timeout': exec_timeout,
         'last_used': time.monotonic(),
@@ -295,6 +309,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     # We ignore returned exceptions above, because anyway we should proceed to clean up other things.
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
+    container_cpu_map.free(container_registry[kerne_id]['core_set'])
     del container_registry[kernel_id]
     try:
         redis = await asyncio.wait_for(
@@ -345,9 +360,11 @@ def diff_file_stats(fs1, fs2):
     return new_files | modified_files
 
 
-def prepare_nvidia(docker_cli):
+def prepare_nvidia(docker_cli, numa_node):
     r = requests.get('http://localhost:3476/docker/cli/json')
     nvidia_params = r.json()
+    r = requests.get('http://localhost:3476/gpu/info/json')
+    gpu_info = r.json()
     existing_volumes = set(vol['Name'] for vol in docker_cli.volumes()['Volumes'])
     required_volumes = set(vol.split(':')[0] for vol in nvidia_params['Volumes'])
     missing_volumes = required_volumes - existing_volumes
@@ -366,7 +383,19 @@ def prepare_nvidia(docker_cli):
                     'bind': mount_pt,
                     'mode': permission,
                 }
-    devices = ['{0}:{0}:rwm'.format(dev) for dev in nvidia_params['Devices']]
+    devices = []
+    for dev in nvidia_params['Devices']:
+        if re.search(r'^/dev/nvidia\d+$', dev) is None:
+            devices.append(dev)
+        else:
+            # Only expose GPUs in the same NUMA node.
+            for gpu in gpu_info['Devices']:
+                if gpu['Path'] == dev:
+                    pci_path = '/sys/bus/pci/devices/{}/numa_node'.format(gpu['PCI']['BusID'])
+                    gpu_node = int(Path(pci_path).read_text().strip())
+                    if gpu_node == numa_node:
+                        devices.append(dev)
+    devices = ['{0}:{0}:rwm'.format(dev) for dev in devices]
     return binds, devices
 
 
@@ -605,6 +634,7 @@ def main():
     global redis_addr
     global lang_aliases
     global volume_root
+    global container_cpu_map
 
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--agent-port', type=port_no, default=6001,
@@ -660,6 +690,8 @@ def main():
 
     assert os.path.isdir(args.volume_root)
     volume_root = args.volume_root
+
+    container_cpu_map = CPUAllocMap()
 
     # Load language aliases config.
     lang_aliases = {lang: lang for lang in supported_langs}

@@ -1,4 +1,5 @@
 import ctypes, ctypes.util
+import operator
 import os
 import sys
 
@@ -46,5 +47,39 @@ class libnuma:
 class CPUAllocMap:
 
     def __init__(self):
-        pass
+        self.core_topo = libnuma.get_core_topology()
+        self.num_cores = len(libnuma.get_available_cores())
+        self.num_nodes = libnuma.num_nodes()
+        self.alloc_per_node = [0 for _ in range(self.num_nodes)]
+        self.core_shares = [0 for _ in range(self.num_cores)]
 
+    def alloc(self, num_cores):
+        '''
+        Find a most free set of CPU cores and return a tuple of the NUMA node
+        index and the set of integers indicating the found cores.
+        This method guarantees that all cores are alloacted within the same
+        NUMA node.
+        '''
+        node, current_alloc = min(enumerate(self.alloc_per_node),
+                                  key=operator.itemgetter(1))
+        self.alloc_per_node[node] = current_alloc + num_cores
+
+        shares = self.core_shares.copy()
+        allocated_cores = set()
+        for _ in range(num_cores):
+            core, _ = min(enumerate(shares), key=operator.itemgetter(1))
+            allocated_cores.add(core)
+            shares[core] = sys.maxsize   # prune allocated one
+            self.core_shares[core] += 1  # update the original share
+        return node, allocated_cores
+
+    def free(self, core_set):
+        '''
+        Remove the given set of CPU cores from the allocated shares.
+        It assumes that all cores are in the same NUMA node.
+        '''
+        any_core = next(iter(core_set))
+        node = libnuma.node_of_cpu(any_core)
+        self.alloc_per_node[node] -= len(core_set)
+        for c in core_set:
+            self.core_shares[c] -= 1

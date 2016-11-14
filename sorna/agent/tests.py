@@ -13,6 +13,7 @@ from sorna.agent.server import container_registry, volume_root, docker_init
 from sorna.agent.server import max_upload_size
 from sorna.agent.server import create_kernel, destroy_kernel, execute_code, match_result
 
+
 class AgentFunctionalTest(unittest.TestCase):
     def setUp(self):
         self.loop = asyncio.new_event_loop()
