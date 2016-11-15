@@ -1,8 +1,8 @@
-#! /usr/bin/env python3
-
 import asyncio
+
 import docker
 import requests
+
 
 async def call_docker_with_retries(func, timeout_handler=None, apierr_handler=None):
     assert callable(func)
@@ -25,4 +25,3 @@ async def call_docker_with_retries(func, timeout_handler=None, apierr_handler=No
             retries += 1
             await asyncio.sleep(0.2)
     return exc
-

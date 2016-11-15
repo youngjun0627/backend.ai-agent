@@ -1,11 +1,9 @@
-# Always prefer setuptools over distutils
-from setuptools import setup, find_packages
-# To use a consistent encoding
-from codecs import open
+from setuptools import setup
 from pathlib import Path
 import re
 
 here = Path(__file__).resolve().parent
+
 
 def _get_version():
     root_src = (here / 'sorna' / 'agent' / '__init__.py').read_text()
@@ -14,6 +12,7 @@ def _get_version():
     except IndexError:
         raise RuntimeError('Unable to determine myself version.')
     return version
+
 
 setup(
     name='sorna-agent',

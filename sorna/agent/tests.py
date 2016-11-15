@@ -1,14 +1,8 @@
-#! /usr/bin/env python3
-
 import asyncio
 import unittest, unittest.mock
-import docker
 import os
-import signal
-import subprocess
-import zmq
-from sorna.proto import Message, odict, generate_uuid
-from sorna.proto.msgtypes import *
+
+from sorna.proto.msgtypes import AgentRequestTypes, SornaResponseTypes
 from sorna.agent.server import container_registry, volume_root, docker_init
 from sorna.agent.server import max_upload_size
 from sorna.agent.server import create_kernel, destroy_kernel, execute_code, match_result
@@ -35,21 +29,21 @@ class AgentFunctionalTest(unittest.TestCase):
     def test_execute_simple_python2(self):
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python2'))
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print "asdf"'))
+            execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print "asdf"'))
         assert 'asdf' in result['stdout']
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
     def test_execute_simple_python3(self):
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print("asdf")'))
+            execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print("asdf")'))
         assert 'asdf' in result['stdout']
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 
     def test_match_result(self):
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print("asdf")'))
+            execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'print("asdf")'))
         assert 'asdf' in result['stdout']
         self.assertTrue(match_result(result, {'op': 'contains', 'target': 'stdout', 'value': 'sd'}))
         self.assertTrue(match_result(result, {'op': 'equal', 'target': 'stdout', 'value': 'asdf\n'}))
@@ -57,7 +51,7 @@ class AgentFunctionalTest(unittest.TestCase):
         self.assertFalse(match_result(result, {'op': 'contains', 'target': 'stderr', 'value': 'sd'}))
         self.assertFalse(match_result(result, {'op': 'contains', 'target': 'exception', 'value': ''}))
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'raise RuntimeError("abc", 123)'))
+            execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', 'raise RuntimeError("abc", 123)'))
         self.assertTrue(match_result(result, {'op': 'contains', 'target': 'exception', 'value': 'RuntimeError'}))
         self.assertTrue(match_result(result, {'op': 'equal', 'target': 'exception', 'value': 'RuntimeError'}))
         self.assertTrue(match_result(result, {'op': 'regex', 'target': 'exception', 'value': '^Runtime'}))
@@ -67,9 +61,9 @@ class AgentFunctionalTest(unittest.TestCase):
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         exec_timeout = container_registry[kernel_id]['exec_timeout']
         with self.assertRaises(asyncio.TimeoutError):
-            result = self.loop.run_until_complete(
-                    execute_code(self.loop, self.docker_cli, 'test', kernel_id,
-                                 '1', 'import time; time.sleep({0})'.format(exec_timeout + 2)))
+            self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id,
+                             '1', 'import time; time.sleep({0})'.format(exec_timeout + 2)))
         # the container should be automatically destroyed
         assert kernel_id not in container_registry
 
@@ -88,7 +82,7 @@ with open('test.txt', 'w', encoding='utf8') as f:
 '''
         # TODO: mock s3 upload
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+            execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
         assert '/home/work' == result['stdout'].splitlines()[0].strip()
         test_path = os.path.join(work_dir, 'test.txt')
         assert os.path.exists(test_path)
@@ -111,7 +105,7 @@ with open('large.txt', 'wb') as f:
 '''.format(max_upload_size + 1)
         # TODO: mock s3 upload
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+            execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
         assert 'large.txt' not in result['files']
         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
         assert not os.path.exists(work_dir)
@@ -132,7 +126,7 @@ except OSError:
         kernel_timeout = False
         try:
             result = self.loop.run_until_complete(
-                    execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
         except asyncio.TimeoutError:
             kernel_timeout = True
         if not kernel_timeout:
@@ -176,8 +170,8 @@ if __name__ == '__main__':
             print(solution)
 '''
         with self.assertRaises(asyncio.TimeoutError):
-            result = self.loop.run_until_complete(
-                    execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+            self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
         # it should have been automaitcally deleted
         assert kernel_id not in container_registry
 
@@ -185,7 +179,7 @@ if __name__ == '__main__':
         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
         src = '''big_array = 'x' * (2**40)'''  # try to allocate 1 TB array (!!)
         result = self.loop.run_until_complete(
-                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+            execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
         for exc in result['exceptions']:
             if exc[0] == 'MemoryError':
                 break
@@ -205,8 +199,8 @@ while True:
     c += 1
 j'''
         with self.assertRaises(asyncio.TimeoutError):
-            result = self.loop.run_until_complete(
-                    execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
+            self.loop.run_until_complete(
+                execute_code(self.loop, self.docker_cli, 'test', kernel_id, '1', src))
         assert kernel_id not in container_registry
 
 

@@ -1,5 +1,3 @@
-#! /usr/bin/env python3
-
 import argparse
 import asyncio
 from distutils.version import LooseVersion
@@ -10,7 +8,6 @@ from pathlib import Path
 import re
 import signal
 import shutil
-import sys
 import time
 import urllib.parse
 
@@ -28,9 +25,9 @@ from sorna import utils, defs
 from sorna.argparse import port_no, host_port_pair, positive_int
 from sorna.proto import Message
 from sorna.utils import odict, generate_uuid, nmget
-from sorna.proto.msgtypes import *
+from sorna.proto.msgtypes import AgentRequestTypes, SornaResponseTypes
 from . import __version__
-from .resources import libnuma, CPUAllocMap
+from .resources import CPUAllocMap
 from .helper import call_docker_with_retries
 
 
@@ -92,6 +89,7 @@ def docker_init():
     log.info('detected docker version: {}'.format(docker_version))
     return docker_cli
 
+
 async def _heartbeat(interval, loop):
     global container_registry
     global inst_id, inst_type, agent_ip, redis_addr
@@ -124,10 +122,11 @@ async def _heartbeat(interval, loop):
             # This allows access to values upon expiration events.
             pipe.set('shadow:' + inst_id, '')
             pipe.expire('shadow:' + inst_id, float(interval * 2))
-            result = await pipe.execute()
+            await pipe.execute()
             redis.close()
     except asyncio.TimeoutError:
         log.warn('heartbeat failed.')
+
 
 async def heartbeat_timer(loop, interval=3.0):
     '''
@@ -162,6 +161,7 @@ _extra_volumes = {
         VolumeInfo('deeplearning-samples', '/home/work/samples', 'ro'),
     ],
 }
+
 
 def get_extra_volumes(docker_cli, lang):
     avail_volumes = docker_cli.volumes()['Volumes']
@@ -237,17 +237,17 @@ async def create_kernel(loop, docker_cli, lang):
 
     ret = await call_docker_with_retries(
         lambda: docker_cli.create_container(
-             image_name,
-             name='kernel.{}.{}'.format(lang, kernel_id),
-             cpu_shares=1024, # full share
-             ports=[
-                 (2001, 'tcp'),
-                 (2002, 'tcp'),
-                 (2003, 'tcp'),
-             ],
-             volumes=volumes,
-             host_config=host_config,
-             tty=True
+            image_name,
+            name='kernel.{}.{}'.format(lang, kernel_id),
+            cpu_shares=1024,  # full share
+            ports=[
+                (2001, 'tcp'),
+                (2002, 'tcp'),
+                (2003, 'tcp'),
+            ],
+            volumes=volumes,
+            host_config=host_config,
+            tty=True
         ),
         lambda: log.critical(_f('could not create container for kernel {} (timeout)', kernel_id)),
         lambda err: log.critical(_f('could not create container for kernel {} ({!r})', kernel_id, err))
@@ -269,7 +269,7 @@ async def create_kernel(loop, docker_cli, lang):
     if docker_ip:
         kernel_ip = docker_ip
     else:
-        #kernel_ip = container_info['NetworkSettings']['IPAddress']
+        # kernel_ip = container_info['NetworkSettings']['IPAddress']
         kernel_ip = '127.0.0.1'
     host_side_port = container_info['NetworkSettings']['Ports']['2001/tcp'][0]['HostPort']
     stdin_port  = container_info['NetworkSettings']['Ports']['2002/tcp'][0]['HostPort']
@@ -403,14 +403,13 @@ def prepare_nvidia(docker_cli, numa_node):
 
 
 async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
-    container_id = container_registry[kernel_id]['container_id']
     work_dir = os.path.join(volume_root, kernel_id)
     # TODO: import "connected" files from S3
     initial_file_stats = scandir(work_dir)
 
     container_addr = container_registry[kernel_id]['addr']
-    container_sock = await aiozmq.create_zmq_stream(zmq.REQ,
-            connect=container_addr, loop=loop)
+    container_sock = await aiozmq.create_zmq_stream(
+        zmq.REQ, connect=container_addr, loop=loop)
     container_sock.transport.setsockopt(zmq.LINGER, 50)
     container_sock.write([cell_id.encode('ascii'), code.encode('utf8')])
     exec_timeout = container_registry[kernel_id]['exec_timeout']
@@ -440,10 +439,10 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
                     with open(os.path.join(work_dir, fname), 'rb') as f:
                         content = f.read()
                     try:
-                        resp = await client.put_object(Bucket=s3_bucket,
-                                                       Key=key,
-                                                       Body=content,
-                                                       ACL='public-read')
+                        await client.put_object(Bucket=s3_bucket,
+                                                Key=key,
+                                                Body=content,
+                                                ACL='public-read')
                     except botocore.exceptions.ClientError as exc:
                         log.exception(exc)
                 client.close()
@@ -603,7 +602,7 @@ async def run_agent(loop, server_sock):
             if request['kernel_id'] in container_registry:
                 try:
                     container_registry[request['kernel_id']]['last_used'] \
-                            = time.monotonic()
+                        = time.monotonic()
                     result = await execute_code(loop, docker_cli,
                                                 request['entry_id'],
                                                 request['kernel_id'],
@@ -661,14 +660,14 @@ def main():
             'colored': {
                 '()': 'coloredlogs.ColoredFormatter',
                 'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
-                'field_styles': {'levelname': {'color':'black', 'bold':True},
-                                 'name': {'color':'black', 'bold':True},
-                                 'asctime': {'color':'black'}},
-                'level_styles': {'info': {'color':'cyan'},
-                                 'debug': {'color':'green'},
-                                 'warning': {'color':'yellow'},
-                                 'error': {'color':'red'},
-                                 'critical': {'color':'red', 'bold':True}},
+                'field_styles': {'levelname': {'color': 'black', 'bold': True},
+                                 'name': {'color': 'black', 'bold': True},
+                                 'asctime': {'color': 'black'}},
+                'level_styles': {'info': {'color': 'cyan'},
+                                 'debug': {'color': 'green'},
+                                 'warning': {'color': 'yellow'},
+                                 'error': {'color': 'red'},
+                                 'critical': {'color': 'red', 'bold': True}},
             },
         },
         'handlers': {
@@ -707,10 +706,10 @@ def main():
         'python27': 'python2',
         'python34': 'python3',
         'python35': 'python3',
-        'python3-deeplearning':   'python3-tensorflow',     # temporary alias
-        'tensorflow-python3':     'python3-tensorflow',     # package-oriented alias
-        'tensorflow-gpu-python3': 'python3-tensorflow-gpu', # package-oriented alias
-        'caffe-python3':          'python3-caffe',          # package-oriented alias
+        'python3-deeplearning':   'python3-tensorflow',      # temporary alias
+        'tensorflow-python3':     'python3-tensorflow',      # package-oriented alias
+        'tensorflow-gpu-python3': 'python3-tensorflow-gpu',  # package-oriented alias
+        'caffe-python3':          'python3-caffe',           # package-oriented alias
         'r': 'r3',
         'R': 'r3',
         'Rscript': 'r3',
