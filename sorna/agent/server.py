@@ -315,7 +315,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     # We ignore returned exceptions above, because anyway we should proceed to clean up other things.
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
-    container_cpu_map.free(container_registry[kerne_id]['core_set'])
+    container_cpu_map.free(container_registry[kernel_id]['core_set'])
     del container_registry[kernel_id]
     try:
         with timeout(1.5):
