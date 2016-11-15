@@ -69,11 +69,14 @@ agent_port = 0
 inst_type = None
 redis_addr = (None, 6379)
 docker_ip = None
-docker_cli = None
 docker_version = None
 
 # Shortcut for str.format
 _f = lambda fmt, *args, **kwargs: fmt.format(*args, **kwargs)
+
+
+def dict2kvlist(o):
+    return chain.from_iterable((k, v) for k, v in o.items())
 
 
 def docker_init():
@@ -90,45 +93,84 @@ def docker_init():
     return docker_cli
 
 
-async def _heartbeat(interval, loop):
+def collect_stats(docker_cli, container_id, loop=None):
+    # TODO: On Linux, use sysfs for lower performance impacts.
+    ret = docker_cli.stats(container_id, stream=False)
+    io_read_bytes = 0
+    io_write_bytes = 0
+    for item in ret['blkio_stats']['io_service_bytes_recursive']:
+        if item['op'] == 'Read':
+            io_read_bytes += item['value']
+        elif item['op'] == 'Write':
+            io_write_bytes += item['value']
+    net_rx_bytes = 0
+    net_tx_bytes = 0
+    for dev in ret['networks'].values():
+        net_rx_bytes += dev['rx_bytes']
+        net_tx_bytes += dev['tx_bytes']
+    return {
+        'cpu_used': ret['cpu_stats']['cpu_usage']['total_usage'],
+        'mem_max_bytes': ret['memory_stats']['max_usage'],
+        'net_rx_bytes': net_rx_bytes,
+        'net_tx_bytes': net_tx_bytes,
+        'io_read_bytes': io_read_bytes,
+        'io_write_bytes': io_write_bytes,
+    }
+
+
+async def _heartbeat(loop, docker_cli, interval):
     global container_registry
     global inst_id, inst_type, agent_ip, redis_addr
+    running_kernels = [k for k in container_registry.keys()]
+    stats = {}
+    # stats collection may take a while.
+    for kern_id in running_kernels:
+        container_id = container_registry[kern_id]['container_id']
+        stats[kern_id] = collect_stats(docker_cli,
+                                       container_id,
+                                       loop=loop)
     try:
         with timeout(interval / 2):
-            redis = await aioredis.create_redis(
+            ri = await aioredis.create_redis(
                 redis_addr, encoding='utf8',
                 db=defs.SORNA_INSTANCE_DB,
                 loop=loop)
-            total_cpu_shares = sum(c['cpu_shares'] for c in container_registry.values())
-            running_kernels = [k for k in container_registry.keys()]
+            rk = await aioredis.create_redis(
+                redis_addr, encoding='utf8',
+                db=defs.SORNA_KERNEL_DB,
+                loop=loop)
             # should match with sorna.manager.structs.Instance
-            state = {
+            my_kernels_key = '{}.kernels'.format(inst_id)
+            ri_pipe, rk_pipe = ri.pipeline(), rk.pipeline()
+            ri_pipe.hmset(inst_id, *dict2kvlist({
                 'status': 'ok',
                 'id': inst_id,
                 'ip': agent_ip,
                 'addr': 'tcp://{}:{}'.format(agent_ip, agent_port),
                 'type': inst_type,
-                'used_cpu': total_cpu_shares,
                 'num_kernels': len(running_kernels),
                 'max_kernels': max_kernels,
-            }
-            my_kernels_key = '{}.kernels'.format(inst_id)
-            pipe = redis.pipeline()
-            pipe.hmset(inst_id, *chain.from_iterable((k, v) for k, v in state.items()))
-            pipe.delete(my_kernels_key)
-            if running_kernels:
-                pipe.sadd(my_kernels_key, running_kernels[0], *running_kernels[1:])
+            }))
+            ri_pipe.delete(my_kernels_key)
+            for kern_id in running_kernels:
+                ri_pipe.sadd(my_kernels_key, kern_id)
+                rk_pipe.hmset(kern_id, *dict2kvlist(stats[kern_id]))
             # Create a "shadow" key that actually expires.
-            # This allows access to values upon expiration events.
-            pipe.set('shadow:' + inst_id, '')
-            pipe.expire('shadow:' + inst_id, float(interval * 2))
-            await pipe.execute()
-            redis.close()
+            # This allows access to agent information upon expiration events.
+            ri_pipe.set('shadow:' + inst_id, '')
+            ri_pipe.expire('shadow:' + inst_id, float(interval * 2))
+            try:
+                await ri_pipe.execute()
+                await rk_pipe.execute()
+            except:
+                log.exception()
+            ri.close()
+            rk.close()
     except asyncio.TimeoutError:
         log.warn('heartbeat failed.')
 
 
-async def heartbeat_timer(loop, interval=3.0):
+async def heartbeat_timer(loop, docker_cli, interval=3.0):
     '''
     Record my status information to the manager database (Redis).
     This information automatically expires after 2x interval, so that failure
@@ -146,7 +188,7 @@ async def heartbeat_timer(loop, interval=3.0):
     log.info('using manager redis at {}'.format(redis_addr))
     try:
         while True:
-            await _heartbeat(interval, loop=loop)
+            await _heartbeat(loop, docker_cli, interval)
             await asyncio.sleep(interval, loop=loop)
     except asyncio.CancelledError:
         pass
@@ -321,7 +363,7 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
         with timeout(1.5):
             redis = await aioredis.create_redis(redis_addr, encoding='utf8', loop=loop)
             redis.select(defs.SORNA_INSTANCE_DB)
-            pipe = redis.multi_exec()
+            pipe = redis.pipeline()
             pipe.hincrby(inst_id, 'num_kernels', -1)
             pipe.srem(inst_id + '.kernels', kernel_id)
             await pipe.execute()
@@ -483,9 +525,8 @@ async def cleanup_timer(loop, docker_cli):
         pass
 
 
-async def clean_all_kernels(loop):
+async def clean_all_kernels(loop, docker_cli):
     log.info('cleaning all kernels...')
-    global docker_cli
     kern_ids = tuple(container_registry.keys())
     for kern_id in kern_ids:
         await destroy_kernel(loop, docker_cli, kern_id)
@@ -525,20 +566,19 @@ def format_pyexc(e):
         return type(e).__name__
 
 
-async def run_agent(loop, server_sock):
+async def run_agent(loop, docker_cli, server_sock):
     global container_registry
-    global docker_cli, inst_id, agent_ip, inst_type, redis_addr
+    global inst_id, agent_ip, inst_type, redis_addr
 
     inst_id = await utils.get_instance_id()
     inst_type = await utils.get_instance_type()
     agent_ip = await utils.get_instance_ip()
 
     # Initialize docker subsystem
-    docker_cli = docker_init()
     container_registry.clear()
 
     # Send the first heartbeat.
-    hb_task    = asyncio.ensure_future(heartbeat_timer(loop), loop=loop)
+    hb_task    = asyncio.ensure_future(heartbeat_timer(loop, docker_cli), loop=loop)
     timer_task = asyncio.ensure_future(cleanup_timer(loop, docker_cli), loop=loop)
     await asyncio.sleep(0, loop=loop)
 
@@ -734,13 +774,14 @@ def main():
     term_ev = asyncio.Event()
     loop.add_signal_handler(signal.SIGTERM, handle_signal, loop, term_ev)
     loop.add_signal_handler(signal.SIGINT, handle_signal, loop, term_ev)
-    asyncio.ensure_future(run_agent(loop, server_sock), loop=loop)
+    docker_cli = docker_init()
+    asyncio.ensure_future(run_agent(loop, docker_cli, server_sock), loop=loop)
     try:
         log.info('sorna-agent version {}'.format(__version__))
         log.info('serving at {0}'.format(agent_addr))
         loop.run_forever()
         term_ev.set()
-        loop.run_until_complete(clean_all_kernels(loop))
+        loop.run_until_complete(clean_all_kernels(loop, docker_cli))
         server_sock.close()
         loop.run_until_complete(asyncio.sleep(0.1))
     finally:
