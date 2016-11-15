@@ -16,6 +16,7 @@ import urllib.parse
 
 import zmq, aiozmq
 import aioredis
+from async_timeout import timeout
 import botocore, aiobotocore
 import docker
 from namedlist import namedtuple
@@ -91,34 +92,15 @@ def docker_init():
     log.info('detected docker version: {}'.format(docker_version))
     return docker_cli
 
-
-async def heartbeat(loop, interval=3.0):
-    '''
-    Record my status information to the manager database (Redis).
-    This information automatically expires after 2x interval, so that failure
-    of executing this method automatically removes the instance from the
-    manager database.
-    '''
+async def _heartbeat(interval, loop):
     global container_registry
     global inst_id, inst_type, agent_ip, redis_addr
-    if not inst_id:
-        inst_id = await utils.get_instance_id()
-    if not inst_type:
-        inst_type = await utils.get_instance_type()
-    if not agent_ip:
-        agent_ip = await utils.get_instance_ip()
-    log.info('myself: {} ({}), ip: {}'.format(inst_id, inst_type, agent_ip))
-    log.info('using manager redis at {}'.format(redis_addr))
-    while True:
-        try:
-            redis = await asyncio.wait_for(
-                    aioredis.create_redis(redis_addr,
-                                          encoding='utf8',
-                                          db=defs.SORNA_INSTANCE_DB,
-                                          loop=loop), timeout=1)
-        except asyncio.TimeoutError:
-            log.warn('could not contact manager redis.')
-        else:
+    try:
+        with timeout(interval / 2):
+            redis = await aioredis.create_redis(
+                redis_addr, encoding='utf8',
+                db=defs.SORNA_INSTANCE_DB,
+                loop=loop)
             total_cpu_shares = sum(c['cpu_shares'] for c in container_registry.values())
             running_kernels = [k for k in container_registry.keys()]
             # should match with sorna.manager.structs.Instance
@@ -133,7 +115,7 @@ async def heartbeat(loop, interval=3.0):
                 'max_kernels': max_kernels,
             }
             my_kernels_key = '{}.kernels'.format(inst_id)
-            pipe = redis.multi_exec()
+            pipe = redis.pipeline()
             pipe.hmset(inst_id, *chain.from_iterable((k, v) for k, v in state.items()))
             pipe.delete(my_kernels_key)
             if running_kernels:
@@ -142,9 +124,33 @@ async def heartbeat(loop, interval=3.0):
             # This allows access to values upon expiration events.
             pipe.set('shadow:' + inst_id, '')
             pipe.expire('shadow:' + inst_id, float(interval * 2))
-            await pipe.execute()
-            await redis.quit()
-        await asyncio.sleep(interval, loop=loop)
+            result = await pipe.execute()
+            redis.close()
+    except asyncio.TimeoutError:
+        log.warn('heartbeat failed.')
+
+async def heartbeat_timer(loop, interval=3.0):
+    '''
+    Record my status information to the manager database (Redis).
+    This information automatically expires after 2x interval, so that failure
+    of executing this method automatically removes the instance from the
+    manager database.
+    '''
+    global inst_id, inst_type, agent_ip, redis_addr
+    if not inst_id:
+        inst_id = await utils.get_instance_id()
+    if not inst_type:
+        inst_type = await utils.get_instance_type()
+    if not agent_ip:
+        agent_ip = await utils.get_instance_ip()
+    log.info('myself: {} ({}), ip: {}'.format(inst_id, inst_type, agent_ip))
+    log.info('using manager redis at {}'.format(redis_addr))
+    try:
+        while True:
+            await _heartbeat(interval, loop=loop)
+            await asyncio.sleep(interval, loop=loop)
+    except asyncio.CancelledError:
+        pass
 
 
 VolumeInfo = namedtuple('VolumeInfo', 'name container_path mode')
@@ -312,21 +318,18 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     container_cpu_map.free(container_registry[kerne_id]['core_set'])
     del container_registry[kernel_id]
     try:
-        redis = await asyncio.wait_for(
-                aioredis.create_redis(redis_addr,
-                                      encoding='utf8',
-                                      loop=loop), loop=loop, timeout=1)
+        with timeout(1.5):
+            redis = await aioredis.create_redis(redis_addr, encoding='utf8', loop=loop)
+            redis.select(defs.SORNA_INSTANCE_DB)
+            pipe = redis.multi_exec()
+            pipe.hincrby(inst_id, 'num_kernels', -1)
+            pipe.srem(inst_id + '.kernels', kernel_id)
+            await pipe.execute()
+            redis.select(defs.SORNA_KERNEL_DB)
+            redis.delete(kernel_id)
+            redis.close()
     except asyncio.TimeoutError:
-        log.warn('could not contact manager redis.')
-    else:
-        redis.select(defs.SORNA_INSTANCE_DB)
-        pipe = redis.multi_exec()
-        pipe.hincrby(inst_id, 'num_kernels', -1)
-        pipe.srem(inst_id + '.kernels', kernel_id)
-        await pipe.execute()
-        redis.select(defs.SORNA_KERNEL_DB)
-        redis.delete(kernel_id)
-        await redis.quit()
+        log.warn('failed to update registry after kernel destruction.')
 
 
 def scandir(root):
@@ -462,20 +465,23 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
 
 
 async def cleanup_timer(loop, docker_cli):
-    while True:
-        now = time.monotonic()
-        # clone keys to avoid "dictionary size changed during iteration" error.
-        keys = tuple(container_registry.keys())
-        for kern_id in keys:
-            try:
-                if now - container_registry[kern_id]['last_used'] > 1800.0:
-                    log.info('destroying kernel {} as clean-up'.format(kern_id))
-                    await destroy_kernel(loop, docker_cli, kern_id)
-            except KeyError:
-                # The kernel may be destroyed by other means?
-                # TODO: check this situation more thoroughly.
-                pass
-        await asyncio.sleep(10, loop=loop)
+    try:
+        while True:
+            now = time.monotonic()
+            # clone keys to avoid "dictionary size changed during iteration" error.
+            keys = tuple(container_registry.keys())
+            for kern_id in keys:
+                try:
+                    if now - container_registry[kern_id]['last_used'] > 1800.0:
+                        log.info('destroying kernel {} as clean-up'.format(kern_id))
+                        await destroy_kernel(loop, docker_cli, kern_id)
+                except KeyError:
+                    # The kernel may be destroyed by other means?
+                    # TODO: check this situation more thoroughly.
+                    pass
+            await asyncio.sleep(10, loop=loop)
+    except asyncio.CancelledError:
+        pass
 
 
 async def clean_all_kernels(loop):
@@ -533,7 +539,7 @@ async def run_agent(loop, server_sock):
     container_registry.clear()
 
     # Send the first heartbeat.
-    hb_task    = asyncio.ensure_future(heartbeat(loop), loop=loop)
+    hb_task    = asyncio.ensure_future(heartbeat_timer(loop), loop=loop)
     timer_task = asyncio.ensure_future(cleanup_timer(loop, docker_cli), loop=loop)
     await asyncio.sleep(0, loop=loop)
 

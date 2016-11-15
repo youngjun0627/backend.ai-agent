@@ -2,6 +2,7 @@ colorama
 coloredlogs
 namedlist
 simplejson
+async_timeout
 uvloop>=0.5.4
 pyzmq
 aiozmq

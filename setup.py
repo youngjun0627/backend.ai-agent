@@ -45,7 +45,7 @@ setup(
     packages=['sorna.agent'],
     namespace_packages=['sorna'],
 
-    install_requires=['sorna-common',
+    install_requires=['sorna-common', 'async_timeout',
                       'colorama', 'pyzmq', 'aiozmq',
                       'aiohttp', 'aioredis', 'aiobotocore',
                       'namedlist', 'simplejson', 'docker-py',
