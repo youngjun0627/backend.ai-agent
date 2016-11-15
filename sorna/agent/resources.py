@@ -83,5 +83,5 @@ class CPUAllocMap:
         node = libnuma.node_of_cpu(any_core)
         self.alloc_per_node[node] -= len(core_set)
         for c in core_set:
-            core_idx = self.core_topo[node].find(c)
+            core_idx = self.core_topo[node].index(c)
             self.core_shares[node][core_idx] -= 1
