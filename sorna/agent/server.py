@@ -185,7 +185,7 @@ async def heartbeat_timer(loop, docker_cli, interval=3.0):
     if not agent_ip:
         agent_ip = await utils.get_instance_ip()
     log.info('myself: {} ({}), ip: {}'.format(inst_id, inst_type, agent_ip))
-    log.info('using manager redis at {}'.format(redis_addr))
+    log.info('using manager redis at tcp://{0}:{1}'.format(*redis_addr))
     try:
         while True:
             await _heartbeat(loop, docker_cli, interval)
@@ -768,6 +768,8 @@ def main():
 
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     loop = asyncio.get_event_loop()
+    log.info('Sorna Agent {}'.format(__version__))
+
     server_sock = loop.run_until_complete(aiozmq.create_zmq_stream(zmq.REP, bind=agent_addr, loop=loop))
     server_sock.transport.setsockopt(zmq.LINGER, 50)
 
@@ -777,7 +779,6 @@ def main():
     docker_cli = docker_init()
     asyncio.ensure_future(run_agent(loop, docker_cli, server_sock), loop=loop)
     try:
-        log.info('sorna-agent version {}'.format(__version__))
         log.info('serving at {0}'.format(agent_addr))
         loop.run_forever()
         term_ev.set()
