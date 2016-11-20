@@ -62,6 +62,7 @@ s3_region = os.environ.get('AWS_REGION', 'ap-northeast-1')
 s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
 max_upload_size = 5 * 1024 * 1024  # 5 MB
 max_kernels = 1
+idle_timeout = 1800.0
 inst_id = None
 agent_addr = None
 agent_ip = None
@@ -109,7 +110,7 @@ def collect_stats(docker_cli, container_id, loop=None):
         net_rx_bytes += dev['rx_bytes']
         net_tx_bytes += dev['tx_bytes']
     return {
-        'cpu_used': ret['cpu_stats']['cpu_usage']['total_usage'],
+        'cpu_used': ret['cpu_stats']['cpu_usage']['total_usage'] / 1e6,
         'mem_max_bytes': ret['memory_stats']['max_usage'],
         'net_rx_bytes': net_rx_bytes,
         'net_tx_bytes': net_tx_bytes,
@@ -129,6 +130,13 @@ async def _heartbeat(loop, docker_cli, interval):
         stats[kern_id] = collect_stats(docker_cli,
                                        container_id,
                                        loop=loop)
+        stats[kern_id]['exec_timeout'] = container_registry[kern_id]['exec_timeout']
+        stats[kern_id]['idle_timeout'] = idle_timeout
+        mem_limit = container_registry[kern_id]['mem_limit']
+        mem_limit_in_kb = utils.readable_size_to_bytes(mem_limit) // 1024
+        stats[kern_id]['mem_limit']   = mem_limit_in_kb
+        stats[kern_id]['num_queries'] = container_registry[kern_id]['num_queries']
+        stats[kern_id]['idle'] = (time.monotonic() - container_registry[kern_id]['last_used']) * 1000
     try:
         with timeout(interval / 2):
             ri = await aioredis.create_redis(
@@ -513,7 +521,7 @@ async def cleanup_timer(loop, docker_cli):
             keys = tuple(container_registry.keys())
             for kern_id in keys:
                 try:
-                    if now - container_registry[kern_id]['last_used'] > 1800.0:
+                    if now - container_registry[kern_id]['last_used'] > idle_timeout:
                         log.info('destroying kernel {} as clean-up'.format(kern_id))
                         await destroy_kernel(loop, docker_cli, kern_id)
                 except KeyError:
@@ -643,6 +651,7 @@ async def run_agent(loop, docker_cli, server_sock):
                 try:
                     container_registry[request['kernel_id']]['last_used'] \
                         = time.monotonic()
+                    container_registry[request['kernel_id']]['num_queries'] += 1
                     result = await execute_code(loop, docker_cli,
                                                 request['entry_id'],
                                                 request['kernel_id'],
