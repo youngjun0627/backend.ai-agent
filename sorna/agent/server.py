@@ -336,8 +336,9 @@ async def create_kernel(loop, docker_cli, lang):
         'cpu_shares': 1024,
         'numa_node': numa_node,
         'core_set': core_set,
-        'memory_limit': mem_limit,
+        'mem_limit': mem_limit,
         'exec_timeout': exec_timeout,
+        'num_queries': 0,
         'last_used': time.monotonic(),
     }
     log.info('kernel access address: {0}:{1}'.format(kernel_ip, host_side_port))
