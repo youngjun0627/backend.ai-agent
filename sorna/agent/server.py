@@ -341,9 +341,9 @@ async def create_kernel(loop, docker_cli, lang):
         'num_queries': 0,
         'last_used': time.monotonic(),
     }
-    log.info('kernel access address: {0}:{1}'.format(kernel_ip, host_side_port))
-    log.info('kernel stdin address: {0}:{1}'.format(kernel_ip, stdin_port))
-    log.info('kernel stdout address: {0}:{1}'.format(kernel_ip, stdout_port))
+    log.debug('kernel access address: {0}:{1}'.format(kernel_ip, host_side_port))
+    log.debug('kernel stdin address: {0}:{1}'.format(kernel_ip, stdin_port))
+    log.debug('kernel stdout address: {0}:{1}'.format(kernel_ip, stdout_port))
     return kernel_id
 
 
@@ -696,7 +696,10 @@ def main():
                            help='The port number to listen on.')
     argparser.add_argument('--redis-addr', type=host_port_pair, default=('localhost', 6379),
                            help='The host:port pair of the Redis (agent registry) server.')
-    argparser.add_argument('--max-kernels', type=positive_int, default=1)
+    argparser.add_argument('--max-kernels', type=positive_int, default=1,
+                           help='Set the maximum number of kernels running in parallel.')
+    argparser.add_argument('--debug', action='store_true', default=False,
+                           help='Enable more verbose logging.')
     argparser.add_argument('--kernel-aliases', type=str, default=None,
                            help='The filename for additional kernel aliases')
     argparser.add_argument('--volume-root', type=str, default='/var/lib/sorna-volumes',
@@ -732,12 +735,18 @@ def main():
             },
         },
         'loggers': {
-            'sorna': {
+            '': {
+                'handlers': ['console'],
+                'level': 'DEBUG' if args.debug else 'INFO',
+            },
+            'aioredis': {
                 'handlers': ['console'],
                 'level': 'INFO',
             },
         },
     })
+    if args.debug:
+        log.debug('debug mode enabled.')
     agent_addr = 'tcp://*:{0}'.format(args.agent_port)
     agent_port = args.agent_port
     max_kernels = args.max_kernels
