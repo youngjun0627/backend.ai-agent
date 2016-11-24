@@ -233,10 +233,11 @@ def get_extra_volumes(docker_cli, lang):
     return mount_list
 
 
-async def create_kernel(loop, docker_cli, lang):
+async def create_kernel(loop, docker_cli, lang, kernel_id=None):
     global container_registry, container_cpu_map
-    kernel_id = generate_uuid()
-    assert kernel_id not in container_registry
+    if not kernel_id:
+        kernel_id = generate_uuid()
+        assert kernel_id not in container_registry
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
     if docker_version >= LooseVersion('1.10'):
@@ -350,7 +351,7 @@ async def create_kernel(loop, docker_cli, lang):
     return kernel_id
 
 
-async def destroy_kernel(loop, docker_cli, kernel_id):
+async def destroy_kernel(loop, docker_cli, kernel_id, keep_registry=False):
     global container_registry
     global inst_id
     if not inst_id:
@@ -370,20 +371,21 @@ async def destroy_kernel(loop, docker_cli, kernel_id):
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
     container_cpu_map.free(container_registry[kernel_id]['core_set'])
-    del container_registry[kernel_id]
-    try:
-        with timeout(1.5):
-            redis = await aioredis.create_redis(redis_addr, encoding='utf8', loop=loop)
-            redis.select(defs.SORNA_INSTANCE_DB)
-            pipe = redis.pipeline()
-            pipe.hincrby(inst_id, 'num_kernels', -1)
-            pipe.srem(inst_id + '.kernels', kernel_id)
-            await pipe.execute()
-            redis.select(defs.SORNA_KERNEL_DB)
-            redis.delete(kernel_id)
-            redis.close()
-    except asyncio.TimeoutError:
-        log.warn('failed to update registry after kernel destruction.')
+    if not keep_registry:
+        del container_registry[kernel_id]
+        try:
+            with timeout(1.5):
+                redis = await aioredis.create_redis(redis_addr, encoding='utf8', loop=loop)
+                redis.select(defs.SORNA_INSTANCE_DB)
+                pipe = redis.pipeline()
+                pipe.hincrby(inst_id, 'num_kernels', -1)
+                pipe.srem(inst_id + '.kernels', kernel_id)
+                await pipe.execute()
+                redis.select(defs.SORNA_KERNEL_DB)
+                redis.delete(kernel_id)
+                redis.close()
+        except asyncio.TimeoutError:
+            log.warn('failed to update registry after kernel destruction.')
 
 
 def scandir(root):
@@ -643,6 +645,27 @@ async def run_agent(loop, docker_cli, server_sock):
                     log.exception(exc)
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
+            else:
+                resp['reply'] = SornaResponseTypes.INVALID_INPUT
+                resp['cause'] = 'No such kernel.'
+
+        elif request['action'] == AgentRequestTypes.RESTART_KERNEL:
+
+            log.info('DESTROY_KERNEL ({})'.format(request['kernel_id']))
+            if request['kernel_id'] in container_registry:
+                try:
+                    kernel_id = request['kernel_id']
+                    await destroy_kernel(loop, docker_cli, kernel_id, keep_registry=True)
+                    lang = container_registry[kernel_id]['lang']
+                    await create_kernel(loop, docker_cli, lang, kernel_id)
+                except Exception as exc:
+                    resp['reply'] = SornaResponseTypes.FAILURE
+                    resp['cause'] = format_pyexc(exc)
+                    log.exception(exc)
+                else:
+                    resp['reply'] = SornaResponseTypes.SUCCESS
+                    resp['stdin_port'] = container_registry[kernel_id]['stdin_port']
+                    resp['stdout_port'] = container_registry[kernel_id]['stdout_port']
             else:
                 resp['reply'] = SornaResponseTypes.INVALID_INPUT
                 resp['cause'] = 'No such kernel.'
