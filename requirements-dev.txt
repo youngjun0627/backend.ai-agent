@@ -6,7 +6,7 @@ async_timeout
 uvloop>=0.5.4
 pyzmq
 aiozmq
-aiohttp>=1.0
+aiohttp>=1.1
 aioredis>=0.2.8
 aiobotocore
 docker-py>=1.10
