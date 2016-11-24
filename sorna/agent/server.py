@@ -171,8 +171,10 @@ async def _heartbeat(loop, docker_cli, interval):
             try:
                 await ri_pipe.execute()
                 await rk_pipe.execute()
+            except asyncio.CancelledError:
+                pass
             except:
-                log.exception()
+                log.exception('Failed to finish heartbeat updates.')
             ri.close()
             rk.close()
     except asyncio.TimeoutError:
