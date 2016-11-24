@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import signal
 import shutil
+import sys
 import time
 import urllib.parse
 
@@ -679,7 +680,11 @@ async def run_agent(loop, docker_cli, server_sock):
 
 
 def handle_signal(loop, term_ev):
-    if not term_ev.is_set():
+    if term_ev.is_set():
+        log.warning('Forced shutdown!')
+        sys.exit(1)
+    else:
+        term_ev.set()
         loop.stop()
 
 
@@ -800,7 +805,7 @@ def main():
     try:
         log.info('serving at {0}'.format(agent_addr))
         loop.run_forever()
-        term_ev.set()
+        # interrupted
         loop.run_until_complete(clean_all_kernels(loop, docker_cli))
         server_sock.close()
         loop.run_until_complete(asyncio.sleep(0.1))
