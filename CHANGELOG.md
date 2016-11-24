@@ -1,6 +1,17 @@
 Changes
 =======
 
+0.7.0 (2016-11-25)
+------------------
+
+**NEW**
+
+ - Add support for kernel restarts.
+   Restarting preserves kernel metadata and its ID, but removes and recreates
+   the working volume and the container itself.
+
+ - Add `--debug` option to the CLI command.
+
 0.6.0 (2016-11-14)
 ------------------
 
