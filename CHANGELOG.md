@@ -1,6 +1,14 @@
 Changes
 =======
 
+0.7.1 (2016-xx-xx)
+------------------
+
+**NEW**
+
+ - `--agent-ip-override` CLI option to override the IP address of agent
+   reported to the manager.
+
 0.7.0 (2016-11-25)
 ------------------
 
