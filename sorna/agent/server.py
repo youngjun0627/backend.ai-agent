@@ -23,7 +23,7 @@ import simplejson as json
 import uvloop
 
 from sorna import utils, defs
-from sorna.argparse import port_no, host_port_pair, positive_int
+from sorna.argparse import ipaddr, port_no, host_port_pair, positive_int
 from sorna.proto import Message
 from sorna.utils import odict, generate_uuid, nmget
 from sorna.proto.msgtypes import AgentRequestTypes, SornaResponseTypes
@@ -584,9 +584,12 @@ async def run_agent(loop, docker_cli, server_sock):
     global container_registry
     global inst_id, agent_ip, inst_type, redis_addr
 
-    inst_id = await utils.get_instance_id()
-    inst_type = await utils.get_instance_type()
-    agent_ip = await utils.get_instance_ip()
+    if not inst_id:
+        inst_id = await utils.get_instance_id()
+    if not inst_type:
+        inst_type = await utils.get_instance_type()
+    if not agent_ip:
+        agent_ip = await utils.get_instance_ip()
 
     # Initialize docker subsystem
     container_registry.clear()
@@ -715,13 +718,15 @@ def handle_signal(loop, term_ev):
 
 def main():
     global max_kernels
-    global agent_addr, agent_port
+    global agent_addr, agent_ip, agent_port
     global redis_addr
     global lang_aliases
     global volume_root
     global container_cpu_map
 
     argparser = argparse.ArgumentParser()
+    argparser.add_argument('--agent-ip-override', type=ipaddr, default=None, dest='agent_ip',
+                           help='Manually set the IP address of this agent to report to the manager.')
     argparser.add_argument('--agent-port', type=port_no, default=6001,
                            help='The port number to listen on.')
     argparser.add_argument('--redis-addr', type=host_port_pair, default=('localhost', 6379),
@@ -777,7 +782,10 @@ def main():
     })
     if args.debug:
         log.debug('debug mode enabled.')
-    agent_addr = 'tcp://*:{0}'.format(args.agent_port)
+
+    if args.agent_ip:
+        agent_ip = str(args.agent_ip)
+    agent_addr = 'tcp://*:{1}'.format('*', args.agent_port)
     agent_port = args.agent_port
     max_kernels = args.max_kernels
     redis_addr = args.redis_addr if args.redis_addr else ('sorna-manager.lablup', 6379)
