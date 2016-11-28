@@ -1,15 +1,14 @@
-colorama
 coloredlogs
-namedlist
-simplejson
 async_timeout
-uvloop>=0.5.4
 pyzmq
 aiozmq
 aiohttp>=1.1
 aioredis>=0.2.8
 aiobotocore
+namedlist
+simplejson
 docker-py>=1.10
+uvloop>=0.5.4
 -e git+ssh://git@github.com/lablup/sorna-common#egg=sorna-common
 pytest
 flake8

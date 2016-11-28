@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.7.2 (2016-11-28)
+------------------
+
+**FIXES**
+
+ - Hotfix for missing dependency: coloredlogs
+
 0.7.1 (2016-11-27)
 ------------------
 

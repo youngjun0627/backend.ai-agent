@@ -1,13 +1,12 @@
-colorama
 coloredlogs
-namedlist
-simplejson
 async_timeout
-uvloop>=0.5.4
 pyzmq
 aiozmq
 aiohttp>=1.1
 aioredis>=0.2.8
 aiobotocore
+namedlist
+simplejson
 docker-py>=1.10
+uvloop>=0.5.4
 sorna-common>=0.7,<0.8
