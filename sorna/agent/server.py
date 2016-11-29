@@ -63,7 +63,7 @@ s3_region = os.environ.get('AWS_REGION', 'ap-northeast-1')
 s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
 max_upload_size = 5 * 1024 * 1024  # 5 MB
 max_kernels = 1
-idle_timeout = 1800.0
+idle_timeout = 600.0
 inst_id = None
 agent_addr = None
 agent_ip = None
@@ -89,7 +89,7 @@ def docker_init():
             docker_ip = urllib.parse.urlparse(docker_args['base_url']).hostname
         else:
             docker_ip = '127.0.0.1'
-    docker_cli = docker.Client(timeout=3, **docker_args)
+    docker_cli = docker.Client(timeout=5, **docker_args)
     docker_version = LooseVersion(docker_cli.version()['Version'])
     log.info('detected docker version: {}'.format(docker_version))
     return docker_cli
@@ -197,7 +197,7 @@ async def _heartbeat(loop, docker_cli, interval):
         log.warn('heartbeat failed.')
 
 
-async def heartbeat_timer(loop, docker_cli, interval=3.0):
+async def heartbeat_timer(loop, docker_cli, interval=6.0):
     '''
     Record my status information to the manager database (Redis).
     This information automatically expires after 2x interval, so that failure
