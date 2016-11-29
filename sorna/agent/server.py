@@ -215,7 +215,7 @@ async def heartbeat_timer(loop, docker_cli, interval=6.0):
     log.info('using manager redis at tcp://{0}:{1}'.format(*redis_addr))
     try:
         while True:
-            await _heartbeat(loop, docker_cli, interval)
+            asyncio.ensure_future(_heartbeat(loop, docker_cli, interval))
             await asyncio.sleep(interval, loop=loop)
     except asyncio.CancelledError:
         pass
