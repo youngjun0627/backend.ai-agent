@@ -95,24 +95,40 @@ def docker_init():
     return docker_cli
 
 
+def read_sysfs(path):
+    return Path(path).read_text().strip()
+
+
 def collect_stats(docker_cli, container_id, loop=None):
-    # TODO: On Linux, use sysfs for lower performance impacts.
-    ret = docker_cli.stats(container_id, stream=False)
-    io_read_bytes = 0
-    io_write_bytes = 0
-    for item in ret['blkio_stats']['io_service_bytes_recursive']:
-        if item['op'] == 'Read':
-            io_read_bytes += item['value']
-        elif item['op'] == 'Write':
-            io_write_bytes += item['value']
-    net_rx_bytes = 0
-    net_tx_bytes = 0
-    for dev in ret['networks'].values():
-        net_rx_bytes += dev['rx_bytes']
-        net_tx_bytes += dev['tx_bytes']
+    if sys.platform == 'linux':
+        path = '/sys/fs/cgroup/cpuacct/docker/{}/cpuacct.usage'.format(container_id)
+        cpu_used = int(read_sysfs(path)) / 1e6
+        path = '/sys/fs/cgroup/memory/docker/{}/memory.max_usage_in_bytes'.format(container_id)
+        mem_max_bytes = int(read_sysfs(path))
+        # TODO: implement
+        io_read_bytes = 0
+        io_write_bytes = 0
+        net_rx_bytes = 0
+        net_tx_bytes = 0
+    else:
+        ret = docker_cli.stats(container_id, stream=False)
+        cpu_used = ret['cpu_stats']['cpu_usage']['total_usage'] / 1e6
+        mem_max_bytes = ret['memory_stats']['max_usage']
+        io_read_bytes = 0
+        io_write_bytes = 0
+        for item in ret['blkio_stats']['io_service_bytes_recursive']:
+            if item['op'] == 'Read':
+                io_read_bytes += item['value']
+            elif item['op'] == 'Write':
+                io_write_bytes += item['value']
+        net_rx_bytes = 0
+        net_tx_bytes = 0
+        for dev in ret['networks'].values():
+            net_rx_bytes += dev['rx_bytes']
+            net_tx_bytes += dev['tx_bytes']
     return {
-        'cpu_used': ret['cpu_stats']['cpu_usage']['total_usage'] / 1e6,
-        'mem_max_bytes': ret['memory_stats']['max_usage'],
+        'cpu_used': cpu_used,
+        'mem_max_bytes': mem_max_bytes,
         'net_rx_bytes': net_rx_bytes,
         'net_tx_bytes': net_tx_bytes,
         'io_read_bytes': io_read_bytes,
