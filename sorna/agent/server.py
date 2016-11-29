@@ -516,7 +516,7 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
                                                 Body=content,
                                                 ACL='public-read')
                     except botocore.exceptions.ClientError as exc:
-                        log.exception(exc)
+                        log.exception('S3 upload error')
                 client.close()
         return odict(
             ('stdout', result['stdout']),
@@ -642,7 +642,7 @@ async def run_agent(loop, docker_cli, server_sock):
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
                     resp['cause'] = format_pyexc(exc)
-                    log.exception(exc)
+                    log.exception('CREATE_KERNEL')
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
                     resp['kernel_id'] = kernel_id
@@ -661,7 +661,7 @@ async def run_agent(loop, docker_cli, server_sock):
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
                     resp['cause'] = format_pyexc(exc)
-                    log.exception(exc)
+                    log.exception('DESTROY_KERNEL')
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
             else:
@@ -670,7 +670,7 @@ async def run_agent(loop, docker_cli, server_sock):
 
         elif request['action'] == AgentRequestTypes.RESTART_KERNEL:
 
-            log.info('DESTROY_KERNEL ({})'.format(request['kernel_id']))
+            log.info('RESTART_KERNEL ({})'.format(request['kernel_id']))
             if request['kernel_id'] in container_registry:
                 try:
                     kernel_id = request['kernel_id']
@@ -680,7 +680,7 @@ async def run_agent(loop, docker_cli, server_sock):
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
                     resp['cause'] = format_pyexc(exc)
-                    log.exception(exc)
+                    log.exception('RESTART_KERNEL')
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
                     resp['stdin_port'] = container_registry[kernel_id]['stdin_port']
@@ -708,7 +708,7 @@ async def run_agent(loop, docker_cli, server_sock):
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
                     resp['cause'] = format_pyexc(exc)
-                    log.exception(exc)
+                    log.exception('EXECUTE')
                 else:
                     resp['reply'] = SornaResponseTypes.SUCCESS
                     resp['result'] = result
