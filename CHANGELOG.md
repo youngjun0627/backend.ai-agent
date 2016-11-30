@@ -1,6 +1,19 @@
 Changes
 =======
 
+0.7.3 (2016-11-30)
+------------------
+
+**CHANGES**
+
+ - Increase docker API timeouts.
+
+**FIXES**
+
+ - Fix heartbeats stop working after kernel/agent timeouts.
+
+ - Fix exception logging in the main server loop.
+
 0.7.2 (2016-11-28)
 ------------------
 
