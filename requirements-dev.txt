@@ -3,7 +3,7 @@ async_timeout
 pyzmq
 aiozmq
 aiohttp>=1.1
--e https://github.com/achimnol/aiodocker@master#egg=aiodocker
+-e git+ssh://git@github.com/achimnol/aiodocker@master#egg=aiodocker
 aioredis>=0.2.8
 aiobotocore
 namedlist

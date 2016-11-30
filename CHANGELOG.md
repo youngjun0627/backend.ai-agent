@@ -1,6 +1,25 @@
 Changes
 =======
 
+0.7.4 (2016-12-01)
+------------------
+
+**CHANGES**
+
+ - Now it uses [aiodocker][aiodocker] instead of [docker-py][dockerpy] to
+   prevent timeouts with many concurrent requests.
+
+   NOTE: You need to run `pip install -r requirements.txt` to install the
+	 non-pip (GitHub) version of aiodocker correctly, before running
+	 `pip install sorna-agent`.
+
+**FIXES**
+
+ - Fix corner-case exceptions in statistics/heartbeats.
+
+[aiodocker]: https://github.com/achimnol/aiodocker
+[dockerpy]: https://github.com/docker/docker-py
+
 0.7.3 (2016-11-30)
 ------------------
 

@@ -62,6 +62,9 @@ setup(
         'dev': ['pytest', 'pytest-asyncio', 'flake8', 'pep8-naming'],
         'test': ['pytest', 'pytest-asyncio'],
     },
+    dependency_links=[
+        'git+ssh://git@github.com/achimnol/aiodocker@master#egg=aiodocker-dev',
+    ],
     package_data={
     },
     data_files=[],
