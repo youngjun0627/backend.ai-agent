@@ -45,27 +45,24 @@ setup(
     namespace_packages=['sorna'],
 
     install_requires=[
-        'sorna-common',
-        'coloredlogs',
-        'async_timeout',
-        'pyzmq',
-        'aiozmq',
-        'aiohttp',
+        'coloredlogs>=5.2',
+        'async_timeout>=1.1',
+        'pyzmq>=16.0',
+        'aiozmq>=0.7',
+        'aiohttp>=1.1',
+        'aiodocker',
         'aioredis',
         'aiobotocore',
         'namedlist',
         'simplejson',
-        'docker-py',
-        'uvloop'],
+        'uvloop>=0.6',
+        'sorna-common>=0.7,<0.8',
+    ],
     extras_require={
-        'dev': [],
-        'test': [],
+        'dev': ['pytest', 'pytest-asyncio', 'flake8', 'pep8-naming'],
+        'test': ['pytest', 'pytest-asyncio'],
     },
     package_data={
     },
     data_files=[],
-
-    entry_points={
-        'console_scripts': ['sorna_agent=sorna.agent:main'],
-    },
 )
