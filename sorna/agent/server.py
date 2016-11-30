@@ -14,9 +14,9 @@ import urllib.parse
 
 import zmq, aiozmq
 import aioredis
+from aiodocker.docker import Docker, DockerContainer
 from async_timeout import timeout
 import botocore, aiobotocore
-import docker
 from namedlist import namedtuple
 import requests
 import simplejson as json
@@ -25,11 +25,10 @@ import uvloop
 from sorna import utils, defs
 from sorna.argparse import ipaddr, port_no, host_port_pair, positive_int
 from sorna.proto import Message
-from sorna.utils import odict, generate_uuid, nmget
+from sorna.utils import odict, generate_uuid, nmget, readable_size_to_bytes
 from sorna.proto.msgtypes import AgentRequestTypes, SornaResponseTypes
 from . import __version__
 from .resources import CPUAllocMap
-from .helper import call_docker_with_retries
 
 
 log = logging.getLogger('sorna.agent.server')
@@ -38,7 +37,6 @@ log.setLevel(logging.DEBUG)
 container_registry = dict()
 container_cpu_map = None
 
-apparmor_profile_path = '/etc/apparmor.d/docker-ptrace'
 volume_root = None
 supported_langs = {
     'python2',
@@ -70,8 +68,6 @@ agent_ip = None
 agent_port = 0
 inst_type = None
 redis_addr = (None, 6379)
-docker_ip = None
-docker_version = None
 
 # Shortcut for str.format
 _f = lambda fmt, *args, **kwargs: fmt.format(*args, **kwargs)
@@ -81,49 +77,40 @@ def dict2kvlist(o):
     return chain.from_iterable((k, v) for k, v in o.items())
 
 
-def docker_init():
-    global docker_ip, docker_version
-    docker_args = docker.utils.kwargs_from_env()
-    if docker_ip is None:  # if not overriden
-        if 'base_url' in docker_args:
-            docker_ip = urllib.parse.urlparse(docker_args['base_url']).hostname
-        else:
-            docker_ip = '127.0.0.1'
-    docker_cli = docker.Client(timeout=5, **docker_args)
-    docker_version = LooseVersion(docker_cli.version()['Version'])
-    log.info('detected docker version: {}'.format(docker_version))
-    return docker_cli
+def read_sysfs(path, type=int, default_val=0):
+    try:
+        return type(Path(path).read_text().strip())
+    except FileNotFoundError:
+        return default_val
 
 
-def read_sysfs(path):
-    return Path(path).read_text().strip()
-
-
-def collect_stats(docker_cli, container_id, loop=None):
+async def collect_stats(container: DockerContainer) -> dict:
     if sys.platform == 'linux':
-        path = '/sys/fs/cgroup/cpuacct/docker/{}/cpuacct.usage'.format(container_id)
-        cpu_used = int(read_sysfs(path)) / 1e6
-        path = '/sys/fs/cgroup/memory/docker/{}/memory.max_usage_in_bytes'.format(container_id)
-        mem_max_bytes = int(read_sysfs(path))
+        path = '/sys/fs/cgroup/cpuacct/docker/{}/cpuacct.usage' \
+               .format(container._id)
+        cpu_used = read_sysfs(path) / 1e6
+        path = '/sys/fs/cgroup/memory/docker/{}/memory.max_usage_in_bytes' \
+               .format(container._id)
+        mem_max_bytes = read_sysfs(path)
         # TODO: implement
         io_read_bytes = 0
         io_write_bytes = 0
         net_rx_bytes = 0
         net_tx_bytes = 0
     else:
-        ret = docker_cli.stats(container_id, stream=False)
-        cpu_used = ret['cpu_stats']['cpu_usage']['total_usage'] / 1e6
-        mem_max_bytes = ret['memory_stats']['max_usage']
+        ret = await container.stats(stream=False)
+        cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
+        mem_max_bytes = nmget(ret, 'memory_stats.max_usage', 0)
         io_read_bytes = 0
         io_write_bytes = 0
-        for item in ret['blkio_stats']['io_service_bytes_recursive']:
+        for item in nmget(ret, 'blkio_stats.io_service_bytes_recursive', []):
             if item['op'] == 'Read':
                 io_read_bytes += item['value']
             elif item['op'] == 'Write':
                 io_write_bytes += item['value']
         net_rx_bytes = 0
         net_tx_bytes = 0
-        for dev in ret['networks'].values():
+        for dev in nmget(ret, 'networks', {}).values():
             net_rx_bytes += dev['rx_bytes']
             net_tx_bytes += dev['tx_bytes']
     return {
@@ -136,17 +123,16 @@ def collect_stats(docker_cli, container_id, loop=None):
     }
 
 
-async def _heartbeat(loop, docker_cli, interval):
+async def _heartbeat(loop, docker, interval):
     global container_registry
     global inst_id, inst_type, agent_ip, redis_addr
     running_kernels = [k for k in container_registry.keys()]
     stats = {}
     # stats collection may take a while.
     for kern_id in running_kernels:
-        container_id = container_registry[kern_id]['container_id']
-        stats[kern_id] = collect_stats(docker_cli,
-                                       container_id,
-                                       loop=loop)
+        cid = container_registry[kern_id]['container_id']
+        container = docker.containers.container(cid)
+        stats[kern_id] = await collect_stats(container)
         stats[kern_id]['exec_timeout'] = container_registry[kern_id]['exec_timeout']
         stats[kern_id]['idle_timeout'] = idle_timeout
         mem_limit = container_registry[kern_id]['mem_limit']
@@ -197,7 +183,7 @@ async def _heartbeat(loop, docker_cli, interval):
         log.warn('heartbeat failed.')
 
 
-async def heartbeat_timer(loop, docker_cli, interval=6.0):
+async def heartbeat_timer(loop, docker, interval=6.0):
     '''
     Record my status information to the manager database (Redis).
     This information automatically expires after 2x interval, so that failure
@@ -215,7 +201,7 @@ async def heartbeat_timer(loop, docker_cli, interval=6.0):
     log.info('using manager redis at tcp://{0}:{1}'.format(*redis_addr))
     try:
         while True:
-            asyncio.ensure_future(_heartbeat(loop, docker_cli, interval))
+            asyncio.ensure_future(_heartbeat(loop, docker, interval))
             await asyncio.sleep(interval, loop=loop)
     except asyncio.CancelledError:
         pass
@@ -232,8 +218,8 @@ _extra_volumes = {
 }
 
 
-def get_extra_volumes(docker_cli, lang):
-    avail_volumes = docker_cli.volumes()['Volumes']
+async def get_extra_volumes(docker, lang):
+    avail_volumes = (await docker.volumes.list())['Volumes']
     if not avail_volumes:
         return []
     volume_names = set(v['Name'] for v in avail_volumes)
@@ -249,32 +235,18 @@ def get_extra_volumes(docker_cli, lang):
     return mount_list
 
 
-async def create_kernel(loop, docker_cli, lang, kernel_id=None):
+async def create_kernel(loop, docker, lang, kernel_id=None):
     global container_registry, container_cpu_map
+
     if not kernel_id:
         kernel_id = generate_uuid()
         assert kernel_id not in container_registry
+
     work_dir = os.path.join(volume_root, kernel_id)
     os.makedirs(work_dir)
-    if docker_version >= LooseVersion('1.10'):
-        # We already have our own jail!
-        security_opt = ['seccomp:unconfined']
-    else:
-        security_opt = ['apparmor:docker-ptrace'] if os.path.exists(apparmor_profile_path) else []
-    mount_list = get_extra_volumes(docker_cli, lang)
-    binds = {work_dir: {'bind': '/home/work', 'mode': 'rw'}}
-    binds.update({v.name: {'bind': v.container_path, 'mode': v.mode} for v in mount_list})
-    volumes = ['/home/work']
-    volumes.extend(v.container_path for v in mount_list)
-    devices = []
+
     image_name = 'lablup/kernel-{}'.format(lang)
-    ret = await call_docker_with_retries(
-        lambda: docker_cli.inspect_image(image_name),
-        lambda: log.critical(_f('could not query image info for {} (timeout)', image_name)),
-        lambda err: log.critical(_f('could not query image info for {} ({!r})', image_name, err))
-    )
-    if isinstance(ret, Exception):
-        raise RuntimeError('docker.inspect_image failed') from ret
+    ret = await docker.images.get(image_name)
     mem_limit       = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
     exec_timeout    = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
     requested_cores = int(ret['ContainerConfig']['Labels'].get('io.sorna.maxcores', '1'))
@@ -283,74 +255,54 @@ async def create_kernel(loop, docker_cli, lang, kernel_id=None):
     log.info('container config: mem_limit={}, exec_timeout={}, cores={!r}@{}'
              .format(mem_limit, exec_timeout, core_set, numa_node))
 
+    mount_list = await get_extra_volumes(docker, lang)
+    binds = ['{}:/home/work:rw'.format(work_dir)]
+    binds.extend('{}:{}:{}'.format(v.name, v.container_path, v.mode) for v in mount_list)
+    volumes = ['/home/work']
+    volumes.extend(v.container_path for v in mount_list)
+    devices = []
+
     if 'yes' == ret['ContainerConfig']['Labels'].get('io.sorna.nvidia.enabled', 'no'):
-        extra_binds, extra_devices = prepare_nvidia(docker_cli, numa_node)
-        binds.update(extra_binds)
+        extra_binds, extra_devices = await prepare_nvidia(docker, numa_node)
+        binds.extends(extra_binds)
         devices.extend(extra_devices)
 
-    host_config = docker_cli.create_host_config(
-        cpuset_cpus=','.join(map(str, sorted(core_set))),
-        mem_limit=mem_limit,
-        memswap_limit=0,
-        security_opt=security_opt,
-        port_bindings={
-            2001: ('0.0.0.0', ),
-            2002: ('0.0.0.0', ),
-            2003: ('0.0.0.0', ),
+    config = {
+        'Image': image_name,
+        'Tty': True,
+        'Volumes': {v: {} for v in volumes},
+        'StopSignal': 'SIGINT',
+        'ExposedPorts': {
+            '2001/tcp': {},
+            '2002/tcp': {},
+            '2003/tcp': {},
         },
-        devices=devices,
-        binds=binds,
-    )
-    # docker-py is missing support this in the create_container API.
-    # (only in update_contaienr API...)
-    host_config['CpusetMems'] = '{}'.format(numa_node)
+        'HostConfig': {
+            'MemorySwap': 0,
+            'Memory': readable_size_to_bytes(mem_limit),
+            'CpusetCpus': ','.join(map(str, sorted(core_set))),
+            'CpusetMems': '{}'.format(numa_node),
+            'SecurityOpt': ['seccomp:unconfined'],
+            'Binds': binds,
+            'Devices': devices,
+            'PublishAllPorts': True,
+        },
+    }
+    kernel_name = 'kernel.{}.{}'.format(lang, kernel_id)
+    container = await docker.containers.create(config=config, name=kernel_name)
+    await container.start()
+    repl_port   = (await container.port(2001))[0]['HostPort']
+    stdin_port  = (await container.port(2002))[0]['HostPort']
+    stdout_port = (await container.port(2003))[0]['HostPort']
+    kernel_ip = '127.0.0.1'
 
-    ret = await call_docker_with_retries(
-        lambda: docker_cli.create_container(
-            image_name,
-            name='kernel.{}.{}'.format(lang, kernel_id),
-            cpu_shares=1024,  # full share
-            ports=[
-                (2001, 'tcp'),
-                (2002, 'tcp'),
-                (2003, 'tcp'),
-            ],
-            volumes=volumes,
-            host_config=host_config,
-            tty=True
-        ),
-        lambda: log.critical(_f('could not create container for kernel {} (timeout)', kernel_id)),
-        lambda err: log.critical(_f('could not create container for kernel {} ({!r})', kernel_id, err))
-    )
-    if isinstance(ret, Exception):
-        raise RuntimeError('docker.create_container failed') from ret
-    container_id = ret['Id']
-    ret = await call_docker_with_retries(
-        lambda: docker_cli.start(container_id),
-        lambda: log.critical(_f('could not start container {} for kernel {} (timeout)', container_id, kernel_id)),
-        lambda err: log.critical(_f('could not start container {} for kernel {} ({!r})', container_id, kernel_id, err)),
-    )
-    if isinstance(ret, Exception):
-        raise RuntimeError('docker.start failed') from ret
-    container_info = docker_cli.inspect_container(container_id)
-    # We can connect to the container either using
-    # tcp://<NetworkSettings.IPAddress>:2001 (direct)
-    # or tcp://127.0.0.1:<NetworkSettings.Ports.2011/tcp.0.HostPort> (NAT'ed)
-    if docker_ip:
-        kernel_ip = docker_ip
-    else:
-        # kernel_ip = container_info['NetworkSettings']['IPAddress']
-        kernel_ip = '127.0.0.1'
-    host_side_port = container_info['NetworkSettings']['Ports']['2001/tcp'][0]['HostPort']
-    stdin_port  = container_info['NetworkSettings']['Ports']['2002/tcp'][0]['HostPort']
-    stdout_port = container_info['NetworkSettings']['Ports']['2003/tcp'][0]['HostPort']
     container_registry[kernel_id] = {
         'lang': lang,
-        'container_id': container_id,
-        'addr': 'tcp://{0}:{1}'.format(kernel_ip, host_side_port),
+        'container_id': container._id,
+        'addr': 'tcp://{0}:{1}'.format(kernel_ip, repl_port),
         'ip': kernel_ip,
         'port': 2001,
-        'host_port': host_side_port,
+        'host_port': repl_port,
         'stdin_port': stdin_port,
         'stdout_port': stdout_port,
         'cpu_shares': 1024,
@@ -361,28 +313,24 @@ async def create_kernel(loop, docker_cli, lang, kernel_id=None):
         'num_queries': 0,
         'last_used': time.monotonic(),
     }
-    log.debug('kernel access address: {0}:{1}'.format(kernel_ip, host_side_port))
-    log.debug('kernel stdin address: {0}:{1}'.format(kernel_ip, stdin_port))
-    log.debug('kernel stdout address: {0}:{1}'.format(kernel_ip, stdout_port))
+    log.debug('kernel access address: {0}:{1}'.format('0.0.0.0', repl_port))
+    log.debug('kernel stdin address: {0}:{1}'.format('0.0.0.0', stdin_port))
+    log.debug('kernel stdout address: {0}:{1}'.format('0.0.0.0', stdout_port))
     return kernel_id
 
 
-async def destroy_kernel(loop, docker_cli, kernel_id, keep_registry=False):
+async def destroy_kernel(loop, docker, kernel_id, keep_registry=False):
     global container_registry
     global inst_id
+
     if not inst_id:
         inst_id = await utils.get_instance_id()
-    container_id = container_registry[kernel_id]['container_id']
-    await call_docker_with_retries(
-        lambda: docker_cli.kill(container_id),
-        lambda: log.warning(_f('could not kill container {} used by kernel {} (timeout)', container_id, kernel_id)),
-        lambda err: log.warning(_f('could not kill container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
-    )
-    await call_docker_with_retries(
-        lambda: docker_cli.remove_container(container_id),
-        lambda: log.warning(_f('could not remove container {} used by kernel {} (timeout)', container_id, kernel_id)),
-        lambda err: log.warning(_f('could not remove container {} used by kernel {} ({!r})', container_id, kernel_id, err)),
-    )
+
+    cid = container_registry[kernel_id]['container_id']
+    container = docker.containers.container(cid)
+    await container.kill()
+    await container.delete()
+
     # We ignore returned exceptions above, because anyway we should proceed to clean up other things.
     work_dir = os.path.join(volume_root, kernel_id)
     shutil.rmtree(work_dir)
@@ -435,29 +383,28 @@ def diff_file_stats(fs1, fs2):
     return new_files | modified_files
 
 
-def prepare_nvidia(docker_cli, numa_node):
+async def prepare_nvidia(docker, numa_node):
     r = requests.get('http://localhost:3476/docker/cli/json')
     nvidia_params = r.json()
     r = requests.get('http://localhost:3476/gpu/info/json')
     gpu_info = r.json()
-    existing_volumes = set(vol['Name'] for vol in docker_cli.volumes()['Volumes'])
+
+    volumes = await docker.volumes.list()
+    existing_volumes = set(vol['Name'] for vol in volumes['Volumes'])
     required_volumes = set(vol.split(':')[0] for vol in nvidia_params['Volumes'])
     missing_volumes = required_volumes - existing_volumes
-    binds = {}
+    binds = []
     for vol_name in missing_volumes:
         for vol_param in nvidia_params['Volumes']:
             if vol_param.startswith(vol_name + ':'):
                 _, _, permission = vol_param.split(':')
                 driver = nvidia_params['VolumeDriver']
-                docker_cli.create_volume(name=vol_name, driver=driver)
+                await docker.volumes.create({'Name': vol_name, 'Driver': driver})
     for vol_name in required_volumes:
         for vol_param in nvidia_params['Volumes']:
             if vol_param.startswith(vol_name + ':'):
                 _, mount_pt, permission = vol_param.split(':')
-                binds[vol_name] = {
-                    'bind': mount_pt,
-                    'mode': permission,
-                }
+                binds.append('{}:{}:{}'.format(vol_name, mount_pt, permission))
     devices = []
     for dev in nvidia_params['Devices']:
         if re.search(r'^/dev/nvidia\d+$', dev) is None:
@@ -470,11 +417,15 @@ def prepare_nvidia(docker_cli, numa_node):
                     gpu_node = int(Path(pci_path).read_text().strip())
                     if gpu_node == numa_node:
                         devices.append(dev)
-    devices = ['{0}:{0}:rwm'.format(dev) for dev in devices]
+    devices = [{
+        'PathOnHost': dev,
+        'PathInContainer': dev,
+        'CgroupPermissions': 'mrw',
+    } for dev in devices]
     return binds, devices
 
 
-async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
+async def execute_code(loop, docker, entry_id, kernel_id, cell_id, code):
     work_dir = os.path.join(volume_root, kernel_id)
     # TODO: import "connected" files from S3
     initial_file_stats = scandir(work_dir)
@@ -486,12 +437,10 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     container_sock.write([cell_id.encode('ascii'), code.encode('utf8')])
     exec_timeout = container_registry[kernel_id]['exec_timeout']
 
-    # Execute with a 4 second timeout.
     try:
         begin_time = time.monotonic()
-        result_data = await asyncio.wait_for(container_sock.read(),
-                                             timeout=exec_timeout,
-                                             loop=loop)
+        with timeout(exec_timeout):
+            result_data = await container_sock.read()
         finish_time = time.monotonic()
         log.info(_f('execution time: {:.2f} / {} sec', finish_time - begin_time, exec_timeout))
         result = json.loads(result_data[0])
@@ -529,13 +478,13 @@ async def execute_code(loop, docker_cli, entry_id, kernel_id, cell_id, code):
     except asyncio.TimeoutError as exc:
         log.warning('Timeout detected on kernel {} (cell_id: {}).'
                     .format(kernel_id, cell_id))
-        await destroy_kernel(loop, docker_cli, kernel_id)
-        raise exc  # re-raise so that the loop return failure.
+        await destroy_kernel(loop, docker, kernel_id)
+        raise
     finally:
         container_sock.close()
 
 
-async def cleanup_timer(loop, docker_cli):
+async def cleanup_timer(loop, docker):
     try:
         while True:
             now = time.monotonic()
@@ -545,7 +494,7 @@ async def cleanup_timer(loop, docker_cli):
                 try:
                     if now - container_registry[kern_id]['last_used'] > idle_timeout:
                         log.info('destroying kernel {} as clean-up'.format(kern_id))
-                        await destroy_kernel(loop, docker_cli, kern_id)
+                        await destroy_kernel(loop, docker, kern_id)
                 except KeyError:
                     # The kernel may be destroyed by other means?
                     # TODO: check this situation more thoroughly.
@@ -555,11 +504,14 @@ async def cleanup_timer(loop, docker_cli):
         pass
 
 
-async def clean_all_kernels(loop, docker_cli):
+async def clean_all_kernels(loop, docker):
     log.info('cleaning all kernels...')
     kern_ids = tuple(container_registry.keys())
     for kern_id in kern_ids:
-        await destroy_kernel(loop, docker_cli, kern_id)
+        try:
+            await destroy_kernel(loop, docker, kern_id)
+        except:
+            log.exception('clean_all_kernels')
 
 
 def match_result(result, match):
@@ -596,7 +548,7 @@ def format_pyexc(e):
         return type(e).__name__
 
 
-async def run_agent(loop, docker_cli, server_sock):
+async def run_agent(loop, docker, server_sock):
     global container_registry
     global inst_id, agent_ip, inst_type, redis_addr
 
@@ -607,12 +559,16 @@ async def run_agent(loop, docker_cli, server_sock):
     if not agent_ip:
         agent_ip = await utils.get_instance_ip()
 
+    docker_version = await docker.version()
+    log.info('running with Docker {0} with API {1}'
+             .format(docker_version['Version'], docker_version['ApiVersion']))
+
     # Initialize docker subsystem
     container_registry.clear()
 
     # Send the first heartbeat.
-    hb_task    = asyncio.ensure_future(heartbeat_timer(loop, docker_cli), loop=loop)
-    timer_task = asyncio.ensure_future(cleanup_timer(loop, docker_cli), loop=loop)
+    hb_task    = asyncio.ensure_future(heartbeat_timer(loop, docker), loop=loop)
+    timer_task = asyncio.ensure_future(cleanup_timer(loop, docker), loop=loop)
     await asyncio.sleep(0, loop=loop)
 
     # Then start running the agent loop.
@@ -637,7 +593,7 @@ async def run_agent(loop, docker_cli, server_sock):
             if request['lang'] in lang_aliases:
                 try:
                     lang = lang_aliases[request['lang']]
-                    kernel_id = await create_kernel(loop, docker_cli, lang)
+                    kernel_id = await create_kernel(loop, docker, lang)
                     # TODO: (asynchronously) check if container is running okay.
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
@@ -657,7 +613,7 @@ async def run_agent(loop, docker_cli, server_sock):
             log.info('DESTROY_KERNEL ({})'.format(request['kernel_id']))
             if request['kernel_id'] in container_registry:
                 try:
-                    await destroy_kernel(loop, docker_cli, request['kernel_id'])
+                    await destroy_kernel(loop, docker, request['kernel_id'])
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
                     resp['cause'] = format_pyexc(exc)
@@ -674,9 +630,9 @@ async def run_agent(loop, docker_cli, server_sock):
             if request['kernel_id'] in container_registry:
                 try:
                     kernel_id = request['kernel_id']
-                    await destroy_kernel(loop, docker_cli, kernel_id, keep_registry=True)
+                    await destroy_kernel(loop, docker, kernel_id, keep_registry=True)
                     lang = container_registry[kernel_id]['lang']
-                    await create_kernel(loop, docker_cli, lang, kernel_id)
+                    await create_kernel(loop, docker, lang, kernel_id)
                 except Exception as exc:
                     resp['reply'] = SornaResponseTypes.FAILURE
                     resp['cause'] = format_pyexc(exc)
@@ -698,7 +654,7 @@ async def run_agent(loop, docker_cli, server_sock):
                     container_registry[request['kernel_id']]['last_used'] \
                         = time.monotonic()
                     container_registry[request['kernel_id']]['num_queries'] += 1
-                    result = await execute_code(loop, docker_cli,
+                    result = await execute_code(loop, docker,
                                                 request['entry_id'],
                                                 request['kernel_id'],
                                                 request['cell_id'],
@@ -849,14 +805,15 @@ def main():
     term_ev = asyncio.Event()
     loop.add_signal_handler(signal.SIGTERM, handle_signal, loop, term_ev)
     loop.add_signal_handler(signal.SIGINT, handle_signal, loop, term_ev)
-    docker_cli = docker_init()
-    asyncio.ensure_future(run_agent(loop, docker_cli, server_sock), loop=loop)
+    docker = Docker(url='/var/run/docker.sock')
+    asyncio.ensure_future(run_agent(loop, docker, server_sock), loop=loop)
     try:
         log.info('serving at {0}'.format(agent_addr))
         loop.run_forever()
         # interrupted
-        loop.run_until_complete(clean_all_kernels(loop, docker_cli))
+        loop.run_until_complete(clean_all_kernels(loop, docker))
         server_sock.close()
+        docker.session.close()
         loop.run_until_complete(asyncio.sleep(0.1))
     finally:
         loop.close()
