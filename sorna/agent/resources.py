@@ -1,7 +1,10 @@
 import ctypes, ctypes.util
+import logging
 import operator
 import os
 import sys
+
+log = logging.getLogger('sorna.agent.resources')
 
 _numa_supported = False
 

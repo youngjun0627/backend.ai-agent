@@ -53,6 +53,7 @@ setup(
         'aiodocker',
         'aioredis',
         'aiobotocore',
+        'msgpack-python',
         'namedlist',
         'simplejson',
         'uvloop>=0.6',

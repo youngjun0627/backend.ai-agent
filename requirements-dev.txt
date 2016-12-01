@@ -6,6 +6,7 @@ aiohttp>=1.1
 -e git+ssh://git@github.com/achimnol/aiodocker@master#egg=aiodocker
 aioredis>=0.2.8
 aiobotocore
+msgpack-python
 namedlist
 simplejson
 uvloop>=0.5.4

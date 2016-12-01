@@ -1,0 +1,49 @@
+import logging
+from pathlib import Path
+import re
+
+import requests
+
+log = logging.getLogger('sorna.agent.gpu')
+
+
+async def prepare_nvidia(docker, numa_node):
+    r = requests.get('http://localhost:3476/docker/cli/json')
+    nvidia_params = r.json()
+    r = requests.get('http://localhost:3476/gpu/info/json')
+    gpu_info = r.json()
+
+    volumes = await docker.volumes.list()
+    existing_volumes = set(vol['Name'] for vol in volumes['Volumes'])
+    required_volumes = set(vol.split(':')[0] for vol in nvidia_params['Volumes'])
+    missing_volumes = required_volumes - existing_volumes
+    binds = []
+    for vol_name in missing_volumes:
+        for vol_param in nvidia_params['Volumes']:
+            if vol_param.startswith(vol_name + ':'):
+                _, _, permission = vol_param.split(':')
+                driver = nvidia_params['VolumeDriver']
+                await docker.volumes.create({'Name': vol_name, 'Driver': driver})
+    for vol_name in required_volumes:
+        for vol_param in nvidia_params['Volumes']:
+            if vol_param.startswith(vol_name + ':'):
+                _, mount_pt, permission = vol_param.split(':')
+                binds.append('{}:{}:{}'.format(vol_name, mount_pt, permission))
+    devices = []
+    for dev in nvidia_params['Devices']:
+        if re.search(r'^/dev/nvidia\d+$', dev) is None:
+            devices.append(dev)
+        else:
+            # Only expose GPUs in the same NUMA node.
+            for gpu in gpu_info['Devices']:
+                if gpu['Path'] == dev:
+                    pci_path = '/sys/bus/pci/devices/{}/numa_node'.format(gpu['PCI']['BusID'])
+                    gpu_node = int(Path(pci_path).read_text().strip())
+                    if gpu_node == numa_node:
+                        devices.append(dev)
+    devices = [{
+        'PathOnHost': dev,
+        'PathInContainer': dev,
+        'CgroupPermissions': 'mrw',
+    } for dev in devices]
+    return binds, devices
