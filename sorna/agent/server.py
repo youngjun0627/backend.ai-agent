@@ -787,6 +787,8 @@ def main():
         'nodejs': 'nodejs4',
         'javascript': 'nodejs4',
         'lua': 'lua5',
+        'git-shell': 'git',
+        'shell': 'git',
     })
     if args.kernel_aliases:  # for when we want to add extra
         with open(args.kernel_aliases, 'r') as f:
