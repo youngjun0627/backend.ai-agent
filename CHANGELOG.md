@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.7.5 (2016-12-01)
+------------------
+
+**CHANGES**
+
+ - Add new aliases for "git" kernel: "git-shell" and "shell"
+
 0.7.4 (2016-12-01)
 ------------------
 
