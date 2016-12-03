@@ -165,6 +165,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def create_kernel(self, lang: str, opts: dict) -> tuple:
         if lang in lang_aliases:
             lang = lang_aliases[lang]
+        log.debug('rpc::create_kernel({})'.format(lang))
         kernel_id = await self._create_kernel(lang)
         stdin_port = self.container_registry[kernel_id]['stdin_port']
         stdout_port = self.container_registry[kernel_id]['stdout_port']
@@ -172,11 +173,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     @aiozmq.rpc.method
     async def destroy_kernel(self, kernel_id: str):
+        log.debug('rpc::destroy_kernel({})'.format(kernel_id))
         await self._destroy_kernel(kernel_id)
 
     @aiozmq.rpc.method
     async def restart_kernel(self, kernel_id: str):
-        kernel_id = kernel_id
+        log.debug('rpc::restart_kernel({})'.format(kernel_id))
         await self._destroy_kernel(kernel_id, keep_registry=True)
         lang = self.container_registry[kernel_id]['lang']
         await self._create_kernel(lang, kernel_id=kernel_id)
@@ -185,8 +187,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def execute_code(self, entry_id: str, kernel_id: str,
                            code_id: str, code: str,
                            match: dict) -> dict:
+        log.debug('rpc::execute_code({}, {}, ...)'.format(entry_id, kernel_id))
         result = await self._execute_code(entry_id, kernel_id, code_id, code)
-        if match is not None:
+        if match:
             result['match_result'] = match_result(result, match)
         return result
 
@@ -209,8 +212,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         requested_cores = int(ret['ContainerConfig']['Labels'].get('io.sorna.maxcores', '1'))
         num_cores       = min(self.container_cpu_map.num_cores, requested_cores)
         numa_node, core_set = self.container_cpu_map.alloc(num_cores)
-        log.info('container config: mem_limit={}, exec_timeout={}, cores={!r}@{}'
-                 .format(mem_limit, exec_timeout, core_set, numa_node))
+        log.debug('container config: mem_limit={}, exec_timeout={}, cores={!r}@{}'
+                  .format(mem_limit, exec_timeout, core_set, numa_node))
 
         mount_list = await get_extra_volumes(self.docker, lang)
         binds = ['{}:/home/work:rw'.format(work_dir)]
@@ -299,7 +302,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             self.container_cpu_map.free(self.container_registry[kernel_id]['core_set'])
             del self.container_registry[kernel_id]
 
-    async def _execute_code(self, entry_id, kernel_id, cell_id, code):
+    async def _execute_code(self, entry_id, kernel_id, code_id, code):
         work_dir = os.path.join(self.config.volume_root, kernel_id)
 
         self.container_registry[kernel_id]['last_used'] = time.monotonic()
@@ -309,7 +312,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         container_sock = await aiozmq.create_zmq_stream(
             zmq.REQ, connect=container_addr, loop=self.loop)
         container_sock.transport.setsockopt(zmq.LINGER, 50)
-        container_sock.write([cell_id.encode('ascii'), code.encode('utf8')])
+        container_sock.write([code_id.encode('ascii'), code.encode('utf8')])
         exec_timeout = self.container_registry[kernel_id]['exec_timeout']
 
         try:
@@ -320,8 +323,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             with timeout(exec_timeout):
                 result_data = await container_sock.read()
             finish_time = time.monotonic()
-            log.info(_f('execution time: {:.2f} / {} sec',
-                        finish_time - begin_time, exec_timeout))
+            log.debug(_f('execution time: {:.2f} / {} sec',
+                         finish_time - begin_time, exec_timeout))
 
             final_file_stats = scandir(work_dir, max_upload_size)
             result = json.loads(result_data[0])
@@ -341,50 +344,56 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 ('files', uploaded_files),
             )
         except asyncio.TimeoutError as exc:
-            log.warning('Timeout detected on kernel {} (cell_id: {}).'
-                        .format(kernel_id, cell_id))
-            await self._destroy_kernel(kernel_id)
+            log.warning('Timeout detected on kernel {} (code_id: {}).'
+                        .format(kernel_id, code_id))
+            asyncio.ensure_future(self._destroy_kernel(kernel_id))
             raise
         finally:
             container_sock.close()
 
     async def heartbeat(self, interval):
         running_kernels = [k for k in self.container_registry.keys()]
-        stats = {}
-        # stats collection may take a while.
-        for kern_id in running_kernels:
-            cid = self.container_registry[kern_id]['container_id']
-            container = self.docker.containers.container(cid)
-            stats[kern_id] = await collect_stats(container)
-            stats[kern_id]['exec_timeout'] = self.container_registry[kern_id]['exec_timeout']
-            stats[kern_id]['idle_timeout'] = self.config.idle_timeout
-            mem_limit = self.container_registry[kern_id]['mem_limit']
-            mem_limit_in_kb = utils.readable_size_to_bytes(mem_limit) // 1024
-            stats[kern_id]['mem_limit']   = mem_limit_in_kb
-            stats[kern_id]['num_queries'] = self.container_registry[kern_id]['num_queries']
-            last_used = self.container_registry[kern_id]['last_used']
-            stats[kern_id]['idle'] = (time.monotonic() - last_used) * 1000
+        running_containers = [self.container_registry[k]['container_id']
+                              for k in running_kernels]
+        stats = await collect_stats(map(self.docker.containers.container, running_containers))
         try:
             async with self.lifecycle_lock, \
                        self.redis_inst.get() as ri, \
                        self.redis_kern.get() as rk:
+                # Attach limits to collected stats.
+                # Here, there may be destroyed kernels due to coroutine interleaving.
+                for idx, stat in enumerate(stats):
+                    kern_id = running_kernels[idx]
+                    if kern_id not in self.container_registry:
+                        stats[idx] = None
+                        continue
+                    stats[idx]['exec_timeout'] = self.container_registry[kern_id]['exec_timeout']
+                    stats[idx]['idle_timeout'] = self.config.idle_timeout
+                    mem_limit = self.container_registry[kern_id]['mem_limit']
+                    mem_limit_in_kb = utils.readable_size_to_bytes(mem_limit) // 1024
+                    stats[idx]['mem_limit']   = mem_limit_in_kb
+                    stats[idx]['num_queries'] = self.container_registry[kern_id]['num_queries']
+                    last_used = self.container_registry[kern_id]['last_used']
+                    stats[idx]['idle'] = (time.monotonic() - last_used) * 1000
                 with timeout(interval / 2):
                     # should match with sorna.manager.structs.Instance
                     my_kernels_key = '{}.kernels'.format(self.config.inst_id)
                     ri_pipe, rk_pipe = ri.pipeline(), rk.pipeline()
+                    valid_count = 0
+                    for idx, kern_id in enumerate(running_kernels):
+                        if stats[idx]:
+                            ri_pipe.sadd(my_kernels_key, kern_id)
+                            rk_pipe.hmset(kern_id, *utils.dict2kvlist(stats[idx]))
+                            valid_count += 1
                     ri_pipe.hmset(self.config.inst_id, *utils.dict2kvlist({
                         'status': 'ok',
                         'id': self.config.inst_id,
                         'ip': self.config.agent_ip,
                         'addr': 'tcp://{}:{}'.format(self.config.agent_ip, self.config.agent_port),
                         'type': self.config.inst_type,
-                        'num_kernels': len(running_kernels),
+                        'num_kernels': valid_count,
                         'max_kernels': self.config.max_kernels,
                     }))
-                    ri_pipe.delete(my_kernels_key)
-                    for kern_id in running_kernels:
-                        ri_pipe.sadd(my_kernels_key, kern_id)
-                        rk_pipe.hmset(kern_id, *utils.dict2kvlist(stats[kern_id]))
                     # Create a "shadow" key that actually expires.
                     # This allows access to agent information upon expiration events.
                     ri_pipe.set('shadow:' + self.config.inst_id, '')
@@ -395,32 +404,39 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     except asyncio.CancelledError:
                         pass
                     except:
-                        log.exception('Failed to finish heartbeat updates.')
+                        log.exception('heartbeat error')
                     ri.close()
                     rk.close()
         except asyncio.TimeoutError:
-            log.warn('heartbeat failed.')
+            log.warn('heartbeat timeout')
 
     async def clean_old_kernels(self):
         now = time.monotonic()
         keys = tuple(self.container_registry.keys())
+        tasks = []
         for kern_id in keys:
             try:
-                if now - self.container_registry[kern_id]['last_used'] > self.config.idle_timeout:
+                last_used = self.container_registry[kern_id]['last_used']
+                if now - last_used > self.config.idle_timeout:
                     log.info('destroying kernel {} as clean-up'.format(kern_id))
-                    await self._destroy_kernel(kern_id)
+                    task = asyncio.ensure_future(self._destroy_kernel(kern_id))
+                    tasks.append(task)
             except KeyError:
                 # The kernel may be destroyed by other means?
                 pass
+        await asyncio.gather(*tasks)
 
     async def clean_all_kernels(self):
         log.info('cleaning all kernels...')
         kern_ids = tuple(self.container_registry.keys())
+        tasks = []
         for kern_id in kern_ids:
             try:
-                await self._destroy_kernel(kern_id)
+                task = asyncio.ensure_future(self._destroy_kernel(kern_id))
+                tasks.append(task)
             except:
-                log.exception('clean_all_kernels')
+                log.exception('clean_all_kernels: destroying {}'.format(kern_id))
+        await asyncio.gather(*tasks)
 
 
 def main():
