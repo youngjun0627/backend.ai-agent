@@ -382,7 +382,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     valid_count = 0
                     if self.first_heartbeat:
                         # if restarted, clean up the running kernels set.
-                        ri.delete(my_kernels_key)
+                        ri_pipe.delete(my_kernels_key)
                         self.first_heartbeat = False
                     for idx, kern_id in enumerate(running_kernels):
                         if stats[idx]:
