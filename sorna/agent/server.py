@@ -27,7 +27,6 @@ from .stats import collect_stats
 from .resources import CPUAllocMap
 
 log = logging.getLogger('sorna.agent.server')
-log.setLevel(logging.DEBUG)
 
 supported_langs = {
     'python2',
@@ -502,8 +501,6 @@ def main():
             },
         },
     })
-    if args.debug:
-        log.debug('debug mode enabled.')
 
     if args.agent_ip:
         args.agent_ip = str(args.agent_ip)
@@ -545,6 +542,10 @@ def main():
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     loop = asyncio.get_event_loop()
     log.info('Sorna Agent {}'.format(__version__))
+
+    log_config = logging.getLogger('sorna.agent.config')
+    if args.debug:
+        log_config.debug('debug mode enabled.')
 
     def handle_signal(loop, term_ev):
         if term_ev.is_set():
