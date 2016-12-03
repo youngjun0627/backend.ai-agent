@@ -3,8 +3,6 @@ import logging
 import sys
 from pathlib import Path
 
-from aiodocker.docker import DockerContainer
-
 from sorna.utils import nmget
 
 log = logging.getLogger('sorna.agent.stats')
@@ -60,7 +58,7 @@ async def _collect_stats_api(container):
 
 async def collect_stats(containers):
     if sys.platform == 'linux':
-        results = tuple(collect_stats_sysfs(c) for c in containers)
+        results = tuple(_collect_stats_sysfs(c) for c in containers)
     else:
         tasks = []
         for c in containers:

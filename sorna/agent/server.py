@@ -139,6 +139,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.container_cpu_map = CPUAllocMap()
         self.redis_inst = None
         self.redis_kern = None
+        self.first_heartbeat = True
 
     async def init(self):
         self.redis_inst = await aioredis.create_pool(self.config.redis_addr,
@@ -379,6 +380,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     my_kernels_key = '{}.kernels'.format(self.config.inst_id)
                     ri_pipe, rk_pipe = ri.pipeline(), rk.pipeline()
                     valid_count = 0
+                    if self.first_heartbeat:
+                        # if restarted, clean up the running kernels set.
+                        ri.delete(my_kernels_key)
+                        self.first_heartbeat = False
                     for idx, kern_id in enumerate(running_kernels):
                         if stats[idx]:
                             ri_pipe.sadd(my_kernels_key, kern_id)
