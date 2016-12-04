@@ -130,10 +130,11 @@ def match_result(result, match):
 
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
-    def __init__(self, docker, config, loop=None):
+    def __init__(self, docker, config, events, loop=None):
         self.loop = loop if loop else asyncio.get_event_loop()
         self.docker = docker
         self.config = config
+        self.events = events
         self.lifecycle_lock = asyncio.Lock(loop=loop)
         self.container_registry = {}
         self.container_cpu_map = CPUAllocMap()
@@ -301,6 +302,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             shutil.rmtree(work_dir)
             self.container_cpu_map.free(self.container_registry[kernel_id]['core_set'])
             del self.container_registry[kernel_id]
+            await self.events.call.dispatch('kernel_terminated', 'destroyed', kernel_id)
 
     async def _execute_code(self, entry_id, kernel_id, code_id, code):
         work_dir = os.path.join(self.config.volume_root, kernel_id)
@@ -453,6 +455,8 @@ def main():
                            help='The port number to listen on.')
     argparser.add_argument('--redis-addr', type=host_port_pair, default=('localhost', 6379),
                            help='The host:port pair of the Redis (agent registry) server.')
+    argparser.add_argument('--event-addr', type=host_port_pair, default=('localhost', 5002),
+                           help='The host:port pair of the Gateway event server.')
     argparser.add_argument('--exec-timeout', type=positive_int, default=180,
                            help='The maximum period of time allowed for kernels to run user codes.')
     argparser.add_argument('--idle-timeout', type=positive_int, default=600,
@@ -569,15 +573,17 @@ def main():
     server = None
     hb_task = None
     timer_task = None
+    events = None
 
     async def initialize():
-        nonlocal docker, agent, server
+        nonlocal docker, agent, server, events
         nonlocal hb_task, timer_task
         args.inst_id = await utils.get_instance_id()
         args.inst_type = await utils.get_instance_type()
         args.agent_ip = await utils.get_instance_ip()
         log.info('myself: {} ({}), ip: {}'.format(args.inst_id, args.inst_type, args.agent_ip))
         log.info('using manager redis at tcp://{0}:{1}'.format(*args.redis_addr))
+        log.info('using gwateway event server at tcp://{0}:{1}'.format(*args.event_addr))
 
         # Initialize Docker
         docker = Docker(url='/var/run/docker.sock')
@@ -585,9 +591,13 @@ def main():
         log.info('running with Docker {0} with API {1}'
                  .format(docker_version['Version'], docker_version['ApiVersion']))
 
+        # Connect to the events server.
+        event_addr = 'tcp://{}:{}'.format(*args.event_addr)
+        events = await aiozmq.rpc.connect_rpc(connect=event_addr)
+
         # Start RPC server.
         agent_addr = 'tcp://*:{}'.format(args.agent_port)
-        agent = AgentRPCServer(docker, args, loop=loop)
+        agent = AgentRPCServer(docker, args, events, loop=loop)
         await agent.init()
         server = await aiozmq.rpc.serve_rpc(agent, bind=agent_addr)
         # TODO: server_sock.transport.setsockopt(zmq.LINGER, 50)
@@ -611,6 +621,10 @@ def main():
         # Clean all kernels.
         await agent.clean_all_kernels()
         docker.session.close()
+
+        await self.events.call.dispatch('instance_terminated', 'destroyed', args.inst_id)
+        events.close()
+        await events.wait_closed()
 
         # Finalize.
         await agent.shutdown()
