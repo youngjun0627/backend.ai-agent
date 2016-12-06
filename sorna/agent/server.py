@@ -11,6 +11,7 @@ import time
 
 import zmq, aiozmq, aiozmq.rpc
 from aiodocker.docker import Docker
+from aiodocker.exceptions import DockerError
 from async_timeout import timeout
 from namedlist import namedtuple
 import simplejson as json
@@ -23,7 +24,7 @@ from . import __version__
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
 from .stats import collect_stats
-from .resources import CPUAllocMap
+from .resources import libnuma, CPUAllocMap
 
 log = logging.getLogger('sorna.agent.server')
 
@@ -58,6 +59,9 @@ _extra_volumes = {
     ],
 }
 
+restarting_kernels = {}
+blocking_cleans = {}
+
 
 async def get_extra_volumes(docker, lang):
     avail_volumes = (await docker.volumes.list())['Volumes']
@@ -76,7 +80,7 @@ async def get_extra_volumes(docker, lang):
     return mount_list
 
 
-async def heartbeat_timer(agent, interval=6.0):
+async def heartbeat_timer(agent, interval=3.0):
     '''
     Record my status information to the manager database (Redis).
     This information automatically expires after 2x interval, so that failure
@@ -86,6 +90,15 @@ async def heartbeat_timer(agent, interval=6.0):
     try:
         while True:
             asyncio.ensure_future(agent.heartbeat(interval))
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        pass
+
+
+async def stats_timer(agent, interval=5.0):
+    try:
+        while True:
+            asyncio.ensure_future(agent.update_stats(interval))
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         pass
@@ -165,9 +178,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     @aiozmq.rpc.method
     async def restart_kernel(self, kernel_id: str):
         log.debug('rpc::restart_kernel({})'.format(kernel_id))
-        await self._destroy_kernel(kernel_id, 'restarting', keep_registry=True)
+        restarting_kernels[kernel_id] = asyncio.Event()
+        await self._destroy_kernel(kernel_id, 'restarting')
         lang = self.container_registry[kernel_id]['lang']
         await self._create_kernel(lang, kernel_id=kernel_id)
+        if kernel_id in restarting_kernels:
+            del restarting_kernels[kernel_id]
 
     @aiozmq.rpc.method
     async def execute_code(self, entry_id: str, kernel_id: str,
@@ -186,8 +202,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         tasks = []
         for kern_id in kern_ids:
             try:
-                task = asyncio.ensure_future(
-                    self._destroy_kernel(kern_id, 'agent-reset', notify_manager=False))
+                task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'agent-reset'))
                 tasks.append(task)
             except:
                 log.exception('reset: destroying {}'.format(kern_id))
@@ -201,17 +216,34 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         else:
             await self.events.call.dispatch('kernel_restarting', kernel_id)
 
-        work_dir = os.path.join(self.config.volume_root, kernel_id)
-        os.makedirs(work_dir)
-
         image_name = 'lablup/kernel-{}'.format(lang)
         ret = await self.docker.images.get(image_name)
         mem_limit       = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
         container_exec_timeout = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
         exec_timeout    = min(container_exec_timeout, self.config.exec_timeout)
-        requested_cores = int(ret['ContainerConfig']['Labels'].get('io.sorna.maxcores', '1'))
-        num_cores       = min(self.container_cpu_map.num_cores, requested_cores)
-        numa_node, core_set = self.container_cpu_map.alloc(num_cores)
+
+        work_dir = os.path.join(self.config.volume_root, kernel_id)
+
+        if kernel_id in restarting_kernels:
+            core_set = self.container_registry[kernel_id]['core_set']
+            any_core = next(iter(core_set))
+            numa_node = libnuma.node_of_cpu(any_core)
+            num_cores = len(core_set)
+            # Wait until the previous container is actually deleted.
+            try:
+                with timeout(10):
+                    await restarting_kernels[kernel_id].wait()
+            except asyncio.TimeoutError:
+                log.warning('restarting kernel {} timeout!'.format(kernel_id))
+                del restarting_kernels[kernel_id]
+                asyncio.ensure_future(self.clean_kernel(kernel_id))
+                raise
+        else:
+            os.makedirs(work_dir)
+            requested_cores = int(ret['ContainerConfig']['Labels'].get('io.sorna.maxcores', '1'))
+            num_cores = min(self.container_cpu_map.num_cores, requested_cores)
+            numa_node, core_set = self.container_cpu_map.alloc(num_cores)
+
         log.debug('container config: mem_limit={}, exec_timeout={}, cores={!r}@{}'
                   .format(mem_limit, exec_timeout, core_set, numa_node))
 
@@ -278,24 +310,21 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug('kernel stdout address: {0}:{1}'.format('0.0.0.0', stdout_port))
         return kernel_id
 
-    async def _destroy_kernel(self, kernel_id, reason, keep_registry=False, notify_manager=True):
+    async def _destroy_kernel(self, kernel_id, reason):
         cid = self.container_registry[kernel_id]['container_id']
         container = self.docker.containers.container(cid)
         try:
             await container.kill()
-            await container.delete()
-        finally:
-            work_dir = os.path.join(self.config.volume_root, kernel_id)
-            shutil.rmtree(work_dir)
-            self.container_cpu_map.free(self.container_registry[kernel_id]['core_set'])
-            if not keep_registry:
-                del self.container_registry[kernel_id]
-            if notify_manager:
-                try:
-                    with timeout(1.0):
-                        await self.events.call.dispatch('kernel_terminated', reason, kernel_id)
-                except asyncio.TimeoutError:
-                    log.warning('event dispatch timeout: kernel_terminated')
+            # deleting containers will be done in docker monitor routine.
+        except DockerError as e:
+            if e.status == 500 and 'is not running' in e.message:  # already dead
+                log.warning('_destroy_kernel({}) kill 500'.format(kernel_id))
+                pass
+            elif e.status == 404:
+                log.warning('_destroy_kernel({}) kill 404'.format(kernel_id))
+                pass
+            else:
+                log.exception('_destroy_kernel({}) kill error'.format(kernel_id))
 
     async def _execute_code(self, entry_id, kernel_id, code_id, code):
         work_dir = os.path.join(self.config.volume_root, kernel_id)
@@ -325,6 +354,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             result = json.loads(result_data[0])
             uploaded_files = []
             if nmget(result, 'options.upload_output_files', True):
+                # TODO: separate as a new task
                 uploaded_files = await upload_output_files_to_s3(
                     initial_file_stats, final_file_stats, entry_id,
                     loop=self.loop)
@@ -347,7 +377,27 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             container_sock.close()
 
     async def heartbeat(self, interval):
-        log.debug('heartbeat begin')
+        running_kernels = [k for k in self.container_registry.keys()]
+        # Below dict should match with sorna.manager.structs.Instance
+        inst_info = {
+            'id': self.config.inst_id,
+            'ip': self.config.agent_ip,
+            'addr': 'tcp://{}:{}'.format(self.config.agent_ip, self.config.agent_port),
+            'type': self.config.inst_type,
+            'num_kernels': len(running_kernels),
+            'max_kernels': self.config.max_kernels,
+        }
+        try:
+            with timeout(1.0):
+                log.debug('sending heartbeat')
+                await self.events.call.dispatch('instance_heartbeat', self.config.inst_id,
+                                                inst_info, running_kernels, interval)
+        except asyncio.TimeoutError:
+            log.warning('event dispatch timeout: instance_heartbeat')
+        except:
+            log.exception('instance_heartbeat failure')
+
+    async def update_stats(self, interval):
         running_kernels = [k for k in self.container_registry.keys()]
         running_containers = [self.container_registry[k]['container_id']
                               for k in running_kernels]
@@ -355,11 +405,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         kern_stats = {}
         # Attach limits to collected stats.
         # Here, there may be destroyed kernels due to coroutine interleaving.
-        valid_count = 0
         for idx, stat in enumerate(stats):
             kern_id = running_kernels[idx]
             if kern_id not in self.container_registry:
                 stats[idx] = None
+                continue
+            if stats[idx] is None:
                 continue
             stats[idx]['exec_timeout'] = self.container_registry[kern_id]['exec_timeout']
             stats[idx]['idle_timeout'] = self.config.idle_timeout
@@ -370,26 +421,77 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             last_used = self.container_registry[kern_id]['last_used']
             stats[idx]['idle'] = (time.monotonic() - last_used) * 1000
             kern_stats[kern_id] = stats[idx]
-            valid_count += 1
-
-        # Below dict should match with sorna.manager.structs.Instance
-        inst_info = {
-            'id': self.config.inst_id,
-            'ip': self.config.agent_ip,
-            'addr': 'tcp://{}:{}'.format(self.config.agent_ip, self.config.agent_port),
-            'type': self.config.inst_type,
-            'num_kernels': valid_count,
-            'max_kernels': self.config.max_kernels,
-        }
         try:
             with timeout(1.0):
-                log.debug('sending heartbeat')
-                await self.events.call.dispatch('instance_heartbeat', self.config.inst_id,
-                                                inst_info, kern_stats, interval)
+                log.debug('sending stats')
+                await self.events.call.dispatch('instance_stats', self.config.inst_id,
+                                                kern_stats, interval)
         except asyncio.TimeoutError:
-            log.warning('event dispatch timeout: instance_heartbeat')
+            log.warning('event dispatch timeout: instance_stats')
         except:
-            log.exception('heartbeat failure')
+            log.exception('update_stats failure')
+
+    async def monitor(self):
+        queue = self.docker.events.listen()
+        while True:
+            try:
+                evdata = await queue.get()
+            except asyncio.CancelledError:
+                break
+            if evdata['Action'] == 'die':
+                # When containers die, we immediately clean up them.
+                container_id = evdata['id']
+                container_name = evdata['Actor']['Attributes']['name']
+                if not container_name.startswith('kernel.'):
+                    continue
+                container = self.docker.containers.container(container_id)
+                kernel_id = container_name.split('.', maxsplit=2)[2]
+                try:
+                    exit_code = evdata['Actor']['Attributes']['exitCode']
+                except KeyError:
+                    exit_code = '(unknown)'
+                reason = 'destroyed'
+                log.debug('docker-event: terminated: {}@{} exit code {}'.format(
+                          kernel_id, container_id[:7], exit_code))
+                asyncio.ensure_future(self.clean_kernel(kernel_id))
+
+    async def clean_kernel(self, kernel_id):
+        try:
+            container_id = self.container_registry[kernel_id]['container_id']
+            container = self.docker.containers.container(container_id)
+            try:
+                await container.delete()
+            except DockerError as e:
+                if e.status == 400 and 'already in progress' in e.message:
+                    pass
+                elif e.status == 404:
+                    pass
+                else:
+                    log.warning('container deletion: {!r}'.format(e))
+        except KeyError:
+            pass
+        if kernel_id in restarting_kernels:
+            restarting_kernels[kernel_id].set()
+        else:
+            work_dir = os.path.join(self.config.volume_root, kernel_id)
+            try:
+                shutil.rmtree(work_dir)
+            except FileNotFoundError:
+                pass
+            try:
+                self.container_cpu_map.free(self.container_registry[kernel_id]['core_set'])
+                del self.container_registry[kernel_id]
+            except KeyError:
+                pass
+            # TODO: collect final stats
+            try:
+                with timeout(1.0):
+                    await self.events.call.dispatch('kernel_terminated',
+                                                    'destroyed', kernel_id)
+            except asyncio.TimeoutError:
+                log.warning('event dispatch timeout: kernel_terminated')
+            if kernel_id in blocking_cleans:
+                blocking_cleans[kernel_id].set()
 
     async def clean_old_kernels(self):
         now = time.monotonic()
@@ -407,10 +509,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 pass
         await asyncio.gather(*tasks)
 
-    async def clean_all_kernels(self):
+    async def clean_all_kernels(self, blocking=False):
         log.info('cleaning all kernels...')
         kern_ids = tuple(self.container_registry.keys())
         tasks = []
+        if blocking:
+            for kern_id in kern_ids:
+                blocking_cleans[kern_id] = asyncio.Event()
         for kern_id in kern_ids:
             try:
                 task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'agent-termination'))
@@ -418,6 +523,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             except:
                 log.exception('clean_all_kernels: destroying {}'.format(kern_id))
         await asyncio.gather(*tasks)
+        if blocking:
+            waiters = [blocking_cleans[kern_id].wait() for kern_id in kern_ids]
+            await asyncio.gather(*waiters)
+            for kern_id in kern_ids:
+                del blocking_cleans[kern_id]
 
 
 def main():
@@ -543,12 +653,16 @@ def main():
     agent = None
     server = None
     hb_task = None
+    stats_task = None
     timer_task = None
+    monitor_handle_task = None
+    monitor_fetch_task = None
     events = None
 
     async def initialize():
         nonlocal docker, agent, server, events
-        nonlocal hb_task, timer_task
+        nonlocal hb_task, stats_task, timer_task
+        nonlocal monitor_handle_task, monitor_fetch_task
         args.inst_id = await utils.get_instance_id()
         args.inst_type = await utils.get_instance_type()
         args.agent_ip = await utils.get_instance_ip()
@@ -583,8 +697,11 @@ def main():
         log.info('serving at {0}'.format(agent_addr))
 
         # Send the first heartbeat.
-        hb_task    = asyncio.ensure_future(heartbeat_timer(agent), loop=loop)
-        timer_task = asyncio.ensure_future(cleanup_timer(agent), loop=loop)
+        hb_task      = asyncio.ensure_future(heartbeat_timer(agent), loop=loop)
+        stats_task   = asyncio.ensure_future(stats_timer(agent), loop=loop)
+        timer_task   = asyncio.ensure_future(cleanup_timer(agent), loop=loop)
+        monitor_fetch_task  = asyncio.ensure_future(docker.events.run(), loop=loop)
+        monitor_handle_task = asyncio.ensure_future(agent.monitor(), loop=loop)
         await asyncio.sleep(0.01, loop=loop)
 
     async def shutdown():
@@ -592,13 +709,22 @@ def main():
         server.close()
         await server.wait_closed()
 
+        # Clean all kernels.
+        await agent.clean_all_kernels(blocking=True)
+
         # Stop timers.
         hb_task.cancel()
+        stats_task.cancel()
         timer_task.cancel()
         await asyncio.sleep(0.01)
 
-        # Clean all kernels.
-        await agent.clean_all_kernels()
+        # Stop event monitoring.
+        try:
+            monitor_fetch_task.cancel()
+        except asyncio.CancelledError:
+            pass
+        monitor_handle_task.cancel()
+        docker.events.stop()
         docker.session.close()
 
         try:

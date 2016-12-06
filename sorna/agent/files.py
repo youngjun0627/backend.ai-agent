@@ -16,6 +16,9 @@ s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
 async def upload_output_files_to_s3(initial_file_stats, final_file_stats, entry_id, loop=None):
     loop = loop if loop else asyncio.get_event_loop()
     diff_files = diff_file_stats(initial_file_stats, final_file_stats)
+    if s3_access_key == 'dummy-access-key':
+        log.warning('skipping upload files due to misconfigured AWS access/secret keys.')
+        return diff_files
     if diff_files:
         session = aiobotocore.get_session(loop=loop)
         client = session.create_client('s3', region_name=s3_region,
