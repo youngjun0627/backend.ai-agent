@@ -8,6 +8,7 @@ aioredis>=0.2.8
 aiobotocore
 msgpack-python
 namedlist
+requests
 simplejson
 uvloop>=0.6
 sorna-common>=0.7,<0.8
