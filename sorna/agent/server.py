@@ -218,9 +218,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         image_name = 'lablup/kernel-{}'.format(lang)
         ret = await self.docker.images.get(image_name)
-        mem_limit       = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
-        container_exec_timeout = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
-        exec_timeout    = min(container_exec_timeout, self.config.exec_timeout)
+        mem_limit      = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
+        exec_timeout   = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
+        exec_timeout   = min(exec_timeout, self.config.exec_timeout)
+        envs_corecount = ret['ContainerConfig']['Labels'].get('io.sorna.envs.corecount', '')
+        envs_corecount = envs_corecount.split(',') if envs_corecount else []
 
         work_dir = os.path.join(self.config.volume_root, kernel_id)
 
@@ -244,6 +246,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             num_cores = min(self.container_cpu_map.num_cores, requested_cores)
             numa_node, core_set = self.container_cpu_map.alloc(num_cores)
 
+        envs = {k: str(num_cores) for k in envs_corecount}
         log.debug('container config: mem_limit={}, exec_timeout={}, cores={!r}@{}'
                   .format(mem_limit, exec_timeout, core_set, numa_node))
 
@@ -269,11 +272,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 '2002/tcp': {},
                 '2003/tcp': {},
             },
+            'Env': [f'{k}={v}' for k, v in envs.items()],
             'HostConfig': {
                 'MemorySwap': 0,
                 'Memory': readable_size_to_bytes(mem_limit),
                 'CpusetCpus': ','.join(map(str, sorted(core_set))),
-                'CpusetMems': '{}'.format(numa_node),
+                'CpusetMems': f'{numa_node}',
                 'SecurityOpt': ['seccomp:unconfined'],
                 'Binds': binds,
                 'Devices': devices,
