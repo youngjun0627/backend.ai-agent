@@ -733,7 +733,7 @@ def main():
 
         try:
             with timeout(1.0):
-                await events.call.dispatch('instance_terminated', 'destroyed', args.inst_id)
+                await events.call.dispatch('instance_terminated', args.inst_id, 'destroyed')
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_terminated')
         await asyncio.sleep(0.01)
