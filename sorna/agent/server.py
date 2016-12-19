@@ -18,7 +18,7 @@ import simplejson as json
 import uvloop
 
 from sorna import utils
-from sorna.argparse import ipaddr, port_no, host_port_pair, positive_int
+from sorna.argparse import ipaddr, port_no, HostPortPair, host_port_pair, positive_int
 from sorna.utils import nmget, readable_size_to_bytes
 from . import __version__
 from .files import scandir, upload_output_files_to_s3
@@ -46,9 +46,6 @@ supported_langs = {
 lang_aliases = dict()
 max_upload_size = 5 * 1024 * 1024  # 5 MB
 
-# Shortcut for str.format
-_f = lambda fmt, *args, **kwargs: fmt.format(*args, **kwargs)
-
 VolumeInfo = namedtuple('VolumeInfo', 'name container_path mode')
 _extra_volumes = {
     'python3-tensorflow': [
@@ -74,9 +71,8 @@ async def get_extra_volumes(docker, lang):
         if vol.name in volume_names:
             mount_list.append(vol)
         else:
-            log.warning(_f('could not attach volume {} to '
-                           'a kernel using language {} (volume not found)',
-                           vol.name, lang))
+            log.warning(f'could not attach volume {vol.name} to '
+                        f'a kernel using language {lang} (volume not found)')
     return mount_list
 
 
@@ -164,7 +160,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def create_kernel(self, lang: str, opts: dict) -> tuple:
         if lang in lang_aliases:
             lang = lang_aliases[lang]
-        log.debug('rpc::create_kernel({})'.format(lang))
+        log.debug(f'rpc::create_kernel({lang})')
         kernel_id = await self._create_kernel(lang)
         stdin_port = self.container_registry[kernel_id]['stdin_port']
         stdout_port = self.container_registry[kernel_id]['stdout_port']
@@ -172,12 +168,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     @aiozmq.rpc.method
     async def destroy_kernel(self, kernel_id: str):
-        log.debug('rpc::destroy_kernel({})'.format(kernel_id))
+        log.debug(f'rpc::destroy_kernel({kernel_id})')
         await self._destroy_kernel(kernel_id, 'user-requested')
 
     @aiozmq.rpc.method
     async def restart_kernel(self, kernel_id: str):
-        log.debug('rpc::restart_kernel({})'.format(kernel_id))
+        log.debug(f'rpc::restart_kernel({kernel_id})')
         restarting_kernels[kernel_id] = asyncio.Event()
         await self._destroy_kernel(kernel_id, 'restarting')
         lang = self.container_registry[kernel_id]['lang']
@@ -189,7 +185,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def execute_code(self, entry_id: str, kernel_id: str,
                            code_id: str, code: str,
                            match: dict) -> dict:
-        log.debug('rpc::execute_code({}, {}, ...)'.format(entry_id, kernel_id))
+        log.debug(f'rpc::execute_code({entry_id}, {kernel_id}, ...)')
         result = await self._execute_code(entry_id, kernel_id, code_id, code)
         if match:
             result['match_result'] = match_result(result, match)
@@ -205,7 +201,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'agent-reset'))
                 tasks.append(task)
             except:
-                log.exception('reset: destroying {}'.format(kern_id))
+                log.exception(f'reset: destroying {kernel_id}')
         await asyncio.gather(*tasks)
 
     async def _create_kernel(self, lang, kernel_id=None):
@@ -216,7 +212,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         else:
             await self.events.call.dispatch('kernel_restarting', kernel_id)
 
-        image_name = 'lablup/kernel-{}'.format(lang)
+        image_name = f'lablup/kernel-{lang}'
         ret = await self.docker.images.get(image_name)
         mem_limit      = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
         exec_timeout   = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
@@ -236,7 +232,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 with timeout(10):
                     await restarting_kernels[kernel_id].wait()
             except asyncio.TimeoutError:
-                log.warning('restarting kernel {} timeout!'.format(kernel_id))
+                log.warning(f'timeout detected while restarting kernel {kernel_id}!')
                 del restarting_kernels[kernel_id]
                 asyncio.ensure_future(self.clean_kernel(kernel_id))
                 raise
@@ -247,12 +243,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             numa_node, core_set = self.container_cpu_map.alloc(num_cores)
 
         envs = {k: str(num_cores) for k in envs_corecount}
-        log.debug('container config: mem_limit={}, exec_timeout={}, cores={!r}@{}'
-                  .format(mem_limit, exec_timeout, core_set, numa_node))
+        log.debug(f'container config: mem_limit={mem_limit}, '
+                  f'exec_timeout={exec_timeout}, '
+                  f'cores={core_set!r}@{numa_node}')
 
         mount_list = await get_extra_volumes(self.docker, lang)
-        binds = ['{}:/home/work:rw'.format(work_dir)]
-        binds.extend('{}:{}:{}'.format(v.name, v.container_path, v.mode) for v in mount_list)
+        binds = [f'{work_dir}:/home/work:rw']
+        binds.extend(f'{v.name}:{v.container_path}:{v.mode}' for v in mount_list)
         volumes = ['/home/work']
         volumes.extend(v.container_path for v in mount_list)
         devices = []
@@ -284,7 +281,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'PublishAllPorts': True,
             },
         }
-        kernel_name = 'kernel.{}.{}'.format(lang, kernel_id)
+        kernel_name = f'kernel.{lang}.{kernel_id}'
         container = await self.docker.containers.create(config=config, name=kernel_name)
         await container.start()
         repl_port   = (await container.port(2001))[0]['HostPort']
@@ -295,7 +292,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.container_registry[kernel_id] = {
             'lang': lang,
             'container_id': container._id,
-            'addr': 'tcp://{0}:{1}'.format(kernel_ip, repl_port),
+            'addr': f'tcp://{kernel_ip}:{repl_port}',
             'ip': kernel_ip,
             'port': 2001,
             'host_port': repl_port,
@@ -309,9 +306,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'num_queries': 0,
             'last_used': time.monotonic(),
         }
-        log.debug('kernel access address: {0}:{1}'.format('0.0.0.0', repl_port))
-        log.debug('kernel stdin address: {0}:{1}'.format('0.0.0.0', stdin_port))
-        log.debug('kernel stdout address: {0}:{1}'.format('0.0.0.0', stdout_port))
+        log.debug(f'kernel access address: 0.0.0.0:{repl_port}')
+        log.debug(f'kernel stdin address:  0.0.0.0:{stdin_port}')
+        log.debug(f'kernel stdout address: 0.0.0.0:{stdout_port}')
         return kernel_id
 
     async def _destroy_kernel(self, kernel_id, reason):
@@ -322,13 +319,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             # deleting containers will be done in docker monitor routine.
         except DockerError as e:
             if e.status == 500 and 'is not running' in e.message:  # already dead
-                log.warning('_destroy_kernel({}) kill 500'.format(kernel_id))
+                log.warning(f'_destroy_kernel({kernel_id}) kill 500')
                 pass
             elif e.status == 404:
-                log.warning('_destroy_kernel({}) kill 404'.format(kernel_id))
+                log.warning(f'_destroy_kernel({kernel_id}) kill 404')
                 pass
             else:
-                log.exception('_destroy_kernel({}) kill error'.format(kernel_id))
+                log.exception(f'_destroy_kernel({kernel_id}) kill error')
 
     async def _execute_code(self, entry_id, kernel_id, code_id, code):
         work_dir = os.path.join(self.config.volume_root, kernel_id)
@@ -351,8 +348,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             with timeout(exec_timeout):
                 result_data = await container_sock.read()
             finish_time = time.monotonic()
-            log.debug(_f('execution time: {:.2f} / {} sec',
-                         finish_time - begin_time, exec_timeout))
+            elapsed_time = finish_time - begin_time
+            log.debug(f'execution time: {elapsed_time:.2f} / {exec_timeout} sec')
 
             final_file_stats = scandir(work_dir, max_upload_size)
             result = json.loads(result_data[0])
@@ -373,8 +370,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'files': uploaded_files,
             }
         except asyncio.TimeoutError as exc:
-            log.warning('Timeout detected on kernel {} (code_id: {}).'
-                        .format(kernel_id, code_id))
+            log.warning(f'Timeout detected on kernel {kernel_id} (code_id: {code_id}).')
             asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
             raise
         finally:
@@ -386,7 +382,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         inst_info = {
             'id': self.config.inst_id,
             'ip': self.config.agent_ip,
-            'addr': 'tcp://{}:{}'.format(self.config.agent_ip, self.config.agent_port),
+            'addr': f'tcp://{self.config.agent_ip}:{self.config.agent_port}',
             'type': self.config.inst_type,
             'num_kernels': len(running_kernels),
             'max_kernels': self.config.max_kernels,
@@ -455,8 +451,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 except KeyError:
                     exit_code = '(unknown)'
                 reason = 'destroyed'
-                log.debug('docker-event: terminated: {}@{} exit code {}'.format(
-                          kernel_id, container_id[:7], exit_code))
+                log.debug('docker-event: container-terminated: '
+                          f'{container_id[:7]} with exit code {exit_code} ({kernel_id})')
                 asyncio.ensure_future(self.clean_kernel(kernel_id))
 
     async def clean_kernel(self, kernel_id):
@@ -471,7 +467,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 elif e.status == 404:
                     pass
                 else:
-                    log.warning('container deletion: {!r}'.format(e))
+                    log.warning(f'container deletion: {e!r}')
         except KeyError:
             pass
         if kernel_id in restarting_kernels:
@@ -505,7 +501,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             try:
                 last_used = self.container_registry[kern_id]['last_used']
                 if now - last_used > self.config.idle_timeout:
-                    log.info('destroying kernel {} as clean-up'.format(kern_id))
+                    log.info(f'destroying kernel {kern_id} as clean-up')
                     task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'idle-timeout'))
                     tasks.append(task)
             except KeyError:
@@ -525,7 +521,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'agent-termination'))
                 tasks.append(task)
             except:
-                log.exception('clean_all_kernels: destroying {}'.format(kern_id))
+                log.exception(f'clean_all_kernels: destroying {kern_id}')
         await asyncio.gather(*tasks)
         if blocking:
             waiters = [blocking_cleans[kern_id].wait() for kern_id in kern_ids]
@@ -542,9 +538,9 @@ def main():
                            help='Manually set the IP address of this agent to report to the manager.')
     argparser.add_argument('--agent-port', type=port_no, default=6001,
                            help='The port number to listen on.')
-    argparser.add_argument('--redis-addr', type=host_port_pair, default=('localhost', 6379),
+    argparser.add_argument('--redis-addr', type=host_port_pair, default=HostPortPair('localhost', 6379),
                            help='The host:port pair of the Redis (agent registry) server.')
-    argparser.add_argument('--event-addr', type=host_port_pair, default=('localhost', 5002),
+    argparser.add_argument('--event-addr', type=host_port_pair, default=HostPortPair('localhost', 5002),
                            help='The host:port pair of the Gateway event server.')
     argparser.add_argument('--exec-timeout', type=positive_int, default=180,
                            help='The maximum period of time allowed for kernels to run user codes.')
@@ -671,11 +667,11 @@ def main():
         args.inst_id = await utils.get_instance_id()
         args.inst_type = await utils.get_instance_type()
         args.agent_ip = await utils.get_instance_ip()
-        log.info('myself: {} ({}), ip: {}'.format(args.inst_id, args.inst_type, args.agent_ip))
-        log.info('using gwateway event server at tcp://{0}:{1}'.format(*args.event_addr))
+        log.info(f'myself: {args.inst_id} ({args.inst_type}), ip: {args.agent_ip}')
+        log.info(f'using gwateway event server at tcp://{args.event_addr}')
 
         # Connect to the events server.
-        event_addr = 'tcp://{}:{}'.format(*args.event_addr)
+        event_addr = f'tcp://{args.event_addr}'
         try:
             with timeout(5.0):
                 events = await aiozmq.rpc.connect_rpc(connect=event_addr)
