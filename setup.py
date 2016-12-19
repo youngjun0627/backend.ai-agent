@@ -44,6 +44,7 @@ setup(
     packages=['sorna.agent'],
     namespace_packages=['sorna'],
 
+    python_requires='>=3.6',
     install_requires=[
         'coloredlogs>=5.2',
         'async_timeout>=1.1',
