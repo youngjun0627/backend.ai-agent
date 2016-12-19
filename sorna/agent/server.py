@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+from ipaddress import ip_address
 import logging, logging.config
 import os, os.path
 from pathlib import Path
@@ -538,9 +539,11 @@ def main():
                            help='Manually set the IP address of this agent to report to the manager.')
     argparser.add_argument('--agent-port', type=port_no, default=6001,
                            help='The port number to listen on.')
-    argparser.add_argument('--redis-addr', type=host_port_pair, default=HostPortPair('localhost', 6379),
+    argparser.add_argument('--redis-addr', type=host_port_pair,
+                           default=HostPortPair(ip_address('127.0.0.1'), 6379),
                            help='The host:port pair of the Redis (agent registry) server.')
-    argparser.add_argument('--event-addr', type=host_port_pair, default=HostPortPair('localhost', 5002),
+    argparser.add_argument('--event-addr', type=host_port_pair,
+                           default=HostPortPair(ip_address('127.0.0.1'), 5002),
                            help='The host:port pair of the Gateway event server.')
     argparser.add_argument('--exec-timeout', type=positive_int, default=180,
                            help='The maximum period of time allowed for kernels to run user codes.')
