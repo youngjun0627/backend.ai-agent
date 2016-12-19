@@ -610,9 +610,10 @@ def main():
         'python27': 'python2',
         'python34': 'python3',
         'python35': 'python3',
+        'python36': 'python3',
         'python3-deeplearning':   'python3-tensorflow',      # temporary alias
         'tensorflow-python3':     'python3-tensorflow',      # package-oriented alias
-        'tensorflow-gpu-python3': 'python3-tensorflow-gpu',  # package-oriented alias
+        'tensorflow-python3-gpu': 'python3-tensorflow-gpu',  # package-oriented alias
         'caffe-python3':          'python3-caffe',           # package-oriented alias
         'r': 'r3',
         'R': 'r3',
