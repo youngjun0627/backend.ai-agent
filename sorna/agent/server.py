@@ -17,9 +17,9 @@ from namedlist import namedtuple
 import simplejson as json
 import uvloop
 
-from sorna import utils, defs
+from sorna import utils
 from sorna.argparse import ipaddr, port_no, host_port_pair, positive_int
-from sorna.utils import odict, generate_uuid, nmget, readable_size_to_bytes
+from sorna.utils import nmget, readable_size_to_bytes
 from . import __version__
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
@@ -210,7 +210,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _create_kernel(self, lang, kernel_id=None):
         if not kernel_id:
-            kernel_id = generate_uuid()
+            kernel_id = secrets.token_urlsafe(16)
             assert kernel_id not in self.container_registry
             await self.events.call.dispatch('kernel_creating', kernel_id)
         else:
@@ -364,14 +364,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     loop=self.loop)
                 uploaded_files = [os.path.relpath(fn, work_dir) for fn in uploaded_files]
 
-            return odict(
-                ('stdout', result['stdout']),
-                ('stderr', result['stderr']),
-                ('media', nmget(result, 'media', [])),
-                ('options', nmget(result, 'options', None)),
-                ('exceptions', nmget(result, 'exceptions', [])),
-                ('files', uploaded_files),
-            )
+            return {
+                'stdout': result['stdout'],
+                'stderr': result['stderr'],
+                'media': nmget(result, 'media', []),
+                'options': nmget(result, 'options', None),
+                'exceptions': nmget(result, 'exceptions', []),
+                'files': uploaded_files,
+            }
         except asyncio.TimeoutError as exc:
             log.warning('Timeout detected on kernel {} (code_id: {}).'
                         .format(kernel_id, code_id))
@@ -635,7 +635,8 @@ def main():
 
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     loop = asyncio.get_event_loop()
-    log.info('Sorna Agent {}'.format(__version__))
+    log.info(f'Sorna Agent {__version__}')
+    log.info(f'runtime: {utils.env_info()}')
 
     log_config = logging.getLogger('sorna.agent.config')
     if args.debug:
