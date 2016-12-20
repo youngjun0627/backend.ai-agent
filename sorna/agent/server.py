@@ -5,6 +5,7 @@ import logging, logging.config
 import os, os.path
 from pathlib import Path
 import re
+import secrets
 import signal
 import shutil
 import sys
@@ -488,7 +489,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             try:
                 with timeout(1.0):
                     await self.events.call.dispatch('kernel_terminated',
-                                                    'destroyed', kernel_id)
+                                                    kernel_id, 'destroyed')
             except asyncio.TimeoutError:
                 log.warning('event dispatch timeout: kernel_terminated')
             if kernel_id in blocking_cleans:
