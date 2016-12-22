@@ -25,7 +25,7 @@ from sorna.utils import nmget, readable_size_to_bytes
 from . import __version__
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
-from .stats import collect_stats
+from .stats import collect_stats, _collect_stats_sysfs, _collect_stats_api
 from .resources import libnuma, CPUAllocMap
 
 log = logging.getLogger('sorna.agent.server')
@@ -222,7 +222,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         envs_corecount = ret['ContainerConfig']['Labels'].get('io.sorna.envs.corecount', '')
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
 
-        work_dir = os.path.join(self.config.volume_root, kernel_id)
+        work_dir = self.config.volume_root / kernel_id
 
         if kernel_id in restarting_kernels:
             core_set = self.container_registry[kernel_id]['core_set']
@@ -317,6 +317,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         cid = self.container_registry[kernel_id]['container_id']
         container = self.docker.containers.container(cid)
         try:
+            # stats must be collected before killing it.
+            last_stat = (await collect_stats([container]))[0]
+            self.container_registry[kernel_id]['last_stat'] = last_stat
             await container.kill()
             # deleting containers will be done in docker monitor routine.
         except DockerError as e:
@@ -330,7 +333,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 log.exception(f'_destroy_kernel({kernel_id}) kill error')
 
     async def _execute_code(self, entry_id, kernel_id, code_id, code):
-        work_dir = os.path.join(self.config.volume_root, kernel_id)
+        work_dir = self.config.volume_root / kernel_id
 
         self.container_registry[kernel_id]['last_used'] = time.monotonic()
         self.container_registry[kernel_id]['num_queries'] += 1
@@ -475,21 +478,22 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if kernel_id in restarting_kernels:
             restarting_kernels[kernel_id].set()
         else:
-            work_dir = os.path.join(self.config.volume_root, kernel_id)
+            work_dir = self.config.volume_root / kernel_id
             try:
                 shutil.rmtree(work_dir)
             except FileNotFoundError:
                 pass
             try:
+                kernel_stat = self.container_registry[kernel_id].get('last_stat', None)
                 self.container_cpu_map.free(self.container_registry[kernel_id]['core_set'])
                 del self.container_registry[kernel_id]
             except KeyError:
                 pass
-            # TODO: collect final stats
             try:
                 with timeout(1.0):
                     await self.events.call.dispatch('kernel_terminated',
-                                                    kernel_id, 'destroyed')
+                                                    kernel_id, 'destroyed',
+                                                    kernel_stat)
             except asyncio.TimeoutError:
                 log.warning('event dispatch timeout: kernel_terminated')
             if kernel_id in blocking_cleans:
@@ -556,7 +560,7 @@ def main():
                            help='Enable more verbose logging.')
     argparser.add_argument('--kernel-aliases', type=str, default=None,
                            help='The filename for additional kernel aliases')
-    argparser.add_argument('--volume-root', type=str, default='/var/lib/sorna-volumes',
+    argparser.add_argument('--volume-root', type=Path, default=Path('/var/lib/sorna-volumes'),
                            help='The scratch directory to store container working directories.')
     args = argparser.parse_args()
 
@@ -600,8 +604,8 @@ def main():
         args.agent_ip = str(args.agent_ip)
     args.redis_addr = args.redis_addr if args.redis_addr else ('sorna-manager.lablup', 6379)
 
-    assert Path(args.volume_root).exists()
-    assert Path(args.volume_root).is_dir()
+    assert args.volume_root.exists()
+    assert args.volume_root.is_dir()
 
     # Load language aliases config.
     lang_aliases = {lang: lang for lang in supported_langs}
@@ -680,7 +684,7 @@ def main():
         try:
             with timeout(5.0):
                 events = await aiozmq.rpc.connect_rpc(connect=event_addr)
-                events.transport.setsockopt(zmq.LINGER, 200)
+                events.transport.setsockopt(zmq.LINGER, 50)
                 await events.call.dispatch('instance_started', args.inst_id)
         except asyncio.TimeoutError:
             events.close()
