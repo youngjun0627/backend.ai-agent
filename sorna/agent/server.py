@@ -586,7 +586,7 @@ def main():
                 'class': 'logging.StreamHandler',
                 'level': 'DEBUG',
                 'formatter': 'colored',
-                'stream': 'ext://sys.stdout',
+                'stream': 'ext://sys.stderr',
             },
             'null': {
                 'class': 'logging.NullHandler',
