@@ -749,6 +749,7 @@ def main():
         # Finalize.
         await agent.shutdown()
         await asyncio.sleep(0.01)
+        await loop.shutdown_asyncgens()
 
     try:
         loop.run_until_complete(initialize())

@@ -57,8 +57,8 @@ setup(
         'msgpack-python',
         'namedlist',
         'simplejson',
-        'uvloop>=0.6',
-        'sorna-common>=0.7,<0.8',
+        'uvloop>=0.7',
+        'sorna-common>=0.8,<0.9',
     ],
     extras_require={
         'dev': ['pytest', 'pytest-asyncio', 'flake8', 'pep8-naming'],
