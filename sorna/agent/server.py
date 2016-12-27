@@ -94,21 +94,25 @@ async def heartbeat_timer(agent, interval=3.0):
 
 
 async def stats_timer(agent, interval=5.0):
+    task = None
     try:
         while True:
-            asyncio.ensure_future(agent.update_stats(interval))
+            task = asyncio.ensure_future(agent.update_stats(interval))
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
-        pass
+        if task and not task.done():
+            task.cancel()
 
 
 async def cleanup_timer(agent):
+    task = None
     try:
         while True:
-            asyncio.ensure_future(agent.clean_old_kernels())
+            task = asyncio.ensure_future(agent.clean_old_kernels())
             await asyncio.sleep(10)
     except asyncio.CancelledError:
-        pass
+        if task and not task.done():
+            task.cancel()
 
 
 def match_result(result, match):
@@ -406,7 +410,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         running_kernels = [k for k in self.container_registry.keys()]
         running_containers = [self.container_registry[k]['container_id']
                               for k in running_kernels]
-        stats = await collect_stats(map(self.docker.containers.container, running_containers))
+        try:
+            stats = await collect_stats(map(self.docker.containers.container, running_containers))
+        except asyncio.CancelledError:
+            return
         kern_stats = {}
         # Attach limits to collected stats.
         # Here, there may be destroyed kernels due to coroutine interleaving.
@@ -433,6 +440,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                                                 kern_stats, interval)
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_stats')
+        except asyncio.CancelledError:
+            pass
         except:
             log.exception('update_stats failure')
 
@@ -449,7 +458,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 container_name = evdata['Actor']['Attributes']['name']
                 if not container_name.startswith('kernel.'):
                     continue
-                container = self.docker.containers.container(container_id)
                 kernel_id = container_name.split('.', maxsplit=2)[2]
                 try:
                     exit_code = evdata['Actor']['Attributes']['exitCode']
