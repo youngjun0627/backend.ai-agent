@@ -335,6 +335,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 pass
             else:
                 log.exception(f'_destroy_kernel({kernel_id}) kill error')
+        except:
+            log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
 
     async def _execute_code(self, entry_id, kernel_id, code_id, code):
         work_dir = self.config.volume_root / kernel_id
@@ -445,13 +447,31 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.exception('update_stats failure')
 
-    async def monitor(self):
-        queue = self.docker.events.listen()
+    async def fetch_docker_events(self):
         while True:
             try:
-                evdata = await queue.get()
+                await self.docker.events.run()
+            except asyncio.TimeoutError:
+                # The API HTTP connection may terminate after some timeout
+                # (e.g., 5 minutes)
+                log.info('restarting docker.events.run()')
+                continue
             except asyncio.CancelledError:
                 break
+            except:
+                log.exception('unexpected error')
+                break
+
+    async def monitor(self):
+        subscriber = self.docker.events.subscribe()
+        while True:
+            try:
+                evdata = await subscriber.get()
+            except asyncio.CancelledError:
+                break
+            if evdata is None:
+                log.info('docker-events monitor closed, will try reconnect')
+                continue
             if evdata['Action'] == 'die':
                 # When containers die, we immediately clean up them.
                 container_id = evdata['id']
@@ -531,11 +551,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             for kern_id in kern_ids:
                 blocking_cleans[kern_id] = asyncio.Event()
         for kern_id in kern_ids:
-            try:
-                task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'agent-termination'))
-                tasks.append(task)
-            except:
-                log.exception(f'clean_all_kernels: destroying {kern_id}')
+            task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'agent-termination'))
+            tasks.append(task)
         await asyncio.gather(*tasks)
         if blocking:
             waiters = [blocking_cleans[kern_id].wait() for kern_id in kern_ids]
@@ -718,17 +735,20 @@ def main():
         hb_task      = asyncio.ensure_future(heartbeat_timer(agent), loop=loop)
         stats_task   = asyncio.ensure_future(stats_timer(agent), loop=loop)
         timer_task   = asyncio.ensure_future(cleanup_timer(agent), loop=loop)
-        monitor_fetch_task  = asyncio.ensure_future(docker.events.run(), loop=loop)
+        monitor_fetch_task  = asyncio.ensure_future(agent.fetch_docker_events(), loop=loop)
         monitor_handle_task = asyncio.ensure_future(agent.monitor(), loop=loop)
         await asyncio.sleep(0.01, loop=loop)
 
     async def shutdown():
+        log.info('shutting down...')
+
         # Stop receiving further requests.
         server.close()
         await server.wait_closed()
 
         # Clean all kernels.
         await agent.clean_all_kernels(blocking=True)
+        log.debug('shutdown: kernel cleanup done.')
 
         # Stop timers.
         hb_task.cancel()
@@ -737,13 +757,14 @@ def main():
         await asyncio.sleep(0.01)
 
         # Stop event monitoring.
-        try:
-            monitor_fetch_task.cancel()
-        except asyncio.CancelledError:
-            pass
+        monitor_fetch_task.cancel()
         monitor_handle_task.cancel()
-        docker.events.stop()
+        try:
+            await docker.events.stop()
+        except:
+            pass
         docker.session.close()
+        log.debug('shutdown: docker cleanup done.')
 
         try:
             with timeout(1.0):
