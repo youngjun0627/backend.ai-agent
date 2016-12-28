@@ -515,13 +515,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 kernel_stat = self.container_registry[kernel_id].get('last_stat', None)
                 self.container_cpu_map.free(self.container_registry[kernel_id]['core_set'])
                 del self.container_registry[kernel_id]
-            except KeyError:
-                pass
-            try:
                 with timeout(1.0):
                     await self.events.call.dispatch('kernel_terminated',
                                                     kernel_id, 'destroyed',
                                                     kernel_stat)
+            except KeyError:
+                pass
             except asyncio.TimeoutError:
                 log.warning('event dispatch timeout: kernel_terminated')
             if kernel_id in blocking_cleans:
