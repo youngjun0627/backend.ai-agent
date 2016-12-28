@@ -470,7 +470,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             except asyncio.CancelledError:
                 break
             if evdata is None:
-                log.info('docker-events monitor closed, will try reconnect')
+                # fetch_docker_events() will automatically reconnect.
                 continue
             if evdata['Action'] == 'die':
                 # When containers die, we immediately clean up them.
