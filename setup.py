@@ -65,7 +65,7 @@ setup(
         'test': ['pytest', 'pytest-asyncio'],
     },
     dependency_links=[
-        'git+ssh://git@github.com/achimnol/aiodocker@master#egg=aiodocker-dev',
+        'git+https://github.com/achimnol/aiodocker@master#egg=aiodocker-dev',
     ],
     package_data={
     },
