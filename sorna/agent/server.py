@@ -186,6 +186,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self._create_kernel(lang, kernel_id=kernel_id)
         if kernel_id in restarting_kernels:
             del restarting_kernels[kernel_id]
+        stdin_port = self.container_registry[kernel_id]['stdin_port']
+        stdout_port = self.container_registry[kernel_id]['stdout_port']
+        return stdin_port, stdout_port
 
     @aiozmq.rpc.method
     async def execute_code(self, entry_id: str, kernel_id: str,
