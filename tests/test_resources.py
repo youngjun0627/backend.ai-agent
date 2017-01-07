@@ -117,9 +117,6 @@ class TestCPUAllocMap:
         cpu_alloc_map.alloc_per_node = [3, 6, 3]
         cpu_alloc_map.core_shares = ([2, 1], [6], [3])
 
-        print(cpu_alloc_map.alloc_per_node)
-        print(cpu_alloc_map.core_shares)
-
         with mock.patch.object(libnuma, 'node_of_cpu', return_value=0):
             cpu_alloc_map.free({0, 3})
             assert cpu_alloc_map.alloc_per_node == [1, 6, 3]
