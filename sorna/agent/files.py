@@ -61,7 +61,7 @@ def scandir(root, allowed_max_size):
             file_stats[entry.path] = stat.st_mtime
         elif entry.is_dir():
             try:
-                file_stats.update(scandir(entry.path))
+                file_stats.update(scandir(entry.path, allowed_max_size))
             except PermissionError:
                 pass
     return file_stats
