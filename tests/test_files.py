@@ -3,11 +3,21 @@ import os
 from unittest import mock
 
 import aiobotocore
+import asynctest
 import pytest
 
 from sorna.agent.files import (
     upload_output_files_to_s3, scandir, diff_file_stats
 )
+
+
+async def mock_awaitable(**kwargs):
+    """
+    Mock awaitable.
+    An awaitable can be a native coroutine object "returned from" a native
+    coroutine function.
+    """
+    return asynctest.CoroutineMock(**kwargs)
 
 
 @pytest.mark.asyncio
@@ -25,10 +35,30 @@ class TestUploadOutputFilesToS3:
         files.s3_access_key = original_access_key
         files.s3_secret_key = original_secret_key
 
-    @pytest.mark.skip('not implemented yet')
     async def test_upload_output_files_to_s3(self, fake_s3_keys, mocker,
                                              tmpdir):
-        pass
+        # Fake information
+        fake_id = 'fake-entry-id'
+
+        # Mocking
+        mock_get_session = mocker.patch.object(aiobotocore, 'get_session')
+        mock_session = mock_get_session.return_value = mock.Mock()
+        mock_client = mock_session.create_client.return_value = mock.Mock()
+        mock_client.put_object.return_value = mock_awaitable()
+
+        # File to be updated
+        fs1 = scandir(tmpdir, 1000)
+        file = tmpdir.join('file.txt')
+        file.write('file')
+        fs2 = scandir(tmpdir, 1000)
+
+        diff = await upload_output_files_to_s3(fs1, fs2, fake_id)
+
+        assert len(diff) == 1
+        mock_client.put_object.assert_called_once_with(
+            Bucket=mock.ANY, Key='bucket/fake-entry-id/{}'.format(file.strpath),
+            Body=b'file', ACL='public-read'
+        )
 
     async def test_s3_access_key_required(self, mocker):
         mock_warn = mocker.patch.object(logging.Logger, 'warning')
