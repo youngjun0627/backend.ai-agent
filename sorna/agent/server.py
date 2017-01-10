@@ -102,6 +102,7 @@ async def stats_timer(agent, interval=5.0):
     except asyncio.CancelledError:
         if task and not task.done():
             task.cancel()
+            await task
 
 
 async def cleanup_timer(agent):
@@ -113,6 +114,7 @@ async def cleanup_timer(agent):
     except asyncio.CancelledError:
         if task and not task.done():
             task.cancel()
+            await task
 
 
 def match_result(result, match):
