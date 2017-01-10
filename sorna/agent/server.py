@@ -734,12 +734,12 @@ def main():
         log.info('serving at {0}'.format(agent_addr))
 
         # Send the first heartbeat.
-        hb_task      = asyncio.ensure_future(heartbeat_timer(agent), loop=loop)
-        stats_task   = asyncio.ensure_future(stats_timer(agent), loop=loop)
-        timer_task   = asyncio.ensure_future(cleanup_timer(agent), loop=loop)
-        monitor_fetch_task  = asyncio.ensure_future(agent.fetch_docker_events(), loop=loop)
-        monitor_handle_task = asyncio.ensure_future(agent.monitor(), loop=loop)
-        await asyncio.sleep(0.01, loop=loop)
+        hb_task    = loop.create_task(heartbeat_timer(agent))
+        stats_task = loop.create_task(stats_timer(agent))
+        timer_task = loop.create_task(cleanup_timer(agent))
+        monitor_fetch_task  = loop.create_task(agent.fetch_docker_events())
+        monitor_handle_task = loop.create_task(agent.monitor())
+        await asyncio.sleep(0.01)
 
     async def shutdown():
         log.info('shutting down...')
@@ -756,11 +756,15 @@ def main():
         hb_task.cancel()
         stats_task.cancel()
         timer_task.cancel()
-        await asyncio.sleep(0.01)
+        await hb_task
+        await stats_task
+        await timer_task
 
         # Stop event monitoring.
         monitor_fetch_task.cancel()
         monitor_handle_task.cancel()
+        await monitor_fetch_task
+        await monitor_handle_task
         try:
             await docker.events.stop()
         except:
@@ -779,7 +783,6 @@ def main():
 
         # Finalize.
         await agent.shutdown()
-        await asyncio.sleep(0.01)
         await loop.shutdown_asyncgens()
 
     try:
