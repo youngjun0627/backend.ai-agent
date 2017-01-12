@@ -4,6 +4,7 @@ from unittest import mock
 
 import asynctest
 import pytest
+import simplejson as json
 
 from sorna.agent.resources import CPUAllocMap
 from sorna.agent.server import (
@@ -317,6 +318,8 @@ class TestAgentRPCServer:
 
     @pytest.mark.asyncio
     async def test__destroy_kernel(self, mocker, mock_agent):
+        kernel_id, reason = 'fake-kernel-id', 'fake-reason'
+
         mock_collect_stats = mocker.patch('sorna.agent.server.collect_stats',
                                           new_callable=asynctest.CoroutineMock)
         mock_collect_stats.return_value = [mock.Mock()]
@@ -335,12 +338,111 @@ class TestAgentRPCServer:
         agent.docker.containers.container = mock.Mock(
             return_value=mock_container)
 
-        kernel_id, reason = 'fake-kernel-id', 'fake-reason'
+        assert 'last_stat' not in agent.container_registry[kernel_id]
+
         await agent._destroy_kernel(kernel_id, reason)
 
         mock_collect_stats.assert_called_once_with([mock_container])
         mock_container.kill.assert_called_once_with()
+        assert 'last_stat' in agent.container_registry[kernel_id]
+        assert 'last_stat' not in agent.container_registry['other-kernel-id']
 
-    @pytest.mark.skip('not implemented yet')
-    def test__execute_code(self):
-        pass
+    ###############################
+    # AgentRPCServer._execute_code
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('up_files', [True, False])
+    async def test__execute_code(self, mocker, mock_agent, tmpdir, up_files):
+        entry_id = 'fake-entry-id'
+        kernel_id = 'fake-kernel-id'
+        code_id = 'fake-code-id'
+        code = 'print(0)'
+
+        tmpdir.mkdir(kernel_id)
+
+        read_data = [
+            json.dumps({
+                'stdout': 'stdout',
+                'stderr': 'stderr',
+                'media': ['fake-media'],
+                'options': {
+                    'upload_output_files': up_files,
+                },
+                'exceptions': ['fake-exceptions'],
+            })
+        ]
+        mock_upload_to_s3 = mocker.patch(
+            'sorna.agent.server.upload_output_files_to_s3',
+            new_callable=asynctest.CoroutineMock
+        )
+        mock_upload_to_s3.return_value = ['fake-uploaded-files']
+        mock_container_sock = mock.Mock()
+        mock_container_sock.read = asynctest.CoroutineMock(
+            return_value=read_data)
+        mock_aiozmq = mocker.patch('sorna.agent.server.aiozmq')
+        mock_aiozmq.create_zmq_stream = asynctest.CoroutineMock()
+        mock_aiozmq.create_zmq_stream.return_value = mock_container_sock
+
+        agent = mock_agent
+        agent.config.volume_root = tmpdir
+        agent.container_registry = {
+            kernel_id: {
+                'last_used': 0,
+                'num_queries': 0,
+                'addr': 'fake-container-addr',
+                'exec_timeout': 10,
+            }
+        }
+
+        result = await agent._execute_code(entry_id, kernel_id, code_id, code)
+
+        assert agent.container_registry[kernel_id]['last_used'] != 0
+        assert agent.container_registry[kernel_id]['num_queries'] == 1
+        assert 1 == mock_aiozmq.create_zmq_stream.call_count
+        mock_container_sock.write.assert_called_once_with([
+            code_id.encode('ascii'), code.encode('utf8')
+        ])
+        assert result['stdout'] == 'stdout'
+        assert result['stderr'] == 'stderr'
+        assert result['media'] == ['fake-media']
+        assert result['exceptions'] == ['fake-exceptions']
+        if up_files:
+            assert 1 == mock_upload_to_s3.call_count
+            assert 'fake-uploaded-files' in str(result['files'])
+        else:
+            assert 0 == mock_upload_to_s3.call_count
+            assert result['files'] == []  # not 'fake-uploaded-files'
+
+    @pytest.mark.asyncio
+    async def test__execute_code_timeout_error(self, mocker, mock_agent, tmpdir):
+        entry_id = 'fake-entry-id'
+        kernel_id = 'fake-kernel-id'
+        code_id = 'fake-code-id'
+        code = 'print(0)'
+
+        tmpdir.mkdir(kernel_id)
+
+        mock_container_sock = mock.Mock()
+        mock_container_sock.read = asynctest.CoroutineMock(
+            side_effect=asyncio.TimeoutError)
+        mock_aiozmq = mocker.patch('sorna.agent.server.aiozmq')
+        mock_aiozmq.create_zmq_stream = asynctest.CoroutineMock()
+        mock_aiozmq.create_zmq_stream.return_value = mock_container_sock
+
+        agent = mock_agent
+        agent.config.volume_root = tmpdir
+        agent.container_registry = {
+            kernel_id: {
+                'last_used': 0,
+                'num_queries': 0,
+                'addr': 'fake-container-addr',
+                'exec_timeout': 10,
+            }
+        }
+        agent._destroy_kernel = asynctest.CoroutineMock()
+
+        with pytest.raises(asyncio.TimeoutError):
+            await agent._execute_code(entry_id, kernel_id, code_id, code)
+
+        agent._destroy_kernel.assert_called_once_with(kernel_id,
+                                                      'exec-timeout')
+    ###############################
