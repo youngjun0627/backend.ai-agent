@@ -9,7 +9,7 @@ import simplejson as json
 from sorna.agent.resources import CPUAllocMap
 from sorna.agent.server import (
     get_extra_volumes, heartbeat_timer, stats_timer, cleanup_timer,
-    match_result, AgentRPCServer
+    match_result, AgentRPCServer,
 )
 
 
@@ -46,6 +46,17 @@ def mock_volumes_list():
     }
 
 
+@pytest.fixture
+def mock_agent():
+    mock_docker = mock.Mock()
+    mock_args = mock.Mock()
+    mock_events = mock.Mock()
+
+    agent = AgentRPCServer(mock_docker, mock_args, mock_events)
+
+    return agent
+
+
 @pytest.mark.asyncio
 async def test_get_extra_volumes(mock_volumes_list):
     mock_docker = mock.Mock()
@@ -66,7 +77,7 @@ async def test_get_extra_volumes(mock_volumes_list):
 
 @pytest.mark.skip('not implemented yet')
 @pytest.mark.asyncio
-async def test_heartbeat_timer():
+async def test_heartbeat_timer(mock_agent):
     pass
 
 
@@ -101,16 +112,6 @@ def test_match_result():
 
 
 class TestAgentRPCServer:
-    @pytest.fixture
-    def mock_agent(self):
-        mock_docker = mock.Mock()
-        mock_args = mock.Mock()
-        mock_events = mock.Mock()
-
-        agent = AgentRPCServer(mock_docker, mock_args, mock_events)
-
-        return agent
-
     def test_initialization(self):
         mock_docker = mock.Mock()
         mock_args = mock.Mock()
@@ -446,3 +447,161 @@ class TestAgentRPCServer:
         agent._destroy_kernel.assert_called_once_with(kernel_id,
                                                       'exec-timeout')
     ###############################
+
+    @pytest.mark.asyncio
+    async def test_heartbeat(self, mock_agent):
+        agent = mock_agent
+        agent.events.call.dispatch = asynctest.CoroutineMock()
+        fake_config_info = {
+            'inst_id': 'fake-inst-id',
+            'agent_ip': 'fake-agent-ip',
+            'agent_port': 'fake-agent-port',
+            'inst_type': 'fake-inst-type',
+            'max_kernels': 'fake-max-kernels',
+        }
+        agent.config.configure_mock(**fake_config_info)
+        agent.container_registry = {
+            'kernel-id-1': {},
+            'kernel-id-2': {},
+        }
+
+        await agent.heartbeat(5)
+
+        mock_agent.events.call.dispatch.assert_called_once_with(
+            'instance_heartbeat', fake_config_info['inst_id'], mock.ANY,
+            ['kernel-id-1', 'kernel-id-2'], 5)
+
+    @pytest.mark.asyncio
+    async def test_update_stats(self, mocker, mock_agent):
+        mock_collect_stats = mocker.patch('sorna.agent.server.collect_stats',
+                                          new_callable=asynctest.CoroutineMock)
+        mock_stats = mock_collect_stats.return_value = [
+            {
+                'cpu_stats': {
+                    'cpu_usage': {
+                        'total_usage': 1e5,
+                    }
+                }
+            }
+        ]
+
+        agent = mock_agent
+        agent.container_registry = {
+            'kernel-id-1': {
+                'container_id': 'fake-container-id-1',
+                'exec_timeout': 10,
+                'mem_limit': 1024,
+                'num_queries': 2,
+                'last_used': 000000,
+            },
+        }
+        agent.config.idle_timeout = 30
+        agent.docker = mock.Mock()
+        agent.events.call.dispatch = asynctest.CoroutineMock()
+
+        await agent.update_stats(5)
+
+        # Assert stats updated
+        assert mock_stats[0]['exec_timeout'] == 10
+        assert mock_stats[0]['idle_timeout'] == 30
+        assert mock_stats[0]['mem_limit'] == 1
+        assert mock_stats[0]['num_queries'] == 2
+        assert mock_stats[0]['idle'] > 000000
+
+    @pytest.mark.asyncio
+    async def test_fetch_docker_events(self, mock_agent):
+        agent = mock_agent
+        agent.docker.events.run = asynctest.CoroutineMock(side_effect=[0, 1])
+
+        await agent.fetch_docker_events()
+
+        assert 3 == agent.docker.events.run.call_count  # 0, 1, raise err
+
+    @pytest.mark.asyncio
+    async def test_monitor_clean_kernel_upon_action_die(self, mock_agent):
+        agent = mock_agent
+        mock_subscriber = agent.docker.events.subscribe.return_value = \
+                mock.Mock()
+        mock_subscriber.get = asynctest.CoroutineMock()
+        mock_evdata = mock_subscriber.get.side_effect = [{
+            'Action': 'die',
+            'id': 'fake-container-id',
+            'Actor': {
+                'Attributes': {
+                    'name': 'kernel.fake-container-name.fake-kernel-id',
+                }
+            }
+        }, asyncio.CancelledError]
+        agent.clean_kernel = asynctest.CoroutineMock()
+
+        await agent.monitor()
+
+        agent.clean_kernel.assert_called_once_with('fake-kernel-id')
+
+    @pytest.mark.asyncio
+    async def test_clean_kernel(self, mock_agent, tmpdir):
+        agent = mock_agent
+        agent.container_registry = {
+            'kernel-id-1': {
+                'container_id': 'fake-container-id-1',
+                'core_set': '',
+            },
+        }
+        mock_container = mock.Mock()
+        mock_container.delete = asynctest.CoroutineMock()
+        agent.docker.containers.container.return_value = mock_container
+        agent.config.volume_root = tmpdir
+        agent.container_cpu_map.free = mock.Mock()
+        agent.events.call.dispatch = asynctest.CoroutineMock()
+
+        await agent.clean_kernel('kernel-id-1')
+
+        mock_container.delete.assert_called_once_with()
+        agent.container_cpu_map.free.assert_called_once_with(mock.ANY)
+        assert 'kernel-id-1' not in agent.container_registry
+
+    @pytest.mark.asyncio
+    async def test_clean_old_kernels(self, mock_agent):
+        agent = mock_agent
+        agent.container_registry = {
+            'kernel-id-1': {
+                'last_used': 000000,
+            },
+        }
+        agent.config.idle_timeout = 1
+        agent._destroy_kernel = asynctest.CoroutineMock()
+
+        await agent.clean_old_kernels()
+
+        agent._destroy_kernel.assert_called_once_with(
+            'kernel-id-1', 'idle-timeout')
+
+    @pytest.mark.asyncio
+    async def test_do_not_clean_new_kernels(self, mock_agent):
+        agent = mock_agent
+        agent.container_registry = {
+            'kernel-id-1': {
+                'last_used': 000000,
+            },
+        }
+        agent.config.idle_timeout = 999999
+        agent._destroy_kernel = asynctest.CoroutineMock()
+
+        await agent.clean_old_kernels()
+
+        agent._destroy_kernel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clean_all_kernels(self, mock_agent):
+        agent = mock_agent
+        agent.container_registry = {
+            'kernel-id-1': {
+                'last_used': 000000,
+            },
+        }
+        agent._destroy_kernel = asynctest.CoroutineMock()
+
+        await agent.clean_all_kernels()
+
+        agent._destroy_kernel.assert_called_once_with(
+            'kernel-id-1', 'agent-termination')
