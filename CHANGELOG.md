@@ -1,6 +1,34 @@
 Changes
 =======
 
+0.8.2 (2017-01-16)
+------------------
+
+**FIXES**
+
+ - Fix a typo that generates errors during GPU kernel initialization.
+
+ - Fix regression of '--agent-ip-override' cli option.
+
+0.8.1 (2017-01-10)
+------------------
+
+ - Minor internal polishing release.
+
+0.8.0 (2017-01-10)
+------------------
+
+**CHANGES**
+
+ - Bump version to 0.8 to match with sorna-manager and sorna-client.
+
+**FIXES**
+
+ - Fix events lost by HTTP connection timeouts when using `docker.events.run()` from aiodocker.
+   (it is due to default 5-minute timeout set by aiohttp)
+
+ - Correct task cancellation
+
 0.7.5 (2016-12-01)
 ------------------
 
