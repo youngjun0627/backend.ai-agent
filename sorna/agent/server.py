@@ -267,7 +267,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         if 'yes' == ret['ContainerConfig']['Labels'].get('io.sorna.nvidia.enabled', 'no'):
             extra_binds, extra_devices = await prepare_nvidia(self.docker, numa_node)
-            binds.extends(extra_binds)
+            binds.extend(extra_binds)
             devices.extend(extra_devices)
 
         config = {
@@ -704,7 +704,8 @@ def main():
         nonlocal monitor_handle_task, monitor_fetch_task
         args.inst_id = await utils.get_instance_id()
         args.inst_type = await utils.get_instance_type()
-        args.agent_ip = await utils.get_instance_ip()
+        if not args.agent_ip:
+            args.agent_ip = await utils.get_instance_ip()
         log.info(f'myself: {args.inst_id} ({args.inst_type}), ip: {args.agent_ip}')
         log.info(f'using gwateway event server at tcp://{args.event_addr}')
 
