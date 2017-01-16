@@ -16,11 +16,14 @@ class TestLibNuma:
         assert numa.node_of_cpu(5) == 0
 
         # When NUMA is supported.
+        original_numa_supported = resources._numa_supported
         resources._numa_supported = True
         with mock.patch.object(resources, '_libnuma', create=True) \
                 as mock_libnuma:
             numa.node_of_cpu(5)
             mock_libnuma.numa_node_of_cpu.assert_called_once_with(5)
+
+        resources._numa_supported = original_numa_supported
 
     def test_num_nodes(self):
         numa = libnuma()
@@ -30,11 +33,14 @@ class TestLibNuma:
         assert numa.num_nodes() == 1
 
         # When NUMA is supported.
+        original_numa_supported = resources._numa_supported
         resources._numa_supported = True
         with mock.patch.object(resources, '_libnuma', create=True) \
                 as mock_libnuma:
             numa.num_nodes()
             mock_libnuma.numa_num_configured_nodes.assert_called_once_with()
+
+        resources._numa_supported = original_numa_supported
 
     def test_get_available_cores(self, monkeypatch):
         numa = libnuma()
