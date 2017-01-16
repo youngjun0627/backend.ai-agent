@@ -75,22 +75,47 @@ async def test_get_extra_volumes(mock_volumes_list):
     assert 'deeplearning-samples' in mnt_list[0]
 
 
-@pytest.mark.skip('not implemented yet')
 @pytest.mark.asyncio
-async def test_heartbeat_timer(mock_agent):
-    pass
+async def test_heartbeat_timer(mocker, mock_agent):
+    agent = mock_agent
+    agent.heartbeat = mock.Mock()
+
+    mock_ensure_future = mocker.patch.object(asyncio, 'ensure_future')
+    mock_ensure_future.side_effect = [None, asyncio.CancelledError]
+
+    await heartbeat_timer(agent, 0.1)
+
+    agent.heartbeat.assert_called_with(0.1)
 
 
-@pytest.mark.skip('not implemented yet')
 @pytest.mark.asyncio
-async def test_stats_timer():
-    pass
+async def test_stats_timer(mocker, mock_agent):
+    agent = mock_agent
+    agent.update_stats = mock.Mock()
 
+    mock_ensure_future = mocker.patch.object(asyncio, 'ensure_future')
+    mock_task = asynctest.CoroutineMock()
+    mock_ensure_future.side_effect = [mock_task, asyncio.CancelledError]
 
-@pytest.mark.skip('not implemented yet')
+    await stats_timer(agent, 0.1)
+
+    agent.update_stats.assert_called_with(0.1)
+
 @pytest.mark.asyncio
-async def test_cleanup_timer():
-    pass
+async def test_cleanup_timer(mocker, mock_agent):
+    agent = mock_agent
+    agent.clean_old_kernels = mock.Mock()
+
+    mock_ensure_future = mocker.patch.object(asyncio, 'ensure_future')
+    mock_task = asynctest.CoroutineMock()
+    mock_ensure_future.side_effect = [mock_task, asyncio.CancelledError]
+
+    # For faster testing
+    mocker.patch.object(asyncio, 'sleep', new_callable=asynctest.CoroutineMock)
+
+    await cleanup_timer(agent)
+
+    agent.clean_old_kernels.assert_called_with()
 
 
 def test_match_result():
