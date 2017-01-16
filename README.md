@@ -19,6 +19,10 @@ or Linux distros.
 pip install sorna-agent
 ```
 
+Due to limitation in current version (9.0.1) of pip, you may encounter errors
+while installing **aiodocker**.  In that case, run `pip install -r
+requirements.txt` and try again.
+
 ### For development:
 
 We recommend to use virtual environments in Python.
