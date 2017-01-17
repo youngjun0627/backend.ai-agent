@@ -1,19 +1,81 @@
 import asyncio
-import unittest
-import os
+from pathlib import Path
+from unittest import mock
 
+from aiodocker.docker import Docker
+import asynctest
 import pytest
+import uvloop
 
-# from sorna.agent.server import container_registry, volume_root, docker_init
-from sorna.agent.server import max_upload_size
-# from sorna.agent.server import create_kernel, destroy_kernel, execute_code, match_result
+from sorna.agent.server import (
+    heartbeat_timer, stats_timer, cleanup_timer, AgentRPCServer
+)
 
 
-@pytest.mark.integration
-class TestAgent:
-    def test_create_and_destroy_kernel(self, event_loop):
-        pass
+@pytest.fixture
+def loop():
+    """
+    Faster event loop than default one.
+    """
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    loop = asyncio.new_event_loop()
+    yield loop
+    asyncio.set_event_loop_policy(None)  # restore default policy
+    loop.close()
 
+
+@pytest.fixture
+def docker(loop):
+    docker = None
+
+    async def get_docker():
+        nonlocal docker
+        docker = Docker(url='/var/run/docker.sock')
+
+    async def cleanup():
+        docker.events.stop()
+        docker.session.close()
+
+    loop.run_until_complete(get_docker())
+    yield docker
+    loop.run_until_complete(cleanup())
+
+
+@pytest.fixture
+def config(tmpdir):
+    class Config:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    config = Config(
+        agent_ip=None,
+        agent_port=6001,
+        # redis_addr=HostPortPair(ip_address('127.0.0.1'), 6379),
+        # event_addr=HostPortPair(ip_address('127.0.0.1'), 5002),
+        exec_timeout=180,
+        idle_timeout=600,
+        max_kernels=1,
+        # debug=False,
+        # kernel_aliases=None,
+        volume_root=Path(tmpdir),
+    )
+    return config
+
+
+@pytest.fixture
+def events():
+    """
+    Mocking manager's event server to not to actually run it for agent tests.
+    """
+    events = mock.Mock()
+    events.call.dispatch = asynctest.CoroutineMock()
+    return events
+
+
+@pytest.fixture
+def agent(loop, docker, config, events):
+    agent = AgentRPCServer(docker, config, events, loop=loop)
+    return agent
 
 
 # class AgentFunctionalTest(unittest.TestCase):
@@ -27,12 +89,6 @@ class TestAgent:
 #             self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
 #         self.docker_cli.close()
 #         self.loop.close()
-#
-#     def test_create_and_destroy_kernel(self):
-#         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python3'))
-#         assert kernel_id in container_registry
-#         self.loop.run_until_complete(destroy_kernel(self.loop, self.docker_cli, kernel_id))
-#         assert kernel_id not in container_registry
 #
 #     def test_execute_simple_python2(self):
 #         kernel_id = self.loop.run_until_complete(create_kernel(self.loop, self.docker_cli, 'python2'))
@@ -332,6 +388,3 @@ class TestAgent:
 #         # Check the execution result is correct
 #         self.assertIn('NameError', str(exec_result['exceptions']))
 # '''
-
-if __name__ == '__main__':
-    unittest.main()
