@@ -709,7 +709,7 @@ def main():
         if not args.agent_ip:
             args.agent_ip = await utils.get_instance_ip()
         log.info(f'myself: {args.inst_id} ({args.inst_type}), ip: {args.agent_ip}')
-        log.info(f'using gwateway event server at tcp://{args.event_addr}')
+        log.info(f'using gateway event server at tcp://{args.event_addr}')
 
         # Connect to the events server.
         event_addr = f'tcp://{args.event_addr}'
