@@ -12,16 +12,24 @@ from sorna.agent.server import (
 )
 
 
+# @pytest.fixture
+# def loop():
+#     """
+#     Faster event loop than default one.
+
+#     Using this loop fixture raises
+#     `RuntimeError: Timeout context manager should be used inside a task`.
+#     """
+#     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+#     loop = asyncio.new_event_loop()
+#     yield loop
+#     asyncio.set_event_loop_policy(None)  # restore default policy
+#     loop.close()
+
+
 @pytest.fixture
-def loop():
-    """
-    Faster event loop than default one.
-    """
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    loop = asyncio.new_event_loop()
-    yield loop
-    asyncio.set_event_loop_policy(None)  # restore default policy
-    loop.close()
+def loop(event_loop):
+    return event_loop
 
 
 @pytest.fixture
@@ -74,8 +82,15 @@ def events():
 
 @pytest.fixture
 def agent(loop, docker, config, events):
+    async def cleanup():
+        for kernel_id, info in agent.container_registry.items():
+            # Delete stopped test containers
+            container_id = info['container_id']
+            await docker.containers.container(container_id).delete()
+
     agent = AgentRPCServer(docker, config, events, loop=loop)
-    return agent
+    yield agent
+    loop.run_until_complete(cleanup())
 
 
 @pytest.mark.integration
@@ -91,10 +106,7 @@ class TestAgent:
         await docker.events.stop()
         docker.session.close()
 
-    async def test_create_and_destroy_kernel(self, loop, config, events):
-        docker = Docker(url='/var/run/docker.sock')
-        agent = AgentRPCServer(docker, config, events, loop=loop)
-
+    async def test_create_and_destroy_kernel(self, agent):
         kernel_id, stdin_port, stdout_port = await agent.create_kernel(
             'python3', {})
         assert kernel_id in agent.container_registry
@@ -102,6 +114,3 @@ class TestAgent:
 
         await agent.destroy_kernel(kernel_id)
         assert 'last_stat' in agent.container_registry[kernel_id]
-
-        await docker.events.stop()
-        docker.session.close()
