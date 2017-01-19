@@ -1,8 +1,11 @@
 import ctypes, ctypes.util
+import functools
 import logging
 import operator
 import os
 import sys
+
+import requests_unixsocket as requnix
 
 log = logging.getLogger('sorna.agent.resources')
 
@@ -32,11 +35,19 @@ class libnuma:
             return 1
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def get_available_cores():
         try:
-            return os.sched_getaffinity(os.getpid())
-        except AttributeError:
-            return {idx for idx in range(os.cpu_count())}
+            # Try to get the # cores allocated to Docker first.
+            with requnix.Session() as sess:
+                resp = sess.get('http+unix://%2fvar%2frun%2fdocker.sock/info')
+                assert resp.status_code == 200
+                return {idx for idx in range(resp.json()['NCPU'])}
+        except:
+            try:
+                return os.sched_getaffinity(os.getpid())
+            except AttributeError:
+                return {idx for idx in range(os.cpu_count())}
 
     @staticmethod
     def get_core_topology():

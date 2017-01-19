@@ -57,6 +57,7 @@ setup(
         'msgpack-python',
         'namedlist',
         'requests',
+        'requests_unixsocket',
         'simplejson',
         'uvloop>=0.7',
         'sorna-common>=0.8,<0.9',
