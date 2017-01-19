@@ -1,8 +1,10 @@
 import asyncio
 from pathlib import Path
 from unittest import mock
+import uuid
 
 from aiodocker.docker import Docker
+from aiodocker.exceptions import DockerError
 import asynctest
 import pytest
 import uvloop
@@ -84,9 +86,14 @@ def events():
 def agent(loop, docker, config, events):
     async def cleanup():
         for kernel_id, info in agent.container_registry.items():
-            # Delete stopped test containers
+            # Kill and delete test containers
             container_id = info['container_id']
-            await docker.containers.container(container_id).delete()
+            try:
+                await docker.containers.container(container_id).kill()
+            except DockerError:
+                pass
+            finally:
+                await docker.containers.container(container_id).delete()
 
     agent = AgentRPCServer(docker, config, events, loop=loop)
     yield agent
@@ -96,15 +103,9 @@ def agent(loop, docker, config, events):
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestAgent:
-    async def test_ping(self, loop, config, events):
-        docker = Docker(url='/var/run/docker.sock')
-        agent = AgentRPCServer(docker, config, events, loop=loop)
-
+    async def test_ping(self, agent):
         ret = agent.ping('hello')
         assert ret == 'hello'
-
-        await docker.events.stop()
-        docker.session.close()
 
     async def test_create_and_destroy_kernel(self, agent):
         kernel_id, stdin_port, stdout_port = await agent.create_kernel(
