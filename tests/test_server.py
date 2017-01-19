@@ -119,21 +119,23 @@ async def test_cleanup_timer(mocker, mock_agent):
 
 
 def test_match_result():
-    # TODO: parameterize test
-    mock_result = {
-        'stdout': 'stdout',
+    result = {
+        'stdout': 'stdout\n',
         'stderr': 'stderr',
-        'exceptions': []
+        'media': [],
+        'options': None,
+        'exceptions': [['RuntimeError', ['abc', 123], False, None]],
+        'files': []
     }
-    mock_match = {
-        'op': 'contains',
-        'target': 'stdout',
-        'value': 'mock_value',
-    }
-
-    assert not match_result(mock_result, mock_match)
-    mock_result['stdout'] = 'mock_value'
-    assert match_result(mock_result, mock_match)
+    assert match_result(result, {'op': 'contains', 'target': 'stdout', 'value': 'stdout'})
+    assert match_result(result, {'op': 'contains', 'target': 'stdout', 'value': 'stdout'})
+    assert match_result(result, {'op': 'equal', 'target': 'stdout', 'value': 'stdout\n'})
+    assert match_result(result, {'op': 'regex', 'target': 'stdout', 'value': r'^s.*ut$'})
+    assert match_result(result, {'op': 'contains', 'target': 'stderr', 'value': 'stderr'})
+    assert match_result(result, {'op': 'contains', 'target': 'exception', 'value': ''})
+    assert match_result(result, {'op': 'contains', 'target': 'exception', 'value': 'RuntimeError'})
+    assert match_result(result, {'op': 'equal', 'target': 'exception', 'value': 'RuntimeError'})
+    assert match_result(result, {'op': 'regex', 'target': 'exception', 'value': '^Runtime'})
 
 
 class TestAgentRPCServer:
