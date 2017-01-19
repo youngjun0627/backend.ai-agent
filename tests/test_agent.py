@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+import time
 from unittest import mock
 import uuid
 
@@ -9,9 +10,7 @@ import asynctest
 import pytest
 import uvloop
 
-from sorna.agent.server import (
-    heartbeat_timer, stats_timer, cleanup_timer, match_result, AgentRPCServer
-)
+from sorna.agent.server import AgentRPCServer
 
 
 # @pytest.fixture
@@ -125,6 +124,18 @@ class TestAgent:
     #     await agent.restart_kernel(kernel_id)
     #
     #     assert 0
+
+    async def test_reset(self, agent):
+        kernel_id1, _, _ = await agent.create_kernel('python3', {})
+        kernel_id2, _, _ = await agent.create_kernel('python3', {})
+
+        assert 'last_stat' not in agent.container_registry[kernel_id1]
+        assert 'last_stat' not in agent.container_registry[kernel_id2]
+
+        await agent.reset()
+
+        assert 'last_stat' in agent.container_registry[kernel_id1]
+        assert 'last_stat' in agent.container_registry[kernel_id2]
 
     async def test_execute_code_python3(self, agent, mocker):
         mock_match_result = mocker.patch('sorna.agent.server.match_result')
@@ -299,3 +310,50 @@ j'''
             entry_id = str(uuid.uuid4())
             code_id = str(uuid.uuid4())
             await agent.execute_code(entry_id, kernel_id, code_id, code, {})
+
+    async def test_clean_kernel(self, agent, tmpdir):
+        kernel_id1, _, _ = await agent.create_kernel('python3', {})
+        kernel_id2, _, _ = await agent.create_kernel('python3', {})
+
+        await agent.destroy_kernel(kernel_id1)
+        await agent.destroy_kernel(kernel_id2)
+
+        assert len(agent.container_registry) == 2
+        assert kernel_id1 in str(tmpdir.listdir())
+        assert kernel_id2 in str(tmpdir.listdir())
+
+        await agent.clean_kernel(kernel_id2)
+
+        assert len(agent.container_registry) == 1
+        assert kernel_id1 in agent.container_registry
+        assert kernel_id2 not in agent.container_registry
+        assert kernel_id1 in str(tmpdir.listdir())
+        assert kernel_id2 not in str(tmpdir.listdir())
+
+    async def test_clean_old_kernels(self, agent):
+        kernel_id1, _, _ = await agent.create_kernel('python3', {})
+        kernel_id2, _, _ = await agent.create_kernel('python3', {})
+
+        now = time.monotonic()
+        timeout = agent.config.idle_timeout
+
+        # kernel 2 is old
+        agent.container_registry[kernel_id1]['last_used'] = now
+        agent.container_registry[kernel_id2]['last_used'] = now - timeout - 10
+
+        assert 'last_stat' not in agent.container_registry[kernel_id1]
+        assert 'last_stat' not in agent.container_registry[kernel_id2]
+
+        await agent.clean_old_kernels()
+
+        assert 'last_stat' not in agent.container_registry[kernel_id1]
+        assert 'last_stat' in agent.container_registry[kernel_id2]
+
+    async def test_clean_all_kernels(self, agent):
+        kernel_id1, _, _ = await agent.create_kernel('python3', {})
+        kernel_id2, _, _ = await agent.create_kernel('python3', {})
+
+        await agent.clean_all_kernels()
+
+        assert 'last_stat' in agent.container_registry[kernel_id1]
+        assert 'last_stat' in agent.container_registry[kernel_id2]
