@@ -380,6 +380,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             return {
                 'stdout': result['stdout'],
                 'stderr': result['stderr'],
+                'status': nmget(result, 'status', 'finished'),
                 'media': nmget(result, 'media', []),
                 'options': nmget(result, 'options', None),
                 'exceptions': nmget(result, 'exceptions', []),
