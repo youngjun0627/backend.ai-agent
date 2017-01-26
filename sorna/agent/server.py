@@ -323,7 +323,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return kernel_id
 
     async def _destroy_kernel(self, kernel_id, reason):
-        cid = self.container_registry[kernel_id]['container_id']
+        try:
+            cid = self.container_registry[kernel_id]['container_id']
+        except KeyError:
+            log.warning(f'_destroy_kernel({kernel_id}) kernel missing (already dead?)')
+            return
         container = self.docker.containers.container(cid)
         try:
             # stats must be collected before killing it.
@@ -386,9 +390,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'exceptions': nmget(result, 'exceptions', []),
                 'files': uploaded_files,
             }
-        except asyncio.TimeoutError as exc:
+        except asyncio.TimeoutError:
             log.warning(f'Timeout detected on kernel {kernel_id} (code_id: {code_id}).')
-            asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
+            if kernel_id in self.container_resgistry:  # maybe cleaned already
+                asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
             raise
         finally:
             container_sock.close()
