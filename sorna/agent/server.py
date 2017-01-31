@@ -27,6 +27,7 @@ from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
 from .stats import collect_stats, _collect_stats_sysfs, _collect_stats_api
 from .resources import libnuma, CPUAllocMap
+from .kernel import KernelRunner
 
 log = logging.getLogger('sorna.agent.server')
 
@@ -225,6 +226,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         image_name = f'lablup/kernel-{lang}'
         ret = await self.docker.images.get(image_name)
+        version        = int(ret['ContainerConfig']['Labels'].get('io.sorna.version', '1'))
         mem_limit      = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
         exec_timeout   = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
         exec_timeout   = min(exec_timeout, self.config.exec_timeout)
@@ -276,6 +278,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'Volumes': {v: {} for v in volumes},
             'StopSignal': 'SIGINT',
             'ExposedPorts': {
+                '2000/tcp': {},
                 '2001/tcp': {},
                 '2002/tcp': {},
                 '2003/tcp': {},
@@ -295,18 +298,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         kernel_name = f'kernel.{lang}.{kernel_id}'
         container = await self.docker.containers.create(config=config, name=kernel_name)
         await container.start()
-        repl_port   = (await container.port(2001))[0]['HostPort']
+        repl_in_port  = (await container.port(2000))[0]['HostPort']
+        repl_out_port = (await container.port(2001))[0]['HostPort']
         stdin_port  = (await container.port(2002))[0]['HostPort']
         stdout_port = (await container.port(2003))[0]['HostPort']
         kernel_ip = '127.0.0.1'
 
         self.container_registry[kernel_id] = {
             'lang': lang,
+            'version': version,
             'container_id': container._id,
-            'addr': f'tcp://{kernel_ip}:{repl_port}',
-            'ip': kernel_ip,
-            'port': 2001,
-            'host_port': repl_port,
+            'container_ip': kernel_ip,
+            'repl_in_port': repl_in_port,
+            'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,
             'stdout_port': stdout_port,
             'cpu_shares': 1024,
@@ -317,9 +321,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'num_queries': 0,
             'last_used': time.monotonic(),
         }
-        log.debug(f'kernel access address: 0.0.0.0:{repl_port}')
-        log.debug(f'kernel stdin address:  0.0.0.0:{stdin_port}')
-        log.debug(f'kernel stdout address: 0.0.0.0:{stdout_port}')
+        log.debug(f'kernel repl-in address: {kernel_ip}:{repl_in_port}')
+        log.debug(f'kernel repl-out address: {kernel_ip}:{repl_out_port}')
+        log.debug(f'kernel stdin address:  {kernel_ip}:{stdin_port}')
+        log.debug(f'kernel stdout address: {kernel_ip}:{stdout_port}')
         return kernel_id
 
     async def _destroy_kernel(self, kernel_id, reason):
@@ -347,56 +352,75 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
 
-    async def _execute_code(self, entry_id, kernel_id, code_id, code):
+    async def _execute_code(self, entry_id, kernel_id, code_id, code_text):
         work_dir = self.config.volume_root / kernel_id
+        api_ver = 2  # TODO: read from gateway request
 
         self.container_registry[kernel_id]['last_used'] = time.monotonic()
         self.container_registry[kernel_id]['num_queries'] += 1
 
-        container_addr = self.container_registry[kernel_id]['addr']
-        container_sock = await aiozmq.create_zmq_stream(
-            zmq.REQ, connect=container_addr, loop=self.loop)
-        container_sock.transport.setsockopt(zmq.LINGER, 50)
-        container_sock.write([code_id.encode('ascii'), code.encode('utf8')])
-        exec_timeout = self.container_registry[kernel_id]['exec_timeout']
+        if 'runner' in self.container_registry[kernel_id]:
+            log.debug(f'_execute_code({kernel_id}) use existing runner')
+            runner = self.container_registry[kernel_id]['runner']
+            await runner.feed_input(code_id, code_text)
+        else:
+            features = set()
+            if api_ver == 2:
+                features |= {'input', 'continuation'}
+
+            # TODO: import "connected" files from S3
+            self.container_registry[kernel_id]['initial_file_stats'] \
+                    = scandir(work_dir, max_upload_size)
+
+            runner = KernelRunner(
+                kernel_id,
+                self.container_registry[kernel_id]['container_ip'],
+                self.container_registry[kernel_id]['repl_in_port'],
+                self.container_registry[kernel_id]['repl_out_port'],
+                self.container_registry[kernel_id]['exec_timeout'],
+                features)
+            log.debug(f'_execute_code({kernel_id}) start new runner')
+            await runner.start(code_id, code_text)
+            self.container_registry[kernel_id]['runner'] = runner
 
         try:
-            # TODO: import "connected" files from S3
-            initial_file_stats = scandir(work_dir, max_upload_size)
+            #result = await runner.get_next_result(api_ver=api_ver)
+            result = await runner.get_next_result(api_ver=1)  # TODO
 
-            begin_time = time.monotonic()
-            with timeout(exec_timeout):
-                result_data = await container_sock.read()
-            finish_time = time.monotonic()
-            elapsed_time = finish_time - begin_time
-            log.debug(f'execution time: {elapsed_time:.2f} / {exec_timeout} sec')
-
-            final_file_stats = scandir(work_dir, max_upload_size)
-            result = json.loads(result_data[0])
             uploaded_files = []
-            if nmget(result, 'options.upload_output_files', True):
-                # TODO: separate as a new task
-                uploaded_files = await upload_output_files_to_s3(
-                    initial_file_stats, final_file_stats, entry_id,
-                    loop=self.loop)
-                uploaded_files = [os.path.relpath(fn, work_dir) for fn in uploaded_files]
+
+            if result['status'] in ('finished', 'exec-timeout'):
+                log.debug(f'_execute_code({kernel_id}) finished/timeout')
+                await runner.close()
+
+                final_file_stats = scandir(work_dir, max_upload_size)
+                if nmget(result, 'options.upload_output_files', True):
+                    # TODO: separate as a new task
+                    initial_file_stats = self.container_registry[kernel_id]['initial_file_stats']
+                    uploaded_files = await upload_output_files_to_s3(
+                        initial_file_stats, final_file_stats, entry_id,
+                        loop=self.loop)
+                    uploaded_files = [os.path.relpath(fn, work_dir) for fn in uploaded_files]
+
+                del self.container_registry[kernel_id]['runner']
+                del self.container_registry[kernel_id]['initial_file_stats']
+
+            if result['status'] == 'exec-timeout' and kernel_id in self.container_resgistry:  # maybe cleaned already
+                asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
 
             return {
                 'stdout': result['stdout'],
                 'stderr': result['stderr'],
                 'status': nmget(result, 'status', 'finished'),
                 'media': nmget(result, 'media', []),
+                'html': nmget(result, 'html', []),
                 'options': nmget(result, 'options', None),
-                'exceptions': nmget(result, 'exceptions', []),
+                'exceptions': [],  # TODO: deprecate in API v2
                 'files': uploaded_files,
             }
-        except asyncio.TimeoutError:
-            log.warning(f'Timeout detected on kernel {kernel_id} (code_id: {code_id}).')
-            if kernel_id in self.container_resgistry:  # maybe cleaned already
-                asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
+        except:
+            log.exception('unexpected error')
             raise
-        finally:
-            container_sock.close()
 
     async def heartbeat(self, interval):
         running_kernels = [k for k in self.container_registry.keys()]
