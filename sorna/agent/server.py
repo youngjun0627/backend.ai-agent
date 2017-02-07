@@ -44,7 +44,8 @@ supported_langs = {
     'git',
     'julia',
     'lua5',
-    'haskell'
+    'haskell',
+    'octave4',
 }
 lang_aliases = dict()
 max_upload_size = 5 * 1024 * 1024  # 5 MB
@@ -689,6 +690,7 @@ def main():
         'lua': 'lua5',
         'git-shell': 'git',
         'shell': 'git',
+        'ocatve': 'octave4',
     })
     if args.kernel_aliases:  # for when we want to add extra
         with open(args.kernel_aliases, 'r') as f:
@@ -737,7 +739,7 @@ def main():
         if not args.agent_ip:
             args.agent_ip = await utils.get_instance_ip()
         log.info(f'myself: {args.inst_id} ({args.inst_type}), ip: {args.agent_ip}')
-        log.info(f'using gwateway event server at tcp://{args.event_addr}')
+        log.info(f'using gateway event server at tcp://{args.event_addr}')
 
         # Connect to the events server.
         event_addr = f'tcp://{args.event_addr}'
