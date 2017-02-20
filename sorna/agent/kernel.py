@@ -1,4 +1,5 @@
 import asyncio
+import codecs
 import enum
 import logging
 import time
@@ -173,16 +174,31 @@ class KernelRunner:
             raise
 
     async def read_output(self):
+        # We should use incremental decoder because some kernels may
+        # send us incomplete UTF-8 byte sequences (e.g., Julia).
+        decoders = (
+            codecs.getincrementaldecoder('utf8')(),
+            codecs.getincrementaldecoder('utf8')(),
+        )
         while True:
             try:
                 msg_type, msg_data = await self.output_stream.read()
                 if len(msg_data) > self.max_record_size:
                     msg_data = msg_data[:self.max_record_size]
                 if not self.console_queue.full():
+                    if msg_type == b'stdout':
+                        msg_data = decoder[0].decode(msg_data)
+                    elif msg_type == b'stderr':
+                        msg_data = decoder[1].decode(msg_data)
+                    else:
+                        msg_data = msg_data.decode('utf8')
                     await self.console_queue.put(ResultRecord(
                         msg_type.decode('ascii'),
-                        msg_data.decode('utf8')))
+                        msg_data))
                 if msg_type == b'finished':
+                    # finalize incremental decoder
+                    decoder[0].decode(b'', True)
+                    decoder[1].decode(b'', True)
                     break
             except (asyncio.CancelledError, aiozmq.ZmqStreamClosed):
                 break
