@@ -187,9 +187,9 @@ class KernelRunner:
                     msg_data = msg_data[:self.max_record_size]
                 if not self.console_queue.full():
                     if msg_type == b'stdout':
-                        msg_data = decoder[0].decode(msg_data)
+                        msg_data = decoders[0].decode(msg_data)
                     elif msg_type == b'stderr':
-                        msg_data = decoder[1].decode(msg_data)
+                        msg_data = decoders[1].decode(msg_data)
                     else:
                         msg_data = msg_data.decode('utf8')
                     await self.console_queue.put(ResultRecord(
@@ -197,8 +197,8 @@ class KernelRunner:
                         msg_data))
                 if msg_type == b'finished':
                     # finalize incremental decoder
-                    decoder[0].decode(b'', True)
-                    decoder[1].decode(b'', True)
+                    decoders[0].decode(b'', True)
+                    decoders[1].decode(b'', True)
                     break
             except (asyncio.CancelledError, aiozmq.ZmqStreamClosed):
                 break
