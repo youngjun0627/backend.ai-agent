@@ -124,13 +124,19 @@ class KernelRunner:
             result['media'] = media_items
             result['html'] = html_items
         elif api_ver == 2:
-            output_types = {'stdout', 'stderr', 'media', 'table', 'html'}
-            result['console'] = [(rec.msg_type, rec.data) for rec in records
-                                 if rec.msg_type in output_types]
+            console_items = []
+            for rec in records:
+                if rec.msg_type == 'media':
+                    #console_items.append((rec.msg_type, json.loads(rec.data)))
+                    o = json.loads(rec.data)
+                    console_items.append((rec.msg_type, (o['type'], o['data'])))
+                else:
+                    console_items.append((rec.msg_type, rec.data))
+            result['console'] = console_items
         else:
             raise AssertionError('Unrecognized API version')
 
-    async def get_next_result(self, api_ver=1):
+    async def get_next_result(self, api_ver=2):
         try:
             records = []
             with timeout(self.flush_timeout):

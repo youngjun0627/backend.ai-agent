@@ -395,7 +395,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             self.container_registry[kernel_id]['runner_task'] = asyncio.Task.current_task()
             #result = await runner.get_next_result(api_ver=api_ver)
-            result = await runner.get_next_result(api_ver=1)  # TODO
+            result = await runner.get_next_result(api_ver=2)  # TODO
         except asyncio.CancelledError:
             await runner.close()
             del self.container_registry[kernel_id]['runner']
@@ -430,13 +430,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
 
             return {
-                'stdout': result['stdout'],
-                'stderr': result['stderr'],
-                'status': nmget(result, 'status', 'finished'),
-                'media': nmget(result, 'media', []),
-                'html': nmget(result, 'html', []),
+                'status': result['status'],
+                'console': result['console'],
                 'options': nmget(result, 'options', None),
-                'exceptions': [],  # TODO: deprecate in API v2
                 'files': uploaded_files,
             }
         except:
