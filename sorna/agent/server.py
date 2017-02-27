@@ -335,6 +335,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.warning(f'_destroy_kernel({kernel_id}) kernel missing (already dead?)')
             return
         container = self.docker.containers.container(cid)
+        runner_task = self.container_registry[kernel_id].get('runner_task', None)
+        if runner_task:
+            log.warning(f'_destroy_kernel({kernel_id}) interrupting running execution')
+            runner_task.cancel()
+            await runner_task
         try:
             # stats must be collected before killing it.
             last_stat = (await collect_stats([container]))[0]
@@ -346,7 +351,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 log.warning(f'_destroy_kernel({kernel_id}) kill 500')
                 pass
             elif e.status == 404:
-                log.warning(f'_destroy_kernel({kernel_id}) kill 404')
+                log.warning(f'_destroy_kernel({kernel_id}) kill 404, forgetting this kernel')
+                self.container_cpu_map.free(self.container_registry[kernel_id]['core_set'])
+                del self.container_registry[kernel_id]
                 pass
             else:
                 log.exception(f'_destroy_kernel({kernel_id}) kill error')
@@ -385,14 +392,27 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             self.container_registry[kernel_id]['runner'] = runner
 
         try:
+            self.container_registry[kernel_id]['runner_task'] = asyncio.Task.current_task()
             #result = await runner.get_next_result(api_ver=api_ver)
             result = await runner.get_next_result(api_ver=1)  # TODO
+        except asyncio.CancelledError:
+            await runner.close()
+            del self.container_registry[kernel_id]['runner']
+            return
+        except:
+            log.exception('unexpected error')
+            raise
+        finally:
+            del self.container_registry[kernel_id]['runner_task']
 
+        try:
             uploaded_files = []
 
             if result['status'] in ('finished', 'exec-timeout'):
+
                 log.debug(f'_execute_code({kernel_id}) finished/timeout')
                 await runner.close()
+                del self.container_registry[kernel_id]['runner']
 
                 final_file_stats = scandir(work_dir, max_upload_size)
                 if nmget(result, 'options.upload_output_files', True):
@@ -403,7 +423,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         loop=self.loop)
                     uploaded_files = [os.path.relpath(fn, work_dir) for fn in uploaded_files]
 
-                del self.container_registry[kernel_id]['runner']
                 del self.container_registry[kernel_id]['initial_file_stats']
 
             if result['status'] == 'exec-timeout' and kernel_id in self.container_resgistry:  # maybe cleaned already
