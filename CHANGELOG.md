@@ -1,6 +1,16 @@
 Changes
 =======
 
+0.9.0 (2017-02-27)
+------------------
+
+**NEW**
+
+ - PUSH/PULL-based kernel interaction protocol to support streaming outputs.
+   This enables interactive input functions and streaming outputs for long-running codes,
+   and also makes kernel execution more resilient to network failures.
+   (ZeroMQ's REQ/REP sockets break the system if any messages get dropped)
+
 0.8.2 (2017-01-16)
 ------------------
 
@@ -45,8 +55,8 @@ Changes
    prevent timeouts with many concurrent requests.
 
    NOTE: You need to run `pip install -r requirements.txt` to install the
-	 non-pip (GitHub) version of aiodocker correctly, before running
-	 `pip install sorna-agent`.
+         non-pip (GitHub) version of aiodocker correctly, before running
+         `pip install sorna-agent`.
 
 **FIXES**
 
@@ -135,3 +145,5 @@ Changes
 
  - First public release.
 
+
+<!-- vim: set et: -->
