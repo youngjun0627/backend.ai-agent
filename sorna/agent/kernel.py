@@ -21,13 +21,15 @@ class ClientFeatures(StringSetFlag):
 
 
 class InputRequestPending(Exception):
-    def __init__(self, is_password=False):
+    def __init__(self, opts):
         super().__init__()
-        self.is_password = is_password
+        self.opts = opts
 
 
 class UserCodeFinished(Exception):
-    pass
+    def __init__(self, opts):
+        super().__init__()
+        self.opts = opts
 
 
 class ExecTimeout(Exception):
@@ -137,10 +139,11 @@ class KernelRunner:
                     records.append(rec)
                     self.console_queue.task_done()
                     if rec.msg_type == 'finished':
-                        raise UserCodeFinished
+                        o = json.loads(rec.data) if rec.data else {}
+                        raise UserCodeFinished(o)
                     elif rec.msg_type == 'waiting-input':
-                        o = json.loads(rec.data)
-                        raise InputRequestPending(o['is_password'])
+                        o = json.loads(rec.data) if rec.data else {}
+                        raise InputRequestPending(o)
                     elif rec.msg_type == 'exec-timeout':
                         raise ExecTimeout
         except asyncio.TimeoutError:
@@ -149,9 +152,10 @@ class KernelRunner:
             }
             type(self).aggregate_console(result, records, api_ver)
             return result
-        except UserCodeFinished:
+        except UserCodeFinished as e:
             result = {
                 'status': 'finished',
+                'options': e.opts,
             }
             type(self).aggregate_console(result, records, api_ver)
             return result
@@ -165,7 +169,7 @@ class KernelRunner:
         except InputRequestPending as e:
             result = {
                 'status': 'waiting-input',
-                'options': {'is_password': e.is_password},
+                'options': e.opts,
             }
             type(self).aggregate_console(result, records, api_ver)
             return result
