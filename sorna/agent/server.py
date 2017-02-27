@@ -37,6 +37,7 @@ supported_langs = {
     'python3-tensorflow',
     'python3-tensorflow-gpu',
     'python3-caffe',
+    'python3-theano',
     'r3',
     'php5',
     'php7',
@@ -699,12 +700,14 @@ def main():
         'tensorflow-python3':     'python3-tensorflow',      # package-oriented alias
         'tensorflow-python3-gpu': 'python3-tensorflow-gpu',  # package-oriented alias
         'caffe-python3':          'python3-caffe',           # package-oriented alias
+        'theano-python3':         'python3-theano',          # package-oriented alias
         'r': 'r3',
         'R': 'r3',
         'Rscript': 'r3',
         'php': 'php7',
         'node': 'nodejs6',
         'nodejs': 'nodejs6',
+        'js': 'nodejs6',
         'javascript': 'nodejs6',
         'lua': 'lua5',
         'git-shell': 'git',
