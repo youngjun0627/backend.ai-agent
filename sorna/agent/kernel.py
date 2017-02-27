@@ -1,6 +1,7 @@
 import asyncio
 import codecs
 import enum
+import io
 import logging
 import time
 
@@ -125,13 +126,34 @@ class KernelRunner:
             result['html'] = html_items
         elif api_ver == 2:
             console_items = []
+            last_type = None
+            last_stdout = io.StringIO()
+            last_stderr = io.StringIO()
             for rec in records:
+                if last_stdout.tell() and rec.msg_type != 'stdout':
+                    console_items.append(('stdout', last_stdout.getvalue()))
+                    last_stdout.seek(0)
+                    last_stdout.truncate(0)
+                if last_stderr.tell() and rec.msg_type != 'stderr':
+                    console_items.append(('stderr', last_stderr.getvalue()))
+                    last_stderr.seek(0)
+                    last_stderr.truncate(0)
                 if rec.msg_type == 'media':
-                    #console_items.append((rec.msg_type, json.loads(rec.data)))
                     o = json.loads(rec.data)
                     console_items.append((rec.msg_type, (o['type'], o['data'])))
+                elif rec.msg_type == 'stdout':
+                    last_stdout.write(rec.data)
+                elif rec.msg_type == 'stderr':
+                    last_stderr.write(rec.data)
                 else:
                     console_items.append((rec.msg_type, rec.data))
+                last_type = rec.msg_type
+            if last_stdout.tell():
+                console_items.append(('stdout', last_stdout.getvalue()))
+            if last_stderr.tell():
+                console_items.append(('stderr', last_stderr.getvalue()))
+            last_stdout.close()
+            last_stderr.close()
             result['console'] = console_items
         else:
             raise AssertionError('Unrecognized API version')
