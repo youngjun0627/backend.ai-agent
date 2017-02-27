@@ -126,34 +126,13 @@ class KernelRunner:
             result['html'] = html_items
         elif api_ver == 2:
             console_items = []
-            last_type = None
-            last_stdout = io.StringIO()
-            last_stderr = io.StringIO()
             for rec in records:
-                if last_stdout.tell() and rec.msg_type != 'stdout':
-                    console_items.append(('stdout', last_stdout.getvalue()))
-                    last_stdout.seek(0)
-                    last_stdout.truncate(0)
-                if last_stderr.tell() and rec.msg_type != 'stderr':
-                    console_items.append(('stderr', last_stderr.getvalue()))
-                    last_stderr.seek(0)
-                    last_stderr.truncate(0)
                 if rec.msg_type == 'media':
                     o = json.loads(rec.data)
                     console_items.append((rec.msg_type, (o['type'], o['data'])))
-                elif rec.msg_type == 'stdout':
-                    last_stdout.write(rec.data)
-                elif rec.msg_type == 'stderr':
-                    last_stderr.write(rec.data)
                 else:
                     console_items.append((rec.msg_type, rec.data))
                 last_type = rec.msg_type
-            if last_stdout.tell():
-                console_items.append(('stdout', last_stdout.getvalue()))
-            if last_stderr.tell():
-                console_items.append(('stderr', last_stderr.getvalue()))
-            last_stdout.close()
-            last_stderr.close()
             result['console'] = console_items
         else:
             raise AssertionError('Unrecognized API version')
@@ -212,22 +191,45 @@ class KernelRunner:
             codecs.getincrementaldecoder('utf8')(),
             codecs.getincrementaldecoder('utf8')(),
         )
+        last_type = None
+        last_stdout = io.StringIO()
+        last_stderr = io.StringIO()
         while True:
             try:
                 msg_type, msg_data = await self.output_stream.read()
                 if len(msg_data) > self.max_record_size:
                     msg_data = msg_data[:self.max_record_size]
                 if not self.console_queue.full():
+                    if last_stdout.tell() and msg_type != b'stdout':
+                        await self.console_queue.put(
+                            ResultRecord('stdout', last_stdout.getvalue()))
+                        last_stdout.seek(0)
+                        last_stdout.truncate(0)
+                    if last_stderr.tell() and msg_type != b'stderr':
+                        await self.console_queue.put(
+                            ResultRecord('stderr', last_stderr.getvalue()))
+                        last_stderr.seek(0)
+                        last_stderr.truncate(0)
                     if msg_type == b'stdout':
-                        msg_data = decoders[0].decode(msg_data)
+                        last_stdout.write(decoders[0].decode(msg_data))
                     elif msg_type == b'stderr':
-                        msg_data = decoders[1].decode(msg_data)
+                        last_stderr.write(decoders[1].decode(msg_data))
                     else:
                         msg_data = msg_data.decode('utf8')
-                    await self.console_queue.put(ResultRecord(
-                        msg_type.decode('ascii'),
-                        msg_data))
+                        await self.console_queue.put(ResultRecord(
+                            msg_type.decode('ascii'),
+                            msg_data))
                 if msg_type == b'finished':
+                    if last_stdout.tell():
+                        await self.console_queue.put(
+                            ResultRecord('stdout', last_stdout.getvalue()))
+                        last_stdout.seek(0)
+                        last_stdout.truncate(0)
+                    if last_stderr.tell():
+                        await self.console_queue.put(
+                            ResultRecord('stderr', last_stderr.getvalue()))
+                        last_stderr.seek(0)
+                        last_stderr.truncate(0)
                     # finalize incremental decoder
                     decoders[0].decode(b'', True)
                     decoders[1].decode(b'', True)
@@ -237,4 +239,6 @@ class KernelRunner:
             except:
                 log.exception('unexpected error')
                 break
+        last_stdout.close()
+        last_stderr.close()
         self.finished_at = time.monotonic()
