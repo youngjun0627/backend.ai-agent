@@ -15,6 +15,10 @@ from sorna.utils import StringSetFlag
 
 log = logging.getLogger(__name__)
 
+# msg types visible to the API client.
+# (excluding control signals such as 'finished' and 'waiting-input'
+# since they are passed as separate status field.)
+outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log'}
 
 class ClientFeatures(StringSetFlag):
     INPUT = 'input'
@@ -130,7 +134,7 @@ class KernelRunner:
                 if rec.msg_type == 'media':
                     o = json.loads(rec.data)
                     console_items.append((rec.msg_type, (o['type'], o['data'])))
-                else:
+                elif rec.msg_type in outgoing_msg_types:
                     console_items.append((rec.msg_type, rec.data))
                 last_type = rec.msg_type
             result['console'] = console_items
@@ -143,7 +147,8 @@ class KernelRunner:
             with timeout(self.flush_timeout):
                 while True:
                     rec = await self.console_queue.get()
-                    records.append(rec)
+                    if rec.msg_type in outgoing_msg_types:
+                        records.append(rec)
                     self.console_queue.task_done()
                     if rec.msg_type == 'finished':
                         o = json.loads(rec.data) if rec.data else {}
