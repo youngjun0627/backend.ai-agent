@@ -49,11 +49,18 @@ ResultRecord = namedlist('ResultRecord', [
 
 class KernelRunner:
 
-    def __init__(self, kernel_id, kernel_ip, repl_in_port, repl_out_port,
+    def __init__(self, kernel_id, mode, opts, kernel_ip, repl_in_port, repl_out_port,
                  exec_timeout, features=None):
         self.started_at = None
         self.finished_at = None
         self.kernel_id = kernel_id
+        assert mode in ('query', 'batch')
+        self.mode = mode
+        if mode == 'batch':
+            assert 'build' in opts or 'exec' in opts
+            # TODO: implement batch mode
+            raise NotImplementedError('Batch mode not implemented.')
+        self.opts = opts
         self.kernel_ip = kernel_ip
         self.repl_in_port  = repl_in_port
         self.repl_out_port = repl_out_port
@@ -65,7 +72,7 @@ class KernelRunner:
         self.read_task = None
         self.features = features or set()
 
-    async def start(self, code_id, code_text):
+    async def start(self, code_text):
         self.started_at = time.monotonic()
 
         self.input_stream = await aiozmq.create_zmq_stream(
@@ -94,7 +101,7 @@ class KernelRunner:
         self.input_stream.close()
         self.output_stream.close()
 
-    async def feed_input(self, code_id, code_text):
+    async def feed_input(self, code_text):
         self.input_stream.write([
             b'input',
             code_text.encode('utf8'),

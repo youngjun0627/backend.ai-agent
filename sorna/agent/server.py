@@ -168,11 +168,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return msg
 
     @aiozmq.rpc.method
-    async def create_kernel(self, lang: str, opts: dict) -> tuple:
+    async def create_kernel(self, lang: str,
+                            limits: dict=None,
+                            mounts: list=None) -> tuple:
         if lang in lang_aliases:
             lang = lang_aliases[lang]
-        log.debug(f'rpc::create_kernel({lang})')
-        kernel_id = await self._create_kernel(lang)
+        log.debug(f'rpc::create_kernel({lang}, {limits}, {mounts})')
+        kernel_id = await self._create_kernel(lang, None, limits, mounts)
         stdin_port = self.container_registry[kernel_id]['stdin_port']
         stdout_port = self.container_registry[kernel_id]['stdout_port']
         return kernel_id, stdin_port, stdout_port
@@ -188,7 +190,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         restarting_kernels[kernel_id] = asyncio.Event()
         await self._destroy_kernel(kernel_id, 'restarting')
         lang = self.container_registry[kernel_id]['lang']
-        await self._create_kernel(lang, kernel_id=kernel_id)
+        limits = self.container_registry[kernel_id]['limits']
+        mounts = self.container_registry[kernel_id]['mounts']
+        await self._create_kernel(lang, kernel_id, limits, mounts)
         if kernel_id in restarting_kernels:
             del restarting_kernels[kernel_id]
         stdin_port = self.container_registry[kernel_id]['stdin_port']
@@ -196,11 +200,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return stdin_port, stdout_port
 
     @aiozmq.rpc.method
-    async def execute_code(self, entry_id: str, kernel_id: str,
-                           code_id: str, code: str,
-                           match: dict) -> dict:
-        log.debug(f'rpc::execute_code({entry_id}, {kernel_id}, ...)')
-        result = await self._execute_code(entry_id, kernel_id, code_id, code)
+    async def execute_code(self, api_version: int, kernel_id: str,
+                           mode: str, code: str, opts: dict) -> dict:
+        log.debug(f'rpc::execute_code({kernel_id}, ...)')
+        result = await self._execute_code(api_version, kernel_id, mode, code, opts)
         if match:
             result['match_result'] = match_result(result, match)
         return result
@@ -218,7 +221,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 log.exception(f'reset: destroying {kernel_id}')
         await asyncio.gather(*tasks)
 
-    async def _create_kernel(self, lang, kernel_id=None):
+    async def _create_kernel(self, lang, kernel_id=None, limits=None, mounts=None):
         if not kernel_id:
             kernel_id = secrets.token_urlsafe(16)
             assert kernel_id not in self.container_registry
@@ -228,6 +231,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         image_name = f'lablup/kernel-{lang}'
         ret = await self.docker.images.get(image_name)
+        # TODO: apply limits
         version        = int(ret['ContainerConfig']['Labels'].get('io.sorna.version', '1'))
         mem_limit      = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
         exec_timeout   = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
@@ -268,6 +272,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         volumes = ['/home/work']
         volumes.extend(v.container_path for v in mount_list)
         devices = []
+
+        # TODO: apply mounts
 
         if 'yes' == ret['ContainerConfig']['Labels'].get('io.sorna.nvidia.enabled', 'no'):
             extra_binds, extra_devices = await prepare_nvidia(self.docker, numa_node)
@@ -322,6 +328,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'exec_timeout': exec_timeout,
             'num_queries': 0,
             'last_used': time.monotonic(),
+            'limits': limits,
+            'mounts': mounts,
         }
         log.debug(f'kernel repl-in address: {kernel_ip}:{repl_in_port}')
         log.debug(f'kernel repl-out address: {kernel_ip}:{repl_out_port}')
@@ -361,20 +369,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
 
-    async def _execute_code(self, entry_id, kernel_id, code_id, code_text):
+    async def _execute_code(self, api_version, kernel_id, mode, code_text, opts):
         work_dir = self.config.volume_root / kernel_id
-        api_ver = 2  # TODO: read from gateway request
 
         self.container_registry[kernel_id]['last_used'] = time.monotonic()
         self.container_registry[kernel_id]['num_queries'] += 1
 
         if 'runner' in self.container_registry[kernel_id]:
-            log.debug(f'_execute_code({kernel_id}) use existing runner')
+            log.debug(f'_execute_code:v{api_version}({kernel_id}) use existing runner')
             runner = self.container_registry[kernel_id]['runner']
-            await runner.feed_input(code_id, code_text)
+            await runner.feed_input(code_text)
         else:
             features = set()
-            if api_ver == 2:
+            if api_version == 2:
                 features |= {'input', 'continuation'}
 
             # TODO: import "connected" files from S3
@@ -383,19 +390,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
             runner = KernelRunner(
                 kernel_id,
+                mode, opts,
                 self.container_registry[kernel_id]['container_ip'],
                 self.container_registry[kernel_id]['repl_in_port'],
                 self.container_registry[kernel_id]['repl_out_port'],
                 self.container_registry[kernel_id]['exec_timeout'],
                 features)
-            log.debug(f'_execute_code({kernel_id}) start new runner')
-            await runner.start(code_id, code_text)
+            log.debug(f'_execute_code:v{api_version}({kernel_id}) start new runner')
+            await runner.start(code_text)
             self.container_registry[kernel_id]['runner'] = runner
 
         try:
             self.container_registry[kernel_id]['runner_task'] = asyncio.Task.current_task()
-            #result = await runner.get_next_result(api_ver=api_ver)
-            result = await runner.get_next_result(api_ver=2)  # TODO
+            result = await runner.get_next_result(api_ver=api_version)
         except asyncio.CancelledError:
             await runner.close()
             del self.container_registry[kernel_id]['runner']
@@ -418,9 +425,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 final_file_stats = scandir(work_dir, max_upload_size)
                 if nmget(result, 'options.upload_output_files', True):
                     # TODO: separate as a new task
+                    # TODO: replace entry ID ('0') with some different identifier
                     initial_file_stats = self.container_registry[kernel_id]['initial_file_stats']
                     uploaded_files = await upload_output_files_to_s3(
-                        initial_file_stats, final_file_stats, entry_id,
+                        initial_file_stats, final_file_stats, '0',
                         loop=self.loop)
                     uploaded_files = [os.path.relpath(fn, work_dir) for fn in uploaded_files]
 
