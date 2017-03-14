@@ -1,6 +1,17 @@
 Changes
 =======
 
+0.9.1 (2017-02-27)
+------------------
+
+**CHANGES**
+
+ - Separate console output formats for API v1 and v2.
+
+ - Deprecate unused matching option for execution API.
+
+ - Remove control messages in API responses.
+
 0.9.0 (2017-02-27)
 ------------------
 
