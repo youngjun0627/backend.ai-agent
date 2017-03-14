@@ -120,33 +120,6 @@ async def cleanup_timer(agent):
             await task
 
 
-def match_result(result, match):
-    try:
-        op = match['op']
-        target = match['target']
-        value = match['value']
-    except KeyError:
-        raise TypeError('Wrong match object format.')
-    assert op in ('contains', 'equal', 'regex'), 'Invalid match operator.'
-    assert target in ('stdout', 'stderr', 'exception'), 'Invalid match target.'
-    assert isinstance(value, str), 'Match value must be a string.'
-    if target in ('stdout', 'stderr'):
-        content = result[target]
-    elif target == 'exception':
-        if len(result['exceptions']) > 0:
-            content = result['exceptions'][-1][0]  # exception name
-        else:
-            # Expected exception, but there was none.
-            return False
-    if op == 'contains':
-        matched = (value in content)
-    elif op == 'equal':
-        matched = (value == content)
-    elif op == 'regex':
-        matched = (re.search(value, content) is not None)
-    return matched
-
-
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     def __init__(self, docker, config, events, loop=None):
@@ -204,8 +177,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                            mode: str, code: str, opts: dict) -> dict:
         log.debug(f'rpc::execute_code({kernel_id}, ...)')
         result = await self._execute_code(api_version, kernel_id, mode, code, opts)
-        if match:
-            result['match_result'] = match_result(result, match)
         return result
 
     @aiozmq.rpc.method
