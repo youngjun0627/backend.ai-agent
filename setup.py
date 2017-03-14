@@ -60,7 +60,7 @@ setup(
         'requests_unixsocket',
         'simplejson',
         'uvloop>=0.7',
-        'sorna-common>=0.8,<0.9',
+        'sorna-common>=0.9,<1.0',
     ],
     extras_require={
         'dev': ['pytest', 'pytest-asyncio', 'flake8', 'pep8-naming'],
