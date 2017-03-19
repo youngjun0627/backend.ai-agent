@@ -1,8 +1,29 @@
 from setuptools import setup
 from pathlib import Path
+import pip
 import re
 
 here = Path(__file__).resolve().parent
+
+
+try:
+    import pypandoc
+    long_description = pypandoc.convert('README.md', 'rst')
+except (IOError, ImportError):
+    long_description = ""
+
+requires = []
+links = []
+requirements = pip.req.parse_requirements(
+    'requirements.txt', session=pip.download.PipSession()
+)
+for item in requirements:
+    if getattr(item, 'url', None):  # older pip has url
+        links.append(str(item.url))
+    if getattr(item, 'link', None):  # newer pip has link
+        links.append(str(item.link))
+    if item.req:
+        requires.append(str(item.req))  # always the package name
 
 
 def _get_version():
@@ -45,30 +66,12 @@ setup(
     namespace_packages=['sorna'],
 
     python_requires='>=3.6',
-    install_requires=[
-        'coloredlogs>=5.2',
-        'async_timeout>=1.1',
-        'pyzmq>=16.0',
-        'aiozmq>=0.7',
-        'aiohttp>=1.1',
-        'aiodocker',
-        'aioredis',
-        'aiobotocore',
-        'msgpack-python',
-        'namedlist',
-        'requests',
-        'requests_unixsocket',
-        'simplejson',
-        'uvloop>=0.7',
-        'sorna-common>=0.9,<1.0',
-    ],
+    install_requires=requires,
+    dependency_links=links,
     extras_require={
         'dev': ['pytest', 'pytest-asyncio', 'flake8', 'pep8-naming'],
         'test': ['pytest', 'pytest-asyncio'],
     },
-    dependency_links=[
-        'git+https://github.com/achimnol/aiodocker@master#egg=aiodocker-dev',
-    ],
     package_data={
     },
     data_files=[],
