@@ -43,7 +43,7 @@ setup(
     # https://packaging.python.org/en/latest/single_source_version.html
     version=_get_version(),
     description='Sorna agent',
-    long_description='',
+    long_description=long_description,
     url='https://github.com/lablup/sorna-agent',
     author='Lablup Inc.',
     author_email='joongi@lablup.com',
