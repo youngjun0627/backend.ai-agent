@@ -25,15 +25,15 @@ requirements.txt` and try again.
 
 ### For development:
 
-We recommend to use virtual environments in Python.
-You may share a virtual environment with other Sorna projects.
+We recommend to use an isolated virtual environment.
 This installs the current working copy and sorna-common as "editable" packages.
 
 ```sh
 git clone https://github.com/lablup/sorna-agent.git
 python -m venv venv-sorna
 source venv-sorna/bin/activate
-pip install -r dev-requirements.txt
+pip install -U pip setuptools wheel  # ensure latest versions
+pip install -r requirements-dev.txt
 ```
 
 Deployment
