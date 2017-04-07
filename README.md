@@ -70,4 +70,4 @@ environment = AWS_ACCESS_KEY_ID="...",AWS_SECRET_ACCESS_KEy="...",AWS_REGION="..
  * 6001: ZeroMQ-based internal agent control protocol
  * Docker REPL containers will use automatically-mapped host-side port numbers,
    and they do not need to be open to other hosts (localhost-only).
-   Inside containers, the REPL daemons use the fixed port number: 2001.
+   Inside containers, the REPL daemons use the fixed port numbers: 2000-2003.

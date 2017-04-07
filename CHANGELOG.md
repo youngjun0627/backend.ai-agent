@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.9.5 (2017-04-07)
+------------------
+
+ - Add PyTorch support.
+
+ - Upgrade aiohttp to v2 and relevant dependencies as well.
+
 0.9.4 (2017-03-19)
 ------------------
 
