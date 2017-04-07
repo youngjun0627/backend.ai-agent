@@ -3,7 +3,7 @@ import logging
 import sys
 from pathlib import Path
 
-import aiohttp.errors
+import aiohttp
 from aiodocker.exceptions import DockerError
 
 from sorna.utils import nmget
@@ -39,7 +39,7 @@ def _collect_stats_sysfs(container):
 async def _collect_stats_api(container):
     try:
         ret = await container.stats(stream=False)
-    except (DockerError, aiohttp.errors.ClientResponseError):
+    except (DockerError, aiohttp.ClientResponseError):
         log.warning('container {} missing on heartbeat'.format(container._id[:7]))
         return None
     else:
