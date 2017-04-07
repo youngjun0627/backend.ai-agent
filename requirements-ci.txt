@@ -2,16 +2,16 @@ coloredlogs>=5.2
 async_timeout>=1.1
 pyzmq>=16.0
 aiozmq>=0.7
-aiohttp>=1.1
+aiohttp>=2.0.6
 -e git+https://github.com/achimnol/aiodocker@master#egg=aiodocker
 aioredis>=0.2.8
-aiobotocore
+aiobotocore>=0.3.0
 msgpack-python
 namedlist
 requests
 requests_unixsocket
 simplejson
-uvloop>=0.7
+uvloop>=0.8
 -e git+https://github.com/lablup/sorna-common#egg=sorna-common
 pytest
 pytest-asyncio

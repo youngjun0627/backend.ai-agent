@@ -5,7 +5,6 @@ import re
 
 here = Path(__file__).resolve().parent
 
-
 try:
     import pypandoc
     long_description = pypandoc.convert('README.md', 'rst')
@@ -72,7 +71,4 @@ setup(
         'dev': ['pytest', 'pytest-asyncio', 'flake8', 'pep8-naming'],
         'test': ['pytest', 'pytest-asyncio'],
     },
-    package_data={
-    },
-    data_files=[],
 )
