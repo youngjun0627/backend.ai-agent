@@ -34,6 +34,8 @@ log = logging.getLogger('sorna.agent.server')
 supported_langs = {
     'python2',
     'python3',
+    'python3-torch',
+    'python3-torch-gpu',
     'python3-tensorflow',
     'python3-tensorflow-gpu',
     'python3-caffe',
