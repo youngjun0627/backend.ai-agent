@@ -2,10 +2,11 @@ coloredlogs>=5.2
 async_timeout>=1.1
 pyzmq>=16.0
 aiozmq>=0.7
-aiohttp>=2.0.6
+aiohttp~=2.0.6
 -e git+https://github.com/achimnol/aiodocker@master#egg=aiodocker
 aioredis>=0.2.8
 aiobotocore>=0.3.0
+aio_etcd~=0.4.5
 msgpack-python
 namedlist
 requests
