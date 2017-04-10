@@ -9,7 +9,7 @@ import simplejson as json
 from sorna.agent.resources import CPUAllocMap
 from sorna.agent.server import (
     get_extra_volumes, heartbeat_timer, stats_timer, cleanup_timer,
-    match_result, AgentRPCServer,
+    AgentRPCServer,
 )
 
 
@@ -118,26 +118,6 @@ async def test_cleanup_timer(mocker, mock_agent):
     agent.clean_old_kernels.assert_called_with()
 
 
-def test_match_result():
-    result = {
-        'stdout': 'stdout\n',
-        'stderr': 'stderr',
-        'media': [],
-        'options': None,
-        'exceptions': [['RuntimeError', ['abc', 123], False, None]],
-        'files': []
-    }
-    assert match_result(result, {'op': 'contains', 'target': 'stdout', 'value': 'stdout'})
-    assert match_result(result, {'op': 'contains', 'target': 'stdout', 'value': 'stdout'})
-    assert match_result(result, {'op': 'equal', 'target': 'stdout', 'value': 'stdout\n'})
-    assert match_result(result, {'op': 'regex', 'target': 'stdout', 'value': r'^s.*ut$'})
-    assert match_result(result, {'op': 'contains', 'target': 'stderr', 'value': 'stderr'})
-    assert match_result(result, {'op': 'contains', 'target': 'exception', 'value': ''})
-    assert match_result(result, {'op': 'contains', 'target': 'exception', 'value': 'RuntimeError'})
-    assert match_result(result, {'op': 'equal', 'target': 'exception', 'value': 'RuntimeError'})
-    assert match_result(result, {'op': 'regex', 'target': 'exception', 'value': '^Runtime'})
-
-
 class TestAgentRPCServer:
     def test_initialization(self):
         mock_docker = mock.Mock()
@@ -199,36 +179,16 @@ class TestAgentRPCServer:
     @pytest.mark.asyncio
     async def test_execute_code(self, mocker, mock_agent):
         agent = mock_agent
-        agent._execute_code = asynctest.CoroutineMock(return_value={'mock': 1})
-        mock_match_result = mocker.patch('sorna.agent.server.match_result',
-                                         return_value=True)
+        #agent._execute_code = asynctest.CoroutineMock(return_value={'mock': 1})
 
         result = await agent.execute_code(
-            entry_id='fakeentry', kernel_id='fakekernel', code_id='codeid',
-            code='print(1)', match=None)
+            api_version=2,
+            kernel_id='fakekernel',
+            mode='query',
+            code='print(1)',
+            opts={})
 
-        agent._execute_code.assert_called_once_with('fakeentry', 'fakekernel',
-                                                    'codeid', 'print(1)')
-        mock_match_result.assert_not_called()
         assert result == {'mock': 1}
-
-    @pytest.mark.asyncio
-    async def test_execute_code_match_result(self, mocker, mock_agent):
-        agent = mock_agent
-        agent._execute_code = asynctest.CoroutineMock(return_value={'mock': 1})
-        mock_match_result = mocker.patch('sorna.agent.server.match_result',
-                                         return_value=True)
-
-        match = {
-            'op': 'contains',
-            'target': 'stdout',
-            'value': 'mock_value',
-        }
-        await agent.execute_code(
-            entry_id='fakeentry', kernel_id='fakekernel', code_id='codeid',
-            code='print(1)', match=match)
-
-        mock_match_result.assert_called()
 
     @pytest.mark.asyncio
     async def test_reset(self, mock_agent):
