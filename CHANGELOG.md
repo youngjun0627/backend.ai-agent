@@ -1,6 +1,11 @@
 Changes
 =======
 
+0.9.6 (2017-04-12)
+------------------
+
+ - Fix a regression in console output streaming.
+
 0.9.5 (2017-04-07)
 ------------------
 
