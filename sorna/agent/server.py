@@ -754,7 +754,7 @@ def main():
             raise SystemExit(1)
 
         # Initialize Docker
-        docker = Docker(url='/var/run/docker.sock')
+        docker = Docker()
         docker_version = await docker.version()
         log.info('running with Docker {0} with API {1}'
                  .format(docker_version['Version'], docker_version['ApiVersion']))
