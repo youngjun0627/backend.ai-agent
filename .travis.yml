@@ -1,12 +1,19 @@
+sudo: required
 language: python
 python:
   - "3.6"
-os:
-  - linux
-  # - osx  # not supported yet
+services:
+  - docker
+env:
+  DOCKER_COMPOSE_VERSION: 1.12.0
 install:
-  - pip install -U pip
-  - pip install -U wheel setuptools
-  - pip install -U -r requirements-ci.txt
+  - sudo apt-get update
+  - sudo apt-get install -o Dpkg::Options::="--force-confold" --force-yes -y docker-engine
+  - sudo rm /usr/local/bin/docker-compose
+  - curl -L https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-`uname -s`-`uname -m` > docker-compose
+  - chmod +x docker-compose
+  - sudo mv docker-compose /usr/local/bin
+  - docker-compose build
+
 script:
-  - pytest -m "not integration"
+  - docker-compose run sorna-agent
