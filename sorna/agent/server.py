@@ -279,7 +279,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         envs_corecount = ret['ContainerConfig']['Labels'].get('io.sorna.envs.corecount', '')
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
 
-        work_dir = self.config.volume_root / kernel_id
+        work_dir = self.config.scratch_root / kernel_id
 
         if kernel_id in restarting_kernels:
             core_set = self.container_registry[kernel_id]['core_set']
@@ -410,7 +410,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
 
     async def _execute_code(self, api_version, kernel_id, mode, code_text, opts):
-        work_dir = self.config.volume_root / kernel_id
+        work_dir = self.config.scratch_root / kernel_id
 
         self.container_registry[kernel_id]['last_used'] = time.monotonic()
         self.container_registry[kernel_id]['num_queries'] += 1
@@ -606,7 +606,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if kernel_id in restarting_kernels:
             restarting_kernels[kernel_id].set()
         else:
-            work_dir = self.config.volume_root / kernel_id
+            work_dir = self.config.scratch_root / kernel_id
             try:
                 shutil.rmtree(work_dir)
             except FileNotFoundError:
@@ -692,7 +692,7 @@ def main():
                            help='Enable more verbose logging.')
     argparser.add_argument('--kernel-aliases', type=str, default=None,
                            help='The filename for additional kernel aliases')
-    argparser.add_argument('--volume-root', type=Path, default=Path('/var/lib/sorna-volumes'),
+    argparser.add_argument('--scratch-root', type=Path, default=Path('/var/lib/sorna-volumes'),
                            env_var='SORNA_SCRATCH_ROOT',
                            help='The scratch directory to store container working directories.')
     args = argparser.parse_args()
@@ -737,8 +737,8 @@ def main():
         args.agent_ip = str(args.agent_ip)
     args.redis_addr = args.redis_addr if args.redis_addr else ('sorna-manager.lablup', 6379)
 
-    assert args.volume_root.exists()
-    assert args.volume_root.is_dir()
+    assert args.scratch_root.exists()
+    assert args.scratch_root.is_dir()
 
     # Load language aliases config.
     lang_aliases = {lang: lang for lang in supported_langs}
