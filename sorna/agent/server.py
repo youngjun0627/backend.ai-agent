@@ -14,6 +14,7 @@ import time
 import zmq, aiozmq, aiozmq.rpc
 from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
+import etcd3 as etcd
 from async_timeout import timeout
 from namedlist import namedtuple
 import simplejson as json
@@ -83,60 +84,126 @@ async def get_extra_volumes(docker, lang):
     return mount_list
 
 
-async def heartbeat_timer(agent, interval=3.0):
-    '''
-    Record my status information to the manager database (Redis).
-    This information automatically expires after 2x interval, so that failure
-    of executing this method automatically removes the instance from the
-    manager database.
-    '''
-    try:
-        while True:
-            asyncio.ensure_future(agent.heartbeat(interval))
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        pass
-
-
-async def stats_timer(agent, interval=5.0):
-    task = None
-    try:
-        while True:
-            task = asyncio.ensure_future(agent.update_stats(interval))
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        if task and not task.done():
-            task.cancel()
-            await task
-
-
-async def cleanup_timer(agent):
-    task = None
-    try:
-        while True:
-            task = asyncio.ensure_future(agent.clean_old_kernels())
-            await asyncio.sleep(10)
-    except asyncio.CancelledError:
-        if task and not task.done():
-            task.cancel()
-            await task
-
-
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
-    def __init__(self, docker, config, events, loop=None):
+    def __init__(self, config, events, loop=None):
         self.loop = loop if loop else asyncio.get_event_loop()
-        self.docker = docker
+        self.docker = Docker()
         self.config = config
         self.events = events
         self.container_registry = {}
         self.container_cpu_map = CPUAllocMap()
 
+        self.server = None
+        self.monitor_fetch_task = None
+        self.monitor_handle_task = None
+        self.hb_task = None
+        self.stats_task = None
+        self.timer_task = None
+
     async def init(self):
-        pass
+        # Show Docker version info.
+        docker_version = await self.docker.version()
+        log.info('running with Docker {0} with API {1}'
+                 .format(docker_version['Version'], docker_version['ApiVersion']))
+
+        # FIXME: migrate to asyncio-aware etcd v3 client.
+        self.etcd = etcd.client(
+            host=self.config.etcd_addr.ip,
+            port=self.config.etcd_addr.port,
+        )
+
+        # Read desired image versions from etcd.
+        for img, ver in self.etcd.get_prefix('/images/'):
+            # TODO: implement
+            pass
+
+        # If there are newer images, pull them.
+        # TODO: implement
+
+        # Spawn docker monitoring tasks.
+        self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
+        self.monitor_handle_task = self.loop.create_task(self.monitor())
+
+        # Send the first heartbeat.
+        self.hb_task    = self.loop.create_task(self.heartbeat_timer())
+        self.stats_task = self.loop.create_task(self.stats_timer())
+        self.timer_task = self.loop.create_task(self.cleanup_timer())
+
+        # Ready.
+        self.etcd.put(f'/nodes/{self.config.inst_id}/ip', self.config.agent_ip)
+
+        # Start serving requests.
+        agent_addr = 'tcp://*:{}'.format(self.config.agent_port)
+        self.server = await aiozmq.rpc.serve_rpc(self, bind=agent_addr)
+        self.server.transport.setsockopt(zmq.LINGER, 200)
+        log.info('serving at {0}'.format(agent_addr))
 
     async def shutdown(self):
-        pass
+        self.etcd.delete_prefix(f'/nodes/{self.config.inst_id}')
+
+        # Stop receiving further requests.
+        self.server.close()
+        await self.server.wait_closed()
+
+        # Clean all kernels.
+        await self.clean_all_kernels(blocking=True)
+        log.debug('shutdown: kernel cleanup done.')
+
+        # Stop timers.
+        self.hb_task.cancel()
+        self.stats_task.cancel()
+        self.timer_task.cancel()
+        await self.hb_task
+        await self.stats_task
+        await self.timer_task
+
+        # Stop event monitoring.
+        self.monitor_fetch_task.cancel()
+        self.monitor_handle_task.cancel()
+        await self.monitor_fetch_task
+        await self.monitor_handle_task
+        try:
+            await self.docker.events.stop()
+        except:
+            pass
+        await self.docker.close()
+
+    async def heartbeat_timer(self, interval=3.0):
+        '''
+        Record my status information to the manager database (Redis).
+        This information automatically expires after 2x interval, so that failure
+        of executing this method automatically removes the instance from the
+        manager database.
+        '''
+        try:
+            while True:
+                asyncio.ensure_future(self.heartbeat(interval))
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
+
+    async def stats_timer(self, interval=5.0):
+        task = None
+        try:
+            while True:
+                task = asyncio.ensure_future(self.update_stats(interval))
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            if task and not task.done():
+                task.cancel()
+                await task
+
+    async def cleanup_timer(self):
+        task = None
+        try:
+            while True:
+                task = asyncio.ensure_future(self.clean_old_kernels())
+                await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            if task and not task.done():
+                task.cancel()
+                await task
 
     @aiozmq.rpc.method
     def ping(self, msg: str) -> str:
@@ -391,7 +458,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
             if result['status'] in ('finished', 'exec-timeout'):
 
-                log.debug(f'_execute_code({kernel_id}) finished/timeout')
+                log.debug(f"_execute_code({kernel_id}) {result['status']}")
                 await runner.close()
                 del self.container_registry[kernel_id]['runner']
 
@@ -604,6 +671,9 @@ def main():
     argparser.add_argument('--redis-addr', type=host_port_pair,
                            default=HostPortPair(ip_address('127.0.0.1'), 6379),
                            help='The host:port pair of the Redis (agent registry) server.')
+    argparser.add_argument('--etcd-addr', type=host_port_pair,
+                           default=HostPortPair(ip_address('127.0.0.1'), 2379),
+                           help='The host:port pair of the etcd cluster or its proxy.')
     argparser.add_argument('--event-addr', type=host_port_pair,
                            default=HostPortPair(ip_address('127.0.0.1'), 5002),
                            help='The host:port pair of the Gateway event server.')
@@ -719,20 +789,11 @@ def main():
     loop.add_signal_handler(signal.SIGTERM, handle_signal, loop, term_ev)
     loop.add_signal_handler(signal.SIGINT, handle_signal, loop, term_ev)
 
-    docker = None
     agent = None
-    server = None
-    hb_task = None
-    stats_task = None
-    timer_task = None
-    monitor_handle_task = None
-    monitor_fetch_task = None
     events = None
 
     async def initialize():
-        nonlocal docker, agent, server, events
-        nonlocal hb_task, stats_task, timer_task
-        nonlocal monitor_handle_task, monitor_fetch_task
+        nonlocal agent, events
         args.inst_id = await utils.get_instance_id()
         args.inst_type = await utils.get_instance_type()
         if not args.agent_ip:
@@ -753,59 +814,17 @@ def main():
             log.critical('cannot connect to the manager.')
             raise SystemExit(1)
 
-        # Initialize Docker
-        docker = Docker()
-        docker_version = await docker.version()
-        log.info('running with Docker {0} with API {1}'
-                 .format(docker_version['Version'], docker_version['ApiVersion']))
-
         # Start RPC server.
-        agent_addr = 'tcp://*:{}'.format(args.agent_port)
-        agent = AgentRPCServer(docker, args, events, loop=loop)
+        agent = AgentRPCServer(args, events, loop=loop)
         await agent.init()
-        server = await aiozmq.rpc.serve_rpc(agent, bind=agent_addr)
-        server.transport.setsockopt(zmq.LINGER, 200)
-        log.info('serving at {0}'.format(agent_addr))
-
-        # Send the first heartbeat.
-        hb_task    = loop.create_task(heartbeat_timer(agent))
-        stats_task = loop.create_task(stats_timer(agent))
-        timer_task = loop.create_task(cleanup_timer(agent))
-        monitor_fetch_task  = loop.create_task(agent.fetch_docker_events())
-        monitor_handle_task = loop.create_task(agent.monitor())
-        await asyncio.sleep(0.01)
 
     async def shutdown():
         log.info('shutting down...')
 
-        # Stop receiving further requests.
-        server.close()
-        await server.wait_closed()
+        # Shutdown the agent.
+        await agent.shutdown()
 
-        # Clean all kernels.
-        await agent.clean_all_kernels(blocking=True)
-        log.debug('shutdown: kernel cleanup done.')
-
-        # Stop timers.
-        hb_task.cancel()
-        stats_task.cancel()
-        timer_task.cancel()
-        await hb_task
-        await stats_task
-        await timer_task
-
-        # Stop event monitoring.
-        monitor_fetch_task.cancel()
-        monitor_handle_task.cancel()
-        await monitor_fetch_task
-        await monitor_handle_task
-        try:
-            await docker.events.stop()
-        except:
-            pass
-        docker.session.close()
-        log.debug('shutdown: docker cleanup done.')
-
+        # Notify the gateway.
         try:
             with timeout(1.0):
                 await events.call.dispatch('instance_terminated', args.inst_id, 'destroyed')
@@ -816,7 +835,6 @@ def main():
         await events.wait_closed()
 
         # Finalize.
-        await agent.shutdown()
         await loop.shutdown_asyncgens()
 
     try:
