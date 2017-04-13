@@ -10,7 +10,7 @@ services:
     working_dir: "/usr/src/sorna-agent"
     environment:
       DOCKER_HOST: "http://docker:2375"
-      ETCD_HOST: "http://etcd:2379"
+      ETCD_ADDR: "etcd:2379"
     command: ./run-ci-tests.sh
   docker:
     image: docker:dind

@@ -1,4 +1,3 @@
-import argparse
 import asyncio
 from ipaddress import ip_address
 import logging, logging.config
@@ -11,6 +10,7 @@ import shutil
 import sys
 import time
 
+import configargparse
 import zmq, aiozmq, aiozmq.rpc
 from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
@@ -87,12 +87,18 @@ async def get_extra_volumes(docker, lang):
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     def __init__(self, config, events, loop=None):
-        self.loop = loop if loop else asyncio.get_event_loop()
-        self.docker = Docker()
         self.config = config
         self.events = events
         self.container_registry = {}
         self.container_cpu_map = CPUAllocMap()
+
+        self.loop = loop if loop else asyncio.get_event_loop()
+        self.docker = Docker()
+        # FIXME: migrate to asyncio-aware etcd v3 client.
+        self.etcd = etcd.client(
+            host=self.config.etcd_addr.ip,
+            port=self.config.etcd_addr.port,
+        )
 
         self.server = None
         self.monitor_fetch_task = None
@@ -106,12 +112,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}'
                  .format(docker_version['Version'], docker_version['ApiVersion']))
-
-        # FIXME: migrate to asyncio-aware etcd v3 client.
-        self.etcd = etcd.client(
-            host=self.config.etcd_addr.ip,
-            port=self.config.etcd_addr.port,
-        )
 
         # Read desired image versions from etcd.
         for img, ver in self.etcd.get_prefix('/images/'):
@@ -663,15 +663,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 def main():
     global lang_aliases
 
-    argparser = argparse.ArgumentParser()
+    argparser = configargparse.ArgumentParser()
     argparser.add_argument('--agent-ip-override', type=ipaddr, default=None, dest='agent_ip',
+                           env_var='SORNA_AGENT_IP',
                            help='Manually set the IP address of this agent to report to the manager.')
     argparser.add_argument('--agent-port', type=port_no, default=6001,
+                           env_var='SORNA_AGENT_PORT',
                            help='The port number to listen on.')
     argparser.add_argument('--redis-addr', type=host_port_pair,
+                           env_var='REDIS_ADDR',
                            default=HostPortPair(ip_address('127.0.0.1'), 6379),
                            help='The host:port pair of the Redis (agent registry) server.')
     argparser.add_argument('--etcd-addr', type=host_port_pair,
+                           env_var='ETCD_ADDR',
                            default=HostPortPair(ip_address('127.0.0.1'), 2379),
                            help='The host:port pair of the etcd cluster or its proxy.')
     argparser.add_argument('--event-addr', type=host_port_pair,
@@ -684,10 +688,12 @@ def main():
     argparser.add_argument('--max-kernels', type=positive_int, default=1,
                            help='Set the maximum number of kernels running in parallel.')
     argparser.add_argument('--debug', action='store_true', default=False,
+                           env_var='DEBUG',
                            help='Enable more verbose logging.')
     argparser.add_argument('--kernel-aliases', type=str, default=None,
                            help='The filename for additional kernel aliases')
     argparser.add_argument('--volume-root', type=Path, default=Path('/var/lib/sorna-volumes'),
+                           env_var='SORNA_SCRATCH_ROOT',
                            help='The scratch directory to store container working directories.')
     args = argparser.parse_args()
 
