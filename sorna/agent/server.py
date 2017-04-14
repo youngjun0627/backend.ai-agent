@@ -9,11 +9,13 @@ import signal
 import shutil
 import sys
 import time
+from typing import Callable
 
 import configargparse
 import zmq, aiozmq, aiozmq.rpc
 from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
+import aiotools
 import etcd3 as etcd
 from async_timeout import timeout
 from namedlist import namedtuple
@@ -103,9 +105,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.server = None
         self.monitor_fetch_task = None
         self.monitor_handle_task = None
-        self.hb_task = None
-        self.stats_task = None
-        self.timer_task = None
+        self.hb_timer = None
+        self.stats_timer = None
+        self.clean_timer = None
 
     async def init(self):
         # Show Docker version info.
@@ -126,9 +128,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.monitor_handle_task = self.loop.create_task(self.monitor())
 
         # Send the first heartbeat.
-        self.hb_task    = self.loop.create_task(self.heartbeat_timer())
-        self.stats_task = self.loop.create_task(self.stats_timer())
-        self.timer_task = self.loop.create_task(self.cleanup_timer())
+        self.hb_timer    = aiotools.create_timer(self.heartbeat, 3.0)
+        self.stats_timer = aiotools.create_timer(self.update_stats, 5.0)
+        self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
 
         # Ready.
         self.etcd.put(f'/nodes/{self.config.inst_id}/ip', self.config.agent_ip)
@@ -151,12 +153,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug('shutdown: kernel cleanup done.')
 
         # Stop timers.
-        self.hb_task.cancel()
-        self.stats_task.cancel()
-        self.timer_task.cancel()
-        await self.hb_task
-        await self.stats_task
-        await self.timer_task
+        self.hb_timer.cancel()
+        self.stats_timer.cancel()
+        self.clean_timer.cancel()
+        await self.hb_timer
+        await self.stats_timer
+        await self.clean_timer
 
         # Stop event monitoring.
         self.monitor_fetch_task.cancel()
@@ -168,42 +170,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             pass
         await self.docker.close()
-
-    async def heartbeat_timer(self, interval=3.0):
-        '''
-        Record my status information to the manager database (Redis).
-        This information automatically expires after 2x interval, so that failure
-        of executing this method automatically removes the instance from the
-        manager database.
-        '''
-        try:
-            while True:
-                asyncio.ensure_future(self.heartbeat(interval))
-                await asyncio.sleep(interval)
-        except asyncio.CancelledError:
-            pass
-
-    async def stats_timer(self, interval=5.0):
-        task = None
-        try:
-            while True:
-                task = asyncio.ensure_future(self.update_stats(interval))
-                await asyncio.sleep(interval)
-        except asyncio.CancelledError:
-            if task and not task.done():
-                task.cancel()
-                await task
-
-    async def cleanup_timer(self):
-        task = None
-        try:
-            while True:
-                task = asyncio.ensure_future(self.clean_old_kernels())
-                await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            if task and not task.done():
-                task.cancel()
-                await task
 
     @aiozmq.rpc.method
     def ping(self, msg: str) -> str:
@@ -488,6 +454,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
 
     async def heartbeat(self, interval):
+        '''
+        Record my status information to the manager database (Redis).
+        This information automatically expires after 2x interval, so that failure
+        of executing this method automatically removes the instance from the
+        manager database.
+        '''
         running_kernels = [k for k in self.container_registry.keys()]
         # Below dict should match with sorna.manager.structs.Instance
         inst_info = {
@@ -626,7 +598,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if kernel_id in blocking_cleans:
                 blocking_cleans[kernel_id].set()
 
-    async def clean_old_kernels(self):
+    async def clean_old_kernels(self, interval):
         now = time.monotonic()
         keys = tuple(self.container_registry.keys())
         tasks = []

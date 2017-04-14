@@ -5,10 +5,11 @@ from unittest import mock
 import asynctest
 import pytest
 import simplejson as json
+from aiodocker.docker import Docker
 
 from sorna.agent.resources import CPUAllocMap
 from sorna.agent.server import (
-    get_extra_volumes, heartbeat_timer, stats_timer, cleanup_timer,
+    get_extra_volumes,
     AgentRPCServer,
 )
 
@@ -47,14 +48,13 @@ def mock_volumes_list():
 
 
 @pytest.fixture
-def mock_agent():
-    mock_docker = mock.Mock()
+def mock_agent(event_loop):
     mock_args = mock.Mock()
     mock_events = mock.Mock()
-
-    agent = AgentRPCServer(mock_docker, mock_args, mock_events)
-
-    return agent
+    agent = AgentRPCServer(mock_args, mock_events, loop=event_loop)
+    #event_loop.run_until_complete(agent.init())
+    yield agent
+    event_loop.run_until_complete(agent.docker.close())
 
 
 @pytest.mark.asyncio
@@ -75,63 +75,23 @@ async def test_get_extra_volumes(mock_volumes_list):
     assert 'deeplearning-samples' in mnt_list[0]
 
 
-@pytest.mark.asyncio
-async def test_heartbeat_timer(mocker, mock_agent):
-    agent = mock_agent
-    agent.heartbeat = mock.Mock()
-
-    mock_ensure_future = mocker.patch.object(asyncio, 'ensure_future')
-    mock_ensure_future.side_effect = [None, asyncio.CancelledError]
-
-    await heartbeat_timer(agent, 0.1)
-
-    agent.heartbeat.assert_called_with(0.1)
-
-
-@pytest.mark.asyncio
-async def test_stats_timer(mocker, mock_agent):
-    agent = mock_agent
-    agent.update_stats = mock.Mock()
-
-    mock_ensure_future = mocker.patch.object(asyncio, 'ensure_future')
-    mock_task = asynctest.CoroutineMock()
-    mock_ensure_future.side_effect = [mock_task, asyncio.CancelledError]
-
-    await stats_timer(agent, 0.1)
-
-    agent.update_stats.assert_called_with(0.1)
-
-@pytest.mark.asyncio
-async def test_cleanup_timer(mocker, mock_agent):
-    agent = mock_agent
-    agent.clean_old_kernels = mock.Mock()
-
-    mock_ensure_future = mocker.patch.object(asyncio, 'ensure_future')
-    mock_task = asynctest.CoroutineMock()
-    mock_ensure_future.side_effect = [mock_task, asyncio.CancelledError]
-
-    # For faster testing
-    mocker.patch.object(asyncio, 'sleep', new_callable=asynctest.CoroutineMock)
-
-    await cleanup_timer(agent)
-
-    agent.clean_old_kernels.assert_called_with()
-
-
 class TestAgentRPCServer:
-    def test_initialization(self):
-        mock_docker = mock.Mock()
+
+    @pytest.mark.asyncio
+    async def test_init(self, event_loop):
         mock_args = mock.Mock()
         mock_events = mock.Mock()
 
-        agent = AgentRPCServer(mock_docker, mock_args, mock_events)
+        agent = AgentRPCServer(mock_args, mock_events, event_loop)
 
         assert isinstance(agent.loop, asyncio.BaseEventLoop)
-        assert agent.docker == mock_docker
+        assert isinstance(agent.docker, Docker)
         assert agent.config == mock_args
         assert agent.events == mock_events
         assert agent.container_registry == {}
         assert isinstance(agent.container_cpu_map, CPUAllocMap)
+
+        await agent.docker.close()
 
     def test_ping(self, mock_agent):
         msg = mock_agent.ping('ping~')

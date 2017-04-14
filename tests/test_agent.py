@@ -8,24 +8,8 @@ from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
 import asynctest
 import pytest
-import uvloop
 
 from sorna.agent.server import AgentRPCServer
-
-
-# @pytest.fixture
-# def loop():
-#     """
-#     Faster event loop than default one.
-
-#     Using this loop fixture raises
-#     `RuntimeError: Timeout context manager should be used inside a task`.
-#     """
-#     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-#     loop = asyncio.new_event_loop()
-#     yield loop
-#     asyncio.set_event_loop_policy(None)  # restore default policy
-#     loop.close()
 
 
 @pytest.fixture
