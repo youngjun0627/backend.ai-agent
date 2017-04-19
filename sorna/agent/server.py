@@ -208,10 +208,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return stdin_port, stdout_port
 
     @aiozmq.rpc.method
-    async def execute_code(self, api_version: int, kernel_id: str,
-                           mode: str, code: str, opts: dict) -> dict:
-        log.debug(f'rpc::execute_code({kernel_id}, ...)')
-        result = await self._execute_code(api_version, kernel_id, mode, code, opts)
+    async def execute(self, api_version: int, kernel_id: str,
+                      mode: str, code: str, opts: dict) -> dict:
+        log.debug(f'rpc::execute({kernel_id}, ...)')
+        result = await self._execute(api_version, kernel_id, mode, code, opts)
         return result
 
     @aiozmq.rpc.method
@@ -355,6 +355,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.warning(f'_destroy_kernel({kernel_id}) interrupting running execution')
             runner_task.cancel()
             await runner_task
+        runner = self.container_registry[kernel_id].get('runner', None)
+        if runner:
+            await runner.close()
+            del self.container_registry[kernel_id]['runner']
         try:
             # stats must be collected before killing it.
             last_stat = (await collect_stats([container]))[0]
@@ -375,16 +379,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
 
-    async def _execute_code(self, api_version, kernel_id, mode, code_text, opts):
+    async def _execute(self, api_version, kernel_id, mode, code_text, opts):
         work_dir = self.config.scratch_root / kernel_id
 
         self.container_registry[kernel_id]['last_used'] = time.monotonic()
         self.container_registry[kernel_id]['num_queries'] += 1
 
         if 'runner' in self.container_registry[kernel_id]:
-            log.debug(f'_execute_code:v{api_version}({kernel_id}) use existing runner')
+            log.debug(f'_execute:v{api_version}({kernel_id}) use existing runner')
             runner = self.container_registry[kernel_id]['runner']
-            await runner.feed_input(code_text)
+            # update runner mode
+            runner.mode = mode
         else:
             features = set()
             if api_version == 2:
@@ -402,9 +407,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 self.container_registry[kernel_id]['repl_out_port'],
                 self.container_registry[kernel_id]['exec_timeout'],
                 features)
-            log.debug(f'_execute_code:v{api_version}({kernel_id}) start new runner')
-            await runner.start(code_text)
+            log.debug(f'_execute:v{api_version}({kernel_id}) start new runner')
             self.container_registry[kernel_id]['runner'] = runner
+            await runner.start()
+
+        if mode == 'complete':
+            await runner.request_completions(code_text, opts)
+        else:
+            await runner.feed_input(code_text)
 
         try:
             self.container_registry[kernel_id]['runner_task'] = asyncio.Task.current_task()
@@ -424,28 +434,30 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
             if result['status'] in ('finished', 'exec-timeout'):
 
-                log.debug(f"_execute_code({kernel_id}) {result['status']}")
-                await runner.close()
-                del self.container_registry[kernel_id]['runner']
+                log.debug(f"_execute({kernel_id}) {result['status']}")
+                # We reuse runner until the kernel dies.
 
                 final_file_stats = scandir(work_dir, max_upload_size)
                 if nmget(result, 'options.upload_output_files', True):
                     # TODO: separate as a new task
                     # TODO: replace entry ID ('0') with some different identifier
-                    initial_file_stats = self.container_registry[kernel_id]['initial_file_stats']
-                    uploaded_files = await upload_output_files_to_s3(
-                        initial_file_stats, final_file_stats, '0',
-                        loop=self.loop)
-                    uploaded_files = [os.path.relpath(fn, work_dir) for fn in uploaded_files]
+                    initial_file_stats = self.container_registry[kernel_id].get('initial_file_stats', None)
+                    if initial_file_stats:
+                        uploaded_files = await upload_output_files_to_s3(
+                            initial_file_stats, final_file_stats, '0',
+                            loop=self.loop)
+                        uploaded_files = [os.path.relpath(fn, work_dir) for fn in uploaded_files]
 
-                del self.container_registry[kernel_id]['initial_file_stats']
+                self.container_registry[kernel_id].pop('initial_file_stats', None)
 
             if result['status'] == 'exec-timeout' and kernel_id in self.container_resgistry:  # maybe cleaned already
                 asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
 
+            log.warning(f'execute result: {result!r}')
             return {
                 'status': result['status'],
                 'console': result['console'],
+                'completions': nmget(result, 'completions', None),
                 'options': nmget(result, 'options', None),
                 'files': uploaded_files,
             }

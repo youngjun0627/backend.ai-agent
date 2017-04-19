@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 # msg types visible to the API client.
 # (excluding control signals such as 'finished' and 'waiting-input'
 # since they are passed as separate status field.)
-outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log'}
+outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log', 'completion'}
 
 class ClientFeatures(StringSetFlag):
     INPUT = 'input'
@@ -54,7 +54,7 @@ class KernelRunner:
         self.started_at = None
         self.finished_at = None
         self.kernel_id = kernel_id
-        assert mode in ('query', 'batch')
+        assert mode in ('query', 'batch', 'complete')
         self.mode = mode
         if mode == 'batch':
             assert 'build' in opts or 'exec' in opts
@@ -72,7 +72,7 @@ class KernelRunner:
         self.read_task = None
         self.features = features or set()
 
-    async def start(self, code_text):
+    async def start(self):
         self.started_at = time.monotonic()
 
         self.input_stream = await aiozmq.create_zmq_stream(
@@ -83,10 +83,6 @@ class KernelRunner:
             zmq.PULL, connect=f'tcp://{self.kernel_ip}:{self.repl_out_port}')
         self.output_stream.transport.setsockopt(zmq.LINGER, 50)
 
-        self.input_stream.write([
-            b'input',
-            code_text.encode('utf8'),
-        ])
         self.read_task = asyncio.ensure_future(self.read_output())
         self.flush_timeout = 2.0 if ClientFeatures.CONTINUATION in self.features else None
         self.watchdog_task = asyncio.ensure_future(self.watchdog())
@@ -107,6 +103,16 @@ class KernelRunner:
             code_text.encode('utf8'),
         ])
 
+    async def request_completions(self, code_text, opts):
+        payload = {
+            'code': code_text,
+        }
+        payload.update(opts)
+        self.input_stream.write([
+            b'complete',
+            json.dumps(payload).encode('utf8'),
+        ])
+
     async def watchdog(self):
         try:
             await asyncio.sleep(self.exec_timeout)
@@ -116,11 +122,14 @@ class KernelRunner:
 
     @staticmethod
     def aggregate_console(result, records, api_ver):
+
         if api_ver == 1:
+
             stdout_items = []
             stderr_items = []
             media_items = []
             html_items = []
+
             for rec in records:
                 if rec.msg_type == 'stdout':
                     stdout_items.append(rec.data)
@@ -131,15 +140,21 @@ class KernelRunner:
                     media_items.append((o['type'], o['data']))
                 elif rec.msg_type == 'html':
                     html_items.append(rec.data)
+
             result['stdout'] = ''.join(stdout_items)
             result['stderr'] = ''.join(stderr_items)
             result['media'] = media_items
             result['html'] = html_items
+
         elif api_ver == 2:
+
             console_items = []
+            completions = []
             last_stdout = io.StringIO()
             last_stderr = io.StringIO()
+
             for rec in records:
+
                 if last_stdout.tell() and rec.msg_type != 'stdout':
                     console_items.append(('stdout', last_stdout.getvalue()))
                     last_stdout.seek(0)
@@ -148,7 +163,10 @@ class KernelRunner:
                     console_items.append(('stderr', last_stderr.getvalue()))
                     last_stderr.seek(0)
                     last_stderr.truncate(0)
-                if rec.msg_type == 'stdout':
+
+                if rec.msg_type == 'completion':
+                    completions.extend(json.loads(rec.data))
+                elif rec.msg_type == 'stdout':
                     last_stdout.write(rec.data)
                 elif rec.msg_type == 'stderr':
                     last_stderr.write(rec.data)
@@ -157,13 +175,17 @@ class KernelRunner:
                     console_items.append((rec.msg_type, (o['type'], o['data'])))
                 elif rec.msg_type in outgoing_msg_types:
                     console_items.append((rec.msg_type, rec.data))
+
             if last_stdout.tell():
                 console_items.append(('stdout', last_stdout.getvalue()))
             if last_stderr.tell():
                 console_items.append(('stderr', last_stderr.getvalue()))
+
             result['console'] = console_items
+            result['completions'] = completions
             last_stdout.close()
             last_stderr.close()
+
         else:
             raise AssertionError('Unrecognized API version')
 
@@ -211,6 +233,8 @@ class KernelRunner:
             }
             type(self).aggregate_console(result, records, api_ver)
             return result
+        except asyncio.CancelledError:
+            raise
         except:
             log.exception('unexpected error')
             raise
@@ -243,10 +267,13 @@ class KernelRunner:
                     # finalize incremental decoder
                     decoders[0].decode(b'', True)
                     decoders[1].decode(b'', True)
-                    break
+                    decoders = (
+                        codecs.getincrementaldecoder('utf8')(),
+                        codecs.getincrementaldecoder('utf8')(),
+                    )
+                    self.finished_at = time.monotonic()
             except (asyncio.CancelledError, aiozmq.ZmqStreamClosed):
                 break
             except:
                 log.exception('unexpected error')
                 break
-        self.finished_at = time.monotonic()
