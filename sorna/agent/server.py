@@ -453,7 +453,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if result['status'] == 'exec-timeout' and kernel_id in self.container_resgistry:  # maybe cleaned already
                 asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
 
-            log.warning(f'execute result: {result!r}')
             return {
                 'status': result['status'],
                 'console': result['console'],
