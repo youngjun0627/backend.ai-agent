@@ -17,3 +17,8 @@ install:
 
 script:
   - docker-compose run sorna-agent
+
+notifications:
+  webhooks:
+    - https://outlook.office.com/webhook/74ae2c4d-ec4d-4fdf-b2c2-f5041d1e8631@13c6a44d-9b52-4b9e-aa34-0513ee7131f2/TravisCI/f38e95169341494d904e0845e992d5fb/3055a363-db98-400a-8a1f-6a6c654e485f
+
