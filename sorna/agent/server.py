@@ -643,6 +643,53 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 del blocking_cleans[kern_id]
 
 
+@aiotools.actxmgr
+async def server_main(loop, pidx, _args):
+
+    args = _args[0]
+    args.inst_id = await utils.get_instance_id()
+    args.inst_type = await utils.get_instance_type()
+    if not args.agent_ip:
+        args.agent_ip = await utils.get_instance_ip()
+    log.info(f'myself: {args.inst_id} ({args.inst_type}), ip: {args.agent_ip}')
+    log.info(f'using gateway event server at tcp://{args.event_addr}')
+
+    # Connect to the events server.
+    event_addr = f'tcp://{args.event_addr}'
+    try:
+        with timeout(5.0):
+            events = await aiozmq.rpc.connect_rpc(connect=event_addr)
+            events.transport.setsockopt(zmq.LINGER, 50)
+            await events.call.dispatch('instance_started', args.inst_id)
+    except asyncio.TimeoutError:
+        events.close()
+        await events.wait_closed()
+        log.critical('cannot connect to the manager.')
+        raise SystemExit(1)
+
+    # Start RPC server.
+    agent = AgentRPCServer(args, events, loop=loop)
+    await agent.init()
+
+    # Run!
+    yield
+
+    log.info('shutting down...')
+
+    # Shutdown the agent.
+    await agent.shutdown()
+
+    # Notify the gateway.
+    try:
+        with timeout(1.0):
+            await events.call.dispatch('instance_terminated', args.inst_id, 'destroyed')
+    except asyncio.TimeoutError:
+        log.warning('event dispatch timeout: instance_terminated')
+    await asyncio.sleep(0.01)
+    events.close()
+    await events.wait_closed()
+
+
 def main():
     global lang_aliases
 
@@ -757,8 +804,6 @@ def main():
                 assert target in supported_langs
                 lang_aliases[alias] = target
 
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    loop = asyncio.get_event_loop()
     log.info(f'Sorna Agent {__version__}')
     log.info(f'runtime: {utils.env_info()}')
 
@@ -766,74 +811,9 @@ def main():
     if args.debug:
         log_config.debug('debug mode enabled.')
 
-    def handle_signal(loop, term_ev):
-        if term_ev.is_set():
-            log.warning('Forced shutdown!')
-            sys.exit(1)
-        else:
-            term_ev.set()
-            loop.stop()
-
-    term_ev = asyncio.Event()
-    loop.add_signal_handler(signal.SIGTERM, handle_signal, loop, term_ev)
-    loop.add_signal_handler(signal.SIGINT, handle_signal, loop, term_ev)
-
-    agent = None
-    events = None
-
-    async def initialize():
-        nonlocal agent, events
-        args.inst_id = await utils.get_instance_id()
-        args.inst_type = await utils.get_instance_type()
-        if not args.agent_ip:
-            args.agent_ip = await utils.get_instance_ip()
-        log.info(f'myself: {args.inst_id} ({args.inst_type}), ip: {args.agent_ip}')
-        log.info(f'using gateway event server at tcp://{args.event_addr}')
-
-        # Connect to the events server.
-        event_addr = f'tcp://{args.event_addr}'
-        try:
-            with timeout(5.0):
-                events = await aiozmq.rpc.connect_rpc(connect=event_addr)
-                events.transport.setsockopt(zmq.LINGER, 50)
-                await events.call.dispatch('instance_started', args.inst_id)
-        except asyncio.TimeoutError:
-            events.close()
-            await events.wait_closed()
-            log.critical('cannot connect to the manager.')
-            raise SystemExit(1)
-
-        # Start RPC server.
-        agent = AgentRPCServer(args, events, loop=loop)
-        await agent.init()
-
-    async def shutdown():
-        log.info('shutting down...')
-
-        # Shutdown the agent.
-        await agent.shutdown()
-
-        # Notify the gateway.
-        try:
-            with timeout(1.0):
-                await events.call.dispatch('instance_terminated', args.inst_id, 'destroyed')
-        except asyncio.TimeoutError:
-            log.warning('event dispatch timeout: instance_terminated')
-        await asyncio.sleep(0.01)
-        events.close()
-        await events.wait_closed()
-
-        # Finalize.
-        await loop.shutdown_asyncgens()
-
-    try:
-        loop.run_until_complete(initialize())
-        loop.run_forever()
-        # interrupted
-        loop.run_until_complete(shutdown())
-    finally:
-        loop.close()
-        log.info('exit.')
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    aiotools.start_server(server_main, num_proc=1, args=(args,))
+    log.info('exit.')
 
 
 if __name__ == '__main__':
