@@ -1,0 +1,10 @@
+Dockerfile*
+build/
+dist/
+.git/
+*.py[co]
+*.egg-info
+__pycache__
+venv*/
+kernel-volumes/
+volume-temp/

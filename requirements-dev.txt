@@ -15,7 +15,7 @@ requests
 requests_unixsocket
 simplejson
 uvloop>=0.8
--e git+ssh://git@github.com/lablup/sorna-common#egg=sorna-common
+-e git+https://github.com/lablup/sorna-common#egg=sorna-common
 pypandoc
 pytest
 pytest-asyncio
