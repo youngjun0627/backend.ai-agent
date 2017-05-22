@@ -15,4 +15,4 @@ requests
 requests_unixsocket
 simplejson
 uvloop>=0.8
-sorna-common>=0.9,<1.0
+deps-local/sorna_common-1.0.0a1-py36-none-any.whl

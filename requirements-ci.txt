@@ -15,7 +15,7 @@ requests
 requests_unixsocket
 simplejson
 uvloop>=0.8
--e git+https://github.com/lablup/sorna-common#egg=sorna-common
+deps-local/sorna_common-1.0.0a1-py36-none-any.whl
 pytest
 pytest-asyncio
 pytest-mock
