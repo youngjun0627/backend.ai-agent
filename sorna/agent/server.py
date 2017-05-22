@@ -16,13 +16,13 @@ import zmq, aiozmq, aiozmq.rpc
 from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
 import aiotools
-import etcd3 as etcd
 from async_timeout import timeout
 from namedlist import namedtuple
 import simplejson as json
 import uvloop
 
 from sorna import utils
+from sorna.etcd import AsyncEtcd
 from sorna.argparse import ipaddr, port_no, HostPortPair, host_port_pair, positive_int
 from sorna.utils import nmget, readable_size_to_bytes
 from . import __version__
@@ -88,19 +88,15 @@ async def get_extra_volumes(docker, lang):
 
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
-    def __init__(self, config, events, loop=None):
+    def __init__(self, config, loop=None):
         self.config = config
-        self.events = events
+        #self.events = events
         self.container_registry = {}
         self.container_cpu_map = CPUAllocMap()
 
         self.loop = loop if loop else asyncio.get_event_loop()
         self.docker = Docker()
-        # FIXME: migrate to asyncio-aware etcd v3 client.
-        self.etcd = etcd.client(
-            host=self.config.etcd_addr.ip,
-            port=self.config.etcd_addr.port,
-        )
+        self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
 
         self.server = None
         self.monitor_fetch_task = None
@@ -109,19 +105,41 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.stats_timer = None
         self.clean_timer = None
 
+    async def detect_manager(self):
+        log.info('detecting the manager...')
+        manager_id = await self.etcd.get('nodes/manager')
+        if manager_id is None:
+            async for ev in self.etcd.watch('nodes/manager'):
+                if ev.event == 'put':
+                    manager_id = ev.value
+                    break
+        log.info(f'detecting the manager: OK ({manager_id}).')
+
+    async def update_status(self, status):
+        await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
+
+    async def deregister_myself(self):
+        await self.etcd.delete_prefix(f'nodes/agents/{self.config.instance_id}')
+
+    async def check_images(self): 
+        # Read desired image versions from etcd.
+        for key, value in (await self.etcd.get_prefix('images')):
+            # TODO: implement
+            pass
+
+        # If there are newer images, pull them.
+        # TODO: implement
+
+
     async def init(self):
         # Show Docker version info.
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}'
                  .format(docker_version['Version'], docker_version['ApiVersion']))
 
-        # Read desired image versions from etcd.
-        for img, ver in self.etcd.get_prefix('/images/'):
-            # TODO: implement
-            pass
-
-        # If there are newer images, pull them.
-        # TODO: implement
+        await self.detect_manager()
+        await self.update_status('starting')
+        await self.check_images()
 
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
@@ -132,17 +150,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.stats_timer = aiotools.create_timer(self.update_stats, 5.0)
         self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
 
-        # Ready.
-        self.etcd.put(f'/nodes/{self.config.inst_id}/ip', self.config.agent_ip)
-
         # Start serving requests.
         agent_addr = 'tcp://*:{}'.format(self.config.agent_port)
         self.server = await aiozmq.rpc.serve_rpc(self, bind=agent_addr)
         self.server.transport.setsockopt(zmq.LINGER, 200)
         log.info('serving at {0}'.format(agent_addr))
 
+        # Ready.
+        await self.etcd.put(f'nodes/agents/{self.config.instance_id}/ip', self.config.agent_ip)
+        await self.update_status('running')
+
     async def shutdown(self):
-        self.etcd.delete_prefix(f'/nodes/{self.config.inst_id}')
+        await self.deregister_myself()
 
         # Stop receiving further requests.
         self.server.close()
@@ -474,7 +493,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         running_kernels = [k for k in self.container_registry.keys()]
         # Below dict should match with sorna.manager.structs.Instance
         inst_info = {
-            'id': self.config.inst_id,
+            'id': self.config.instance_id,
             'ip': self.config.agent_ip,
             'addr': f'tcp://{self.config.agent_ip}:{self.config.agent_port}',
             'type': self.config.inst_type,
@@ -484,7 +503,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             with timeout(1.0):
                 log.debug('sending heartbeat')
-                await self.events.call.dispatch('instance_heartbeat', self.config.inst_id,
+                await self.events.call.dispatch('instance_heartbeat', self.config.instance_id,
                                                 inst_info, running_kernels, interval)
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_heartbeat')
@@ -521,7 +540,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             with timeout(1.0):
                 log.debug('sending stats')
-                await self.events.call.dispatch('instance_stats', self.config.inst_id,
+                await self.events.call.dispatch('instance_stats', self.config.instance_id,
                                                 kern_stats, interval)
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_stats')
@@ -647,28 +666,28 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 async def server_main(loop, pidx, _args):
 
     args = _args[0]
-    args.inst_id = await utils.get_instance_id()
+    args.instance_id = await utils.get_instance_id()
     args.inst_type = await utils.get_instance_type()
     if not args.agent_ip:
         args.agent_ip = await utils.get_instance_ip()
-    log.info(f'myself: {args.inst_id} ({args.inst_type}), ip: {args.agent_ip}')
-    log.info(f'using gateway event server at tcp://{args.event_addr}')
+    log.info(f'myself: {args.instance_id} ({args.inst_type}), ip: {args.agent_ip}')
+    #log.info(f'using gateway event server at tcp://{args.event_addr}')
 
-    # Connect to the events server.
-    event_addr = f'tcp://{args.event_addr}'
-    try:
-        with timeout(5.0):
-            events = await aiozmq.rpc.connect_rpc(connect=event_addr)
-            events.transport.setsockopt(zmq.LINGER, 50)
-            await events.call.dispatch('instance_started', args.inst_id)
-    except asyncio.TimeoutError:
-        events.close()
-        await events.wait_closed()
-        log.critical('cannot connect to the manager.')
-        raise SystemExit(1)
+    ## Connect to the events server.
+    #event_addr = f'tcp://{args.event_addr}'
+    #try:
+    #    with timeout(5.0):
+    #        events = await aiozmq.rpc.connect_rpc(connect=event_addr)
+    #        events.transport.setsockopt(zmq.LINGER, 50)
+    #        await events.call.dispatch('instance_started', args.instance_id)
+    #except asyncio.TimeoutError:
+    #    events.close()
+    #    await events.wait_closed()
+    #    log.critical('cannot connect to the manager.')
+    #    raise SystemExit(1)
 
     # Start RPC server.
-    agent = AgentRPCServer(args, events, loop=loop)
+    agent = AgentRPCServer(args, loop=loop)
     await agent.init()
 
     # Run!
@@ -680,20 +699,22 @@ async def server_main(loop, pidx, _args):
     await agent.shutdown()
 
     # Notify the gateway.
-    try:
-        with timeout(1.0):
-            await events.call.dispatch('instance_terminated', args.inst_id, 'destroyed')
-    except asyncio.TimeoutError:
-        log.warning('event dispatch timeout: instance_terminated')
-    await asyncio.sleep(0.01)
-    events.close()
-    await events.wait_closed()
+    #try:
+    #    with timeout(1.0):
+    #        await events.call.dispatch('instance_terminated', args.instance_id, 'destroyed')
+    #except asyncio.TimeoutError:
+    #    log.warning('event dispatch timeout: instance_terminated')
+    #await asyncio.sleep(0.01)
+    #events.close()
+    #await events.wait_closed()
 
 
 def main():
     global lang_aliases
 
     argparser = configargparse.ArgumentParser()
+    argparser.add_argument('--namespace', type=str, default='local',
+                           help='The namespace of this Sorna cluster. (default: local)')
     argparser.add_argument('--agent-ip-override', type=ipaddr, default=None, dest='agent_ip',
                            env_var='SORNA_AGENT_IP',
                            help='Manually set the IP address of this agent to report to the manager.')
