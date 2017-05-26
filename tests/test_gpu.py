@@ -144,7 +144,9 @@ async def test_prepare_nvidia_no_numa2(
 
     # For old systems without NUMA, the sysfs may not have numa_node files!
     mocked_path = mocker.patch('sorna.agent.gpu.Path')
-    mocked_path.side_effect = FileNotFoundError
+    mocked_path_obj = mocker.MagicMock()
+    mocked_path_obj.read_text.side_effect = FileNotFoundError
+    mocked_path.return_value = mocked_path_obj
 
     binds, devices = await prepare_nvidia(mocked_docker, numa_node)
 
@@ -160,7 +162,6 @@ async def test_prepare_nvidia_no_numa2(
     # Ensure if the PCI bus ID is properly included AND lower-cased.
     mocked_path.assert_any_call('/sys/bus/pci/devices/0000:00:1e.0/numa_node')
     mocked_path.assert_any_call('/sys/bus/pci/devices/0000:80:00.0/numa_node')
-
 
 
 @pytest.mark.asyncio
