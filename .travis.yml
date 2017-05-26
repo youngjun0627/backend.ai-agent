@@ -1,24 +1,55 @@
 sudo: required
+
 language: python
 python:
   - "3.6"
+cache: pip
+
 services:
   - docker
+  - rabbitmq
+
 env:
-  DOCKER_COMPOSE_VERSION: 1.12.0
+  global:
+    - DOCKER_COMPOSE_VERSION=1.12.0
+    - SORNA_ETCD_ADDR=localhost:2379
+    - SORNA_MQ_ADDR=localhost:5672
+    - SORNA_MQ_LOGIN=guest
+    - SORNA_MQ_PASS=guest
+    - SORNA_NAMESPACE=local
+
 install:
-  - sudo apt-get update
-  - sudo apt-get install -o Dpkg::Options::="--force-confold" --force-yes -y docker-engine
-  - sudo rm /usr/local/bin/docker-compose
-  - curl -L https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-`uname -s`-`uname -m` > docker-compose
-  - chmod +x docker-compose
-  - sudo mv docker-compose /usr/local/bin
-  - docker-compose build
+  - pip install -U pip
+  - pip install -U wheel setuptools
+  - sed -i '' "s/{BRANCH}/$TRAVIS_BRANCH/g" requirements-ci.txt
+  - pip install -U -r requirements-ci.txt
+
+before_script:
+  - mkdir -p /tmp/etcd
+  - sudo rabbitmqctl add_vhost "$SORNA_NAMESPACE"
+  - sudo rabbitmqctl set_permissions -p "$SORNA_NAMESPACE" "$SORNA_MQ_LOGIN" '.*' '.*' '.*'
+  - docker run -d -p 2379:2379 -p 2380:2380
+     -v /tmp/etcd:/etcd-data
+     --name sorna-etcd
+     quay.io/coreos/etcd:v3.1.8
+     /usr/local/bin/etcd
+     -name sorna-etcd
+     -data-dir /etcd-data
+     -listen-client-urls http://0.0.0.0:2379
+     -advertise-client-urls http://0.0.0.0:2379
+     -listen-peer-urls http://0.0.0.0:2380
+     -initial-advertise-peer-urls http://0.0.0.0:2380
+     -initial-cluster sorna-etcd=http://0.0.0.0:2380
+     -initial-cluster-token sorna-etcd-token
+     -initial-cluster-state new
+     -auto-compaction-retention 1
 
 script:
-  - docker-compose run sorna-agent
+  - python -m pytest -m "not integration" --cov=sorna.agent
+
+after_success:
+  - codecov
 
 notifications:
   webhooks:
-    - https://outlook.office.com/webhook/74ae2c4d-ec4d-4fdf-b2c2-f5041d1e8631@13c6a44d-9b52-4b9e-aa34-0513ee7131f2/TravisCI/f38e95169341494d904e0845e992d5fb/3055a363-db98-400a-8a1f-6a6c654e485f
-
+    secure: "TT5qgI/QCVuBHmBgI89i9krQGY6scCk8138jBtPGVORj6yHx8pljk3ROJ/EwxxY560ywiWqtxak8SpfO5JwmBqG35cO7OAQMSPhCdtTKL2E25EalJs8MXlzmPm8S7hp4eAUUeBFscH7KzBm824ncvxWFU3FuAk0ZrTGmCeUn4XFjL3TYkfjrE0Oe6TqZUr1tpVh7yk7StEJFjun5uzVCG6uRWjvlbNnULmJEU3Yf0W7u8/cBYqqVOkOCuVKIZKZexuUDT7Tm39XKyacHFcJ4TCzeBo5kYRusudoHHVfWThE4cevtUvWN9HjuGBpF5RXTHESd/nu7P+Wcb9Zgk1+WyeAO1S3v0c/+FYdcmUculGjNtrTSvzrs6F7HWIkn5fuFuuj0b7oLh/lHu3j75Qqr0CPNkTFLhQIwpOR/aWjPeKg0XIQCFGaCSuJqh9Sw5QSBqoBDNwU6+TW8Bq98519B41oWFO1pKD3VvNcy1HANVror1KgqNoJj9K35lonXVsl5384JMRQCO0hH1GIZWY9Nk2ljq+VT5PGOai5qQ7KKRCE7lIJwjGIxwdrBlDzepMvUL8dHtZfANTTZ8SiqSQ+woAR9iRZlKw2jyyJ/hdzhtXtcnANU5hDSRrsV8Q7nxpM9BJBROZnKMIG0z+oUoDQ5KFbDJHRWeL7H9zTuw+V//ZQ="
