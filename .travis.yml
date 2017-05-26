@@ -11,7 +11,6 @@ services:
 
 env:
   global:
-    - DOCKER_COMPOSE_VERSION=1.12.0
     - SORNA_ETCD_ADDR=localhost:2379
     - SORNA_MQ_ADDR=localhost:5672
     - SORNA_MQ_LOGIN=guest
