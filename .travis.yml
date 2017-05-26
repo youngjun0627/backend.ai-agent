@@ -21,7 +21,7 @@ env:
 install:
   - pip install -U pip
   - pip install -U wheel setuptools
-  - sed -i '' "s/{BRANCH}/$TRAVIS_BRANCH/g" requirements-ci.txt
+  - sed -i'' -e "s/{BRANCH}/$TRAVIS_BRANCH/g" requirements-ci.txt
   - pip install -U -r requirements-ci.txt
 
 before_script:
