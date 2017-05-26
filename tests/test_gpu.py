@@ -125,6 +125,45 @@ async def test_prepare_nvidia_no_numa(
 
 
 @pytest.mark.asyncio
+async def test_prepare_nvidia_no_numa2(
+        mocker,
+        mock_nvidia_params,
+        mock_gpu_info,
+        mock_docker):
+
+    numa_node = 0
+    num_gpus = 2
+
+    mocked_requests = mocker.patch.object(requests, 'get')
+    mocked_nvparams = mock_nvidia_params(num_gpus)
+    mocked_gpuinfo = mock_gpu_info(num_gpus)
+    mocked_requests.side_effect = [mocked_nvparams, mocked_gpuinfo]
+
+    mocked_docker = mock_docker(existing_volumes=['x'])  # no existing volumes
+    mocked_docker_volcreate = mocked_docker.volumes.create = asynctest.CoroutineMock()
+
+    # For old systems without NUMA, the sysfs may not have numa_node files!
+    mocked_path = mocker.patch('sorna.agent.gpu.Path')
+    mocked_path.side_effect = FileNotFoundError
+
+    binds, devices = await prepare_nvidia(mocked_docker, numa_node)
+
+    # Check if all devices are added.
+    assert len(devices) == 3 + num_gpus
+
+    # Check if all nvidia volumes are created.
+    assert mocked_docker_volcreate.call_count == len(mocked_nvparams.json()['Volumes'])
+
+    # Check if all nvidia volumes are returned.
+    assert set(binds) == set(mocked_nvparams.json()['Volumes'])
+
+    # Ensure if the PCI bus ID is properly included AND lower-cased.
+    mocked_path.assert_any_call('/sys/bus/pci/devices/0000:00:1e.0/numa_node')
+    mocked_path.assert_any_call('/sys/bus/pci/devices/0000:80:00.0/numa_node')
+
+
+
+@pytest.mark.asyncio
 async def test_prepare_nvidia_existing_vols(
         mocker,
         mock_nvidia_params,
