@@ -18,9 +18,11 @@ uvloop>=0.8
 -e git+https://github.com/lablup/sorna-common#egg=sorna-common
 pypandoc
 pytest
+pytest-cov
 pytest-asyncio
 pytest-mock
 asynctest
+codecov
 flake8
 pep8-naming
 -e .
