@@ -84,6 +84,48 @@ def mock_docker(mocker):
         return m
     return _generate
 
+@pytest.mark.asyncio
+async def test_prepare_nvidia_no_nvdocker(mocker, mock_docker):
+
+    mocked_requests = mocker.patch.object(requests, 'get')
+    mocked_requests.side_effect = requests.exceptions.ConnectionError
+    mocked_docker = mock_docker(existing_volumes=[])
+
+    with pytest.raises(RuntimeError):
+        await prepare_nvidia(mocked_docker, 0)
+
+
+@pytest.mark.asyncio
+async def test_prepare_nvidia_no_gpu(
+        mocker,
+        mock_nvidia_params,
+        mock_gpu_info,
+        mock_docker):
+
+    numa_node = 0
+    num_gpus = 0
+
+    mocked_requests = mocker.patch.object(requests, 'get')
+    mocked_nvparams = mock_nvidia_params(num_gpus)
+    mocked_gpuinfo = mock_gpu_info(num_gpus)
+    mocked_requests.side_effect = [mocked_nvparams, mocked_gpuinfo]
+
+    mocked_docker = mock_docker(existing_volumes=['x'])  # no existing volumes
+    mocked_docker_volcreate = mocked_docker.volumes.create = asynctest.CoroutineMock()
+
+    mocked_path = mocker.patch('sorna.agent.gpu.Path')
+    mocked_path_obj = mocker.MagicMock()
+    mocked_path_obj.read_text.return_value = '-1'
+    mocked_path.return_value = mocked_path_obj
+
+    binds, devices = await prepare_nvidia(mocked_docker, numa_node)
+
+    # Should be mounted the common nvidia device files.
+    assert len(devices) == 3 + num_gpus
+
+    # Check if all nvidia volumes are returned.
+    assert set(binds) == set(mocked_nvparams.json()['Volumes'])
+
 
 @pytest.mark.asyncio
 async def test_prepare_nvidia_no_numa(

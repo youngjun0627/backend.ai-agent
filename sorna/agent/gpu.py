@@ -8,10 +8,13 @@ log = logging.getLogger('sorna.agent.gpu')
 
 
 async def prepare_nvidia(docker, numa_node):
-    r = requests.get('http://localhost:3476/docker/cli/json')
-    nvidia_params = r.json()
-    r = requests.get('http://localhost:3476/gpu/info/json')
-    gpu_info = r.json()
+    try:
+        r = requests.get('http://localhost:3476/docker/cli/json')
+        nvidia_params = r.json()
+        r = requests.get('http://localhost:3476/gpu/info/json')
+        gpu_info = r.json()
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError('NVIDIA Docker plugin is not available.')
 
     volumes = await docker.volumes.list()
     existing_volumes = set(vol['Name'] for vol in volumes['Volumes'])
