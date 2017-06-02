@@ -97,6 +97,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.loop = loop if loop else asyncio.get_event_loop()
         self.docker = Docker()
         self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
+        self.agent_events = None
 
         self.server = None
         self.monitor_fetch_task = None
@@ -113,7 +114,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 if ev.event == 'put':
                     manager_id = ev.value
                     break
-        log.info(f'detecting the manager: OK ({manager_id}).')
+        log.info(f'detecting the manager: OK ({manager_id})')
+        self.config.mq_addr = await self.etcd.get('mq/addr')
+        log.info(f'using mq_addr {self.config.mq_addr}')
 
     async def update_status(self, status):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
@@ -121,7 +124,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def deregister_myself(self):
         await self.etcd.delete_prefix(f'nodes/agents/{self.config.instance_id}')
 
-    async def check_images(self): 
+    async def check_images(self):
         # Read desired image versions from etcd.
         for key, value in (await self.etcd.get_prefix('images')):
             # TODO: implement
@@ -140,6 +143,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.detect_manager()
         await self.update_status('starting')
         await self.check_images()
+
+        self.agent_events = AgentEventPublisher(self.config.mq_addr)
+        await self.agent_events.init(self.config.mq_user, self.config.mq_password, self.config.namespace)
 
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
@@ -160,6 +166,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}/ip', self.config.agent_ip)
         await self.update_status('running')
 
+        # Notify the gateway.
+        await self.agent_events.publish({
+            'type': 'instance-started',
+            'reason': '',
+        }, routing_key='events')
+
     async def shutdown(self):
         await self.deregister_myself()
 
@@ -167,6 +179,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.server.close()
         await self.server.wait_closed()
 
+        # TODO: skip this (#35)
         # Clean all kernels.
         await self.clean_all_kernels(blocking=True)
         log.debug('shutdown: kernel cleanup done.')
@@ -189,6 +202,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             pass
         await self.docker.close()
+
+        # Notify the gateway.
+        await self.agent_events.publish({
+            'type': 'instance-terminated',
+            'reason': 'shutdown',
+        }, routing_key='events')
+        await self.agent_events.close()
 
     @aiozmq.rpc.method
     def ping(self, msg: str) -> str:
@@ -671,20 +691,6 @@ async def server_main(loop, pidx, _args):
     if not args.agent_ip:
         args.agent_ip = await utils.get_instance_ip()
     log.info(f'myself: {args.instance_id} ({args.inst_type}), ip: {args.agent_ip}')
-    #log.info(f'using gateway event server at tcp://{args.event_addr}')
-
-    ## Connect to the events server.
-    #event_addr = f'tcp://{args.event_addr}'
-    #try:
-    #    with timeout(5.0):
-    #        events = await aiozmq.rpc.connect_rpc(connect=event_addr)
-    #        events.transport.setsockopt(zmq.LINGER, 50)
-    #        await events.call.dispatch('instance_started', args.instance_id)
-    #except asyncio.TimeoutError:
-    #    events.close()
-    #    await events.wait_closed()
-    #    log.critical('cannot connect to the manager.')
-    #    raise SystemExit(1)
 
     # Start RPC server.
     agent = AgentRPCServer(args, loop=loop)
@@ -697,16 +703,6 @@ async def server_main(loop, pidx, _args):
 
     # Shutdown the agent.
     await agent.shutdown()
-
-    # Notify the gateway.
-    #try:
-    #    with timeout(1.0):
-    #        await events.call.dispatch('instance_terminated', args.instance_id, 'destroyed')
-    #except asyncio.TimeoutError:
-    #    log.warning('event dispatch timeout: instance_terminated')
-    #await asyncio.sleep(0.01)
-    #events.close()
-    #await events.wait_closed()
 
 
 def main():
