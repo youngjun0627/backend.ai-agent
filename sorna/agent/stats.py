@@ -6,7 +6,7 @@ from pathlib import Path
 import aiohttp
 from aiodocker.exceptions import DockerError
 
-from sorna.utils import nmget
+from sorna.common.utils import nmget
 
 log = logging.getLogger('sorna.agent.stats')
 

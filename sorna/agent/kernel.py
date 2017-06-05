@@ -11,7 +11,7 @@ from namedlist import namedlist
 import simplejson as json
 import zmq
 
-from sorna.utils import StringSetFlag
+from sorna.common.utils import StringSetFlag
 
 log = logging.getLogger(__name__)
 

@@ -21,10 +21,9 @@ from namedlist import namedtuple
 import simplejson as json
 import uvloop
 
-from sorna import utils
-from sorna.etcd import AsyncEtcd
-from sorna.argparse import ipaddr, port_no, HostPortPair, host_port_pair, positive_int
-from sorna.utils import nmget, readable_size_to_bytes
+from sorna.common import utils, identity
+from sorna.common.etcd import AsyncEtcd
+from sorna.common.argparse import ipaddr, port_no, HostPortPair, host_port_pair, positive_int
 from . import __version__
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
@@ -339,7 +338,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'Env': [f'{k}={v}' for k, v in envs.items()],
             'HostConfig': {
                 'MemorySwap': 0,
-                'Memory': readable_size_to_bytes(mem_limit),
+                'Memory': utils.readable_size_to_bytes(mem_limit),
                 'CpusetCpus': ','.join(map(str, sorted(core_set))),
                 'CpusetMems': f'{numa_node}',
                 'SecurityOpt': ['seccomp:unconfined'],
@@ -477,7 +476,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 # We reuse runner until the kernel dies.
 
                 final_file_stats = scandir(work_dir, max_upload_size)
-                if nmget(result, 'options.upload_output_files', True):
+                if utils.nmget(result, 'options.upload_output_files', True):
                     # TODO: separate as a new task
                     # TODO: replace entry ID ('0') with some different identifier
                     initial_file_stats = self.container_registry[kernel_id].get('initial_file_stats', None)
@@ -495,8 +494,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             return {
                 'status': result['status'],
                 'console': result['console'],
-                'completions': nmget(result, 'completions', None),
-                'options': nmget(result, 'options', None),
+                'completions': utils.nmget(result, 'completions', None),
+                'options': utils.nmget(result, 'options', None),
                 'files': uploaded_files,
             }
         except:
@@ -686,10 +685,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 async def server_main(loop, pidx, _args):
 
     args = _args[0]
-    args.instance_id = await utils.get_instance_id()
-    args.inst_type = await utils.get_instance_type()
+    args.instance_id = await identity.get_instance_id()
+    args.inst_type = await identity.get_instance_type()
     if not args.agent_ip:
-        args.agent_ip = await utils.get_instance_ip()
+        args.agent_ip = await identity.get_instance_ip()
     log.info(f'myself: {args.instance_id} ({args.inst_type}), ip: {args.agent_ip}')
 
     # Start RPC server.
