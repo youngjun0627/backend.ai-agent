@@ -49,6 +49,11 @@ supported_langs = {
     'lua5',
     'haskell',
     'octave4',
+    'cpp',
+    'c',
+    'java',
+    'go',
+    'rust',
 }
 lang_aliases = dict()
 max_upload_size = 5 * 1024 * 1024  # 5 MB
@@ -690,6 +695,11 @@ def main():
         'git-shell': 'git',
         'shell': 'git',
         'ocatve': 'octave4',
+        'cpp': 'cpp',
+        'c': 'c',
+        'java': 'java',
+        'go': 'go',
+        'rust': 'rust',
     })
     if args.kernel_aliases:  # for when we want to add extra
         with open(args.kernel_aliases, 'r') as f:
