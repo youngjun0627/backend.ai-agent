@@ -187,6 +187,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return result
 
     @aiozmq.rpc.method
+    async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
+        log.debug(f'rpc::upload_file({kernel_id}, {filename})')
+        await self._upload_file(kernel_id, filename, filedata)
+
+    @aiozmq.rpc.method
     async def reset(self):
         log.debug('rpc::reset()')
         kern_ids = tuple(self.container_registry.keys())
@@ -424,6 +429,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.exception('unexpected error')
             raise
+
+    async def _upload_file(self, kernel_id, filename, filedata):
+        work_dir = self.config.volume_root / kernel_id
+        # TODO: use aiofiles?
+        with open(work_dir / filename, 'wb') as f:
+            f.write(filedata)
 
     async def heartbeat(self, interval):
         running_kernels = [k for k in self.container_registry.keys()]
