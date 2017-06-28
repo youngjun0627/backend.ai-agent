@@ -46,6 +46,8 @@ def scandir(root, allowed_max_size):
     their last modified time.
     '''
     file_stats = dict()
+    if not root.exists():
+        return file_stats
     for entry in os.scandir(root):
         # Skip hidden files.
         if entry.name.startswith('.'):
