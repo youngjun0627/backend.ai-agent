@@ -59,8 +59,6 @@ class KernelRunner:
         self.mode = mode
         if mode == 'batch':
             assert 'build' in opts or 'exec' in opts
-            # TODO: implement batch mode
-            raise NotImplementedError('Batch mode not implemented.')
         self.opts = opts
         self.kernel_ip = kernel_ip
         self.repl_in_port  = repl_in_port
@@ -84,10 +82,16 @@ class KernelRunner:
             zmq.PULL, connect=f'tcp://{self.kernel_ip}:{self.repl_out_port}')
         self.output_stream.transport.setsockopt(zmq.LINGER, 50)
 
-        self.input_stream.write([
-            b'input',
-            code_text.encode('utf8'),
-        ])
+        if self.mode == 'query':
+            self.input_stream.write([
+                b'input',
+                code_text.encode('utf8'),
+            ])
+        elif self.mode == 'batch':
+            self.input_stream.write([
+                b'build',
+                self.opts.get('build', '').encode('utf8'),
+            ])
         self.read_task = asyncio.ensure_future(self.read_output())
         has_continuation = ClientFeatures.CONTINUATION in self.features
         self.flush_timeout = 2.0 if has_continuation else None
@@ -248,7 +252,15 @@ class KernelRunner:
                         await self.console_queue.put(ResultRecord(
                             msg_type.decode('ascii'),
                             msg_data))
-                if msg_type == b'finished':
+                if msg_type == b'build-finished':
+                    # finalize incremental decoder
+                    decoders[0].decode(b'', True)
+                    decoders[1].decode(b'', True)
+                    self.input_stream.write([
+                        b'exec',
+                        self.opts.get('exec', '').encode('utf8'),
+                    ])
+                elif msg_type == b'finished':
                     # finalize incremental decoder
                     decoders[0].decode(b'', True)
                     decoders[1].decode(b'', True)

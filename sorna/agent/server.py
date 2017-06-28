@@ -439,8 +439,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     initial_file_stats = \
                         self.container_registry[kernel_id]['initial_file_stats']
                     output_files = await upload_output_files_to_s3(
-                        initial_file_stats, final_file_stats, '0',
-                        loop=self.loop)
+                        initial_file_stats, final_file_stats, '0')
                     output_files = [os.path.relpath(fn, output_dir)
                                     for fn in output_files]
 
@@ -464,8 +463,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _upload_file(self, kernel_id, filename, filedata):
         work_dir = self.config.volume_root / kernel_id
+        try:
+            # create intermediate directories in the path
+            dest_path = (work_dir / filename).resolve(strict=False)
+            rel_path = dest_path.parent.relative_to(work_dir)
+        except ValueError:  # rel_path does not start with work_dir!
+            raise AssertionError('malformed upload filename and path.')
+        rel_path.mkdir(parents=True, exist_ok=True)
         # TODO: use aiofiles?
-        with open(work_dir / filename, 'wb') as f:
+        with open(dest_path, 'wb') as f:
             f.write(filedata)
 
     async def heartbeat(self, interval):
