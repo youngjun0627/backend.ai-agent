@@ -4,7 +4,6 @@ from ipaddress import ip_address
 import logging, logging.config
 import os, os.path
 from pathlib import Path
-import re
 import secrets
 import signal
 import shutil
@@ -16,7 +15,6 @@ from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
 from async_timeout import timeout
 from namedlist import namedtuple
-import simplejson as json
 import uvloop
 
 from sorna import utils
@@ -25,7 +23,7 @@ from sorna.utils import nmget, readable_size_to_bytes
 from . import __version__
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
-from .stats import collect_stats, _collect_stats_sysfs, _collect_stats_api
+from .stats import collect_stats
 from .resources import libnuma, CPUAllocMap
 from .kernel import KernelRunner
 
@@ -194,11 +192,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     @aiozmq.rpc.method
     async def reset(self):
         log.debug('rpc::reset()')
-        kern_ids = tuple(self.container_registry.keys())
+        kernel_ids = tuple(self.container_registry.keys())
         tasks = []
-        for kern_id in kern_ids:
+        for kernel_id in kernel_ids:
             try:
-                task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'agent-reset'))
+                task = asyncio.ensure_future(
+                    self._destroy_kernel(kernel_id, 'agent-reset'))
                 tasks.append(task)
             except:
                 log.exception(f'reset: destroying {kernel_id}')
@@ -369,7 +368,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
             # TODO: import "connected" files from S3
             self.container_registry[kernel_id]['initial_file_stats'] \
-                    = scandir(work_dir, max_upload_size)
+                = scandir(output_dir, max_upload_size)
 
             runner = KernelRunner(
                 kernel_id,
@@ -384,7 +383,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             self.container_registry[kernel_id]['runner'] = runner
 
         try:
-            self.container_registry[kernel_id]['runner_task'] = asyncio.Task.current_task()
+            self.container_registry[kernel_id]['runner_task'] = \
+                asyncio.Task.current_task()
             result = await runner.get_next_result(api_ver=api_version)
         except asyncio.CancelledError:
             await runner.close()
@@ -532,9 +532,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     exit_code = evdata['Actor']['Attributes']['exitCode']
                 except KeyError:
                     exit_code = '(unknown)'
-                reason = 'destroyed'
                 log.debug('docker-event: container-terminated: '
-                          f'{container_id[:7]} with exit code {exit_code} ({kernel_id})')
+                          f'{container_id[:7]} with exit code {exit_code} '
+                          f'({kernel_id})')
                 asyncio.ensure_future(self.clean_kernel(kernel_id))
 
     async def clean_kernel(self, kernel_id):

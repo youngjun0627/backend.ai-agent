@@ -1,6 +1,5 @@
 import asyncio
 import codecs
-import enum
 import io
 import logging
 import time
@@ -19,6 +18,7 @@ log = logging.getLogger(__name__)
 # (excluding control signals such as 'finished' and 'waiting-input'
 # since they are passed as separate status field.)
 outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log'}
+
 
 class ClientFeatures(StringSetFlag):
     INPUT = 'input'
