@@ -15,7 +15,8 @@ async def prepare_nvidia(docker, numa_node):
 
     volumes = await docker.volumes.list()
     existing_volumes = set(vol['Name'] for vol in volumes['Volumes'])
-    required_volumes = set(vol.split(':')[0] for vol in nvidia_params['Volumes'])
+    required_volumes = set(vol.split(':')[0]
+                           for vol in nvidia_params['Volumes'])
     missing_volumes = required_volumes - existing_volumes
     binds = []
     for vol_name in missing_volumes:
@@ -23,7 +24,10 @@ async def prepare_nvidia(docker, numa_node):
             if vol_param.startswith(vol_name + ':'):
                 _, _, permission = vol_param.split(':')
                 driver = nvidia_params['VolumeDriver']
-                await docker.volumes.create({'Name': vol_name, 'Driver': driver})
+                await docker.volumes.create({
+                    'Name': vol_name,
+                    'Driver': driver,
+                })
     for vol_name in required_volumes:
         for vol_param in nvidia_params['Volumes']:
             if vol_param.startswith(vol_name + ':'):
@@ -37,7 +41,8 @@ async def prepare_nvidia(docker, numa_node):
             # Only expose GPUs in the same NUMA node.
             for gpu in gpu_info['Devices']:
                 if gpu['Path'] == dev:
-                    pci_path = '/sys/bus/pci/devices/{}/numa_node'.format(gpu['PCI']['BusID'])
+                    pci_path = '/sys/bus/pci/devices/{}/numa_node' \
+                               .format(gpu['PCI']['BusID'])
                     gpu_node = int(Path(pci_path).read_text().strip())
                     if gpu_node == numa_node:
                         devices.append(dev)

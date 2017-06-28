@@ -49,7 +49,8 @@ ResultRecord = namedlist('ResultRecord', [
 
 class KernelRunner:
 
-    def __init__(self, kernel_id, mode, opts, kernel_ip, repl_in_port, repl_out_port,
+    def __init__(self, kernel_id, mode, opts,
+                 kernel_ip, repl_in_port, repl_out_port,
                  exec_timeout, features=None):
         self.started_at = None
         self.finished_at = None
@@ -88,7 +89,8 @@ class KernelRunner:
             code_text.encode('utf8'),
         ])
         self.read_task = asyncio.ensure_future(self.read_output())
-        self.flush_timeout = 2.0 if ClientFeatures.CONTINUATION in self.features else None
+        has_continuation = ClientFeatures.CONTINUATION in self.features
+        self.flush_timeout = 2.0 if has_continuation else None
         self.watchdog_task = asyncio.ensure_future(self.watchdog())
 
     async def close(self):
@@ -201,7 +203,8 @@ class KernelRunner:
             result = {
                 'status': 'exec-timeout',
             }
-            log.warning(f'Execution timeout detected on kernel {self.kernel_id}')
+            log.warning('Execution timeout detected on kernel '
+                        f'{self.kernel_id}')
             type(self).aggregate_console(result, records, api_ver)
             return result
         except InputRequestPending as e:
@@ -230,10 +233,16 @@ class KernelRunner:
                 if not self.console_queue.full():
                     if msg_type == b'stdout':
                         await self.console_queue.put(
-                            ResultRecord('stdout', decoders[0].decode(msg_data)))
+                            ResultRecord(
+                                'stdout',
+                                decoders[0].decode(msg_data),
+                            ))
                     elif msg_type == b'stderr':
                         await self.console_queue.put(
-                            ResultRecord('stderr', decoders[1].decode(msg_data)))
+                            ResultRecord(
+                                'stderr',
+                                decoders[1].decode(msg_data),
+                            ))
                     else:
                         msg_data = msg_data.decode('utf8')
                         await self.console_queue.put(ResultRecord(

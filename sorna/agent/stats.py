@@ -13,11 +13,10 @@ log = logging.getLogger('sorna.agent.stats')
 
 def _collect_stats_sysfs(container):
     try:
-        path = '/sys/fs/cgroup/cpuacct/docker/{}/cpuacct.usage' \
-               .format(container._id)
+        path = f'/sys/fs/cgroup/cpuacct/docker/{container._id}/cpuacct.usage'
         cpu_used = read_sysfs(path) / 1e6
-        path = '/sys/fs/cgroup/memory/docker/{}/memory.max_usage_in_bytes' \
-               .format(container._id)
+        path = (f'/sys/fs/cgroup/memory/docker/{container._id}/memory'
+                '.max_usage_in_bytes')
         mem_max_bytes = read_sysfs(path)
         # TODO: implement
         io_read_bytes = 0
@@ -40,7 +39,7 @@ async def _collect_stats_api(container):
     try:
         ret = await container.stats(stream=False)
     except (DockerError, aiohttp.ClientResponseError):
-        log.warning('container {} missing on heartbeat'.format(container._id[:7]))
+        log.warning(f'container {container._id[:7]} missing on heartbeat')
         return None
     else:
         cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
