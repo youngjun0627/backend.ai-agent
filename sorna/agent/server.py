@@ -353,6 +353,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _execute_code(self, api_version, kernel_id, mode, code_text, opts):
         work_dir = self.config.volume_root / kernel_id
+        # Save kernel-generated output files in a separate sub-directory
+        # (to distinguish from user-uploaded files)
+        output_dir = work_dir / '.output'
 
         self.container_registry[kernel_id]['last_used'] = time.monotonic()
         self.container_registry[kernel_id]['num_queries'] += 1
@@ -397,7 +400,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             del self.container_registry[kernel_id]['runner_task']
 
         try:
-            uploaded_files = []
+            output_files = []
 
             if result['status'] in ('finished', 'exec-timeout'):
 
@@ -405,26 +408,31 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await runner.close()
                 del self.container_registry[kernel_id]['runner']
 
-                final_file_stats = scandir(work_dir, max_upload_size)
+                final_file_stats = scandir(output_dir, max_upload_size)
                 if nmget(result, 'options.upload_output_files', True):
                     # TODO: separate as a new task
                     # TODO: replace entry ID ('0') with some different identifier
-                    initial_file_stats = self.container_registry[kernel_id]['initial_file_stats']
-                    uploaded_files = await upload_output_files_to_s3(
+                    initial_file_stats = \
+                        self.container_registry[kernel_id]['initial_file_stats']
+                    output_files = await upload_output_files_to_s3(
                         initial_file_stats, final_file_stats, '0',
                         loop=self.loop)
-                    uploaded_files = [os.path.relpath(fn, work_dir) for fn in uploaded_files]
+                    output_files = [os.path.relpath(fn, output_dir)
+                                      for fn in output_files]
 
                 del self.container_registry[kernel_id]['initial_file_stats']
 
-            if result['status'] == 'exec-timeout' and kernel_id in self.container_resgistry:  # maybe cleaned already
-                asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
+            if (result['status'] == 'exec-timeout' and
+                    kernel_id in self.container_registry):
+                # clean up the kernel (maybe cleaned already)
+                asyncio.ensure_future(
+                    self._destroy_kernel(kernel_id, 'exec-timeout'))
 
             return {
                 'status': result['status'],
                 'console': result['console'],
                 'options': nmget(result, 'options', None),
-                'files': uploaded_files,
+                'files': output_files,
             }
         except:
             log.exception('unexpected error')
