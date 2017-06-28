@@ -31,6 +31,10 @@ class InputRequestPending(Exception):
         self.opts = opts
 
 
+class BuildFinished(Exception):
+    pass
+
+
 class UserCodeFinished(Exception):
     def __init__(self, opts):
         super().__init__()
@@ -185,6 +189,8 @@ class KernelRunner:
                     if rec.msg_type == 'finished':
                         o = json.loads(rec.data) if rec.data else {}
                         raise UserCodeFinished(o)
+                    elif rec.msg_type == 'build-finished':
+                        raise BuildFinished
                     elif rec.msg_type == 'waiting-input':
                         o = json.loads(rec.data) if rec.data else {}
                         raise InputRequestPending(o)
@@ -193,6 +199,12 @@ class KernelRunner:
         except asyncio.TimeoutError:
             result = {
                 'status': 'continued',
+            }
+            type(self).aggregate_console(result, records, api_ver)
+            return result
+        except BuildFinished as e:
+            result = {
+                'status': 'build-finished',
             }
             type(self).aggregate_console(result, records, api_ver)
             return result
