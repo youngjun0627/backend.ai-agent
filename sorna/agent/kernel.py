@@ -74,6 +74,7 @@ class KernelRunner:
         self.input_queue = asyncio.Queue()
         self.read_task = None
         self.features = features or set()
+        self.waiting_input = False
 
     async def start(self, code_text):
         self.started_at = time.monotonic()
@@ -112,10 +113,11 @@ class KernelRunner:
         self.output_stream.close()
 
     async def feed_input(self, code_text):
-        self.input_stream.write([
-            b'input',
-            code_text.encode('utf8'),
-        ])
+        if self.waiting_input:
+            self.input_stream.write([
+                b'input',
+                code_text.encode('utf8'),
+            ])
 
     async def watchdog(self):
         try:
@@ -197,18 +199,21 @@ class KernelRunner:
                     elif rec.msg_type == 'exec-timeout':
                         raise ExecTimeout
         except asyncio.TimeoutError:
+            self.waiting_input = False
             result = {
                 'status': 'continued',
             }
             type(self).aggregate_console(result, records, api_ver)
             return result
         except BuildFinished as e:
+            self.waiting_input = False
             result = {
                 'status': 'build-finished',
             }
             type(self).aggregate_console(result, records, api_ver)
             return result
         except UserCodeFinished as e:
+            self.waiting_input = False
             result = {
                 'status': 'finished',
                 'options': e.opts,
@@ -216,6 +221,7 @@ class KernelRunner:
             type(self).aggregate_console(result, records, api_ver)
             return result
         except ExecTimeout:
+            self.waiting_input = False
             result = {
                 'status': 'exec-timeout',
             }
@@ -224,6 +230,7 @@ class KernelRunner:
             type(self).aggregate_console(result, records, api_ver)
             return result
         except InputRequestPending as e:
+            self.waiting_input = True
             result = {
                 'status': 'waiting-input',
                 'options': e.opts,
@@ -231,6 +238,7 @@ class KernelRunner:
             type(self).aggregate_console(result, records, api_ver)
             return result
         except:
+            self.waiting_input = False
             log.exception('unexpected error')
             raise
 
