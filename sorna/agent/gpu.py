@@ -41,10 +41,13 @@ async def prepare_nvidia(docker, numa_node):
             # Only expose GPUs in the same NUMA node.
             for gpu in gpu_info['Devices']:
                 if gpu['Path'] == dev:
-                    pci_path = '/sys/bus/pci/devices/{}/numa_node' \
-                               .format(gpu['PCI']['BusID'])
-                    gpu_node = int(Path(pci_path).read_text().strip())
-                    if gpu_node == numa_node:
+                    try:
+                        pci_path = f"/sys/bus/pci/devices/{gpu['PCI']['BusID'].lower()}/numa_node"
+                        gpu_node = int(Path(pci_path).read_text().strip())
+                    except FileNotFoundError:
+                        gpu_node = -1
+                    # Even when numa_node file exists, gpu_node may become -1 (e.g., Amazon p2 instances)
+                    if gpu_node == numa_node or gpu_node == -1:
                         devices.append(dev)
     devices = [{
         'PathOnHost': dev,
