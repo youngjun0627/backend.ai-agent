@@ -8,6 +8,7 @@ except (IOError, ImportError):
 
 
 requires = [
+    'ConfigArgParse',
     'coloredlogs>=5.2',
     'async_timeout>=1.1',
     'pyzmq>=16.0',
@@ -31,6 +32,7 @@ build_requires = [
 test_requires = [
     'pytest>=3.1',
     'pytest-asyncio',
+    'asynctest',
     'flake8',
     'pep8-naming',
 ]
