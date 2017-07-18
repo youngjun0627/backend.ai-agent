@@ -32,6 +32,7 @@ build_requires = [
 test_requires = [
     'pytest>=3.1',
     'pytest-asyncio',
+    'pytest-mock',
     'asynctest',
     'flake8',
     'pep8-naming',
