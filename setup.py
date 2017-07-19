@@ -23,6 +23,7 @@ requires = [
     'requests_unixsocket',
     'simplejson',
     'uvloop>=0.8',
+    'sorna-common~=0.9.0',
 ]
 build_requires = [
     'pypandoc',
