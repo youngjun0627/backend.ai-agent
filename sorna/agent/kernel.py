@@ -1,6 +1,5 @@
 import asyncio
 import codecs
-import enum
 import io
 import logging
 import time
@@ -20,6 +19,7 @@ log = logging.getLogger(__name__)
 # since they are passed as separate status field.)
 outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log', 'completion'}
 
+
 class ClientFeatures(StringSetFlag):
     INPUT = 'input'
     CONTINUATION = 'continuation'
@@ -29,6 +29,10 @@ class InputRequestPending(Exception):
     def __init__(self, opts):
         super().__init__()
         self.opts = opts
+
+
+class BuildFinished(Exception):
+    pass
 
 
 class UserCodeFinished(Exception):
@@ -49,7 +53,8 @@ ResultRecord = namedlist('ResultRecord', [
 
 class KernelRunner:
 
-    def __init__(self, kernel_id, mode, opts, kernel_ip, repl_in_port, repl_out_port,
+    def __init__(self, kernel_id, mode, opts,
+                 kernel_ip, repl_in_port, repl_out_port,
                  exec_timeout, features=None):
         self.started_at = None
         self.finished_at = None
@@ -58,8 +63,6 @@ class KernelRunner:
         self.mode = mode
         if mode == 'batch':
             assert 'build' in opts or 'exec' in opts
-            # TODO: implement batch mode
-            raise NotImplementedError('Batch mode not implemented.')
         self.opts = opts
         self.kernel_ip = kernel_ip
         self.repl_in_port  = repl_in_port
@@ -71,6 +74,7 @@ class KernelRunner:
         self.input_queue = asyncio.Queue()
         self.read_task = None
         self.features = features or set()
+        self.waiting_input = False
 
     async def start(self):
         self.started_at = time.monotonic()
@@ -83,8 +87,19 @@ class KernelRunner:
             zmq.PULL, connect=f'tcp://{self.kernel_ip}:{self.repl_out_port}')
         self.output_stream.transport.setsockopt(zmq.LINGER, 50)
 
+        if self.mode == 'query':
+            self.input_stream.write([
+                b'input',
+                code_text.encode('utf8'),
+            ])
+        elif self.mode == 'batch':
+            self.input_stream.write([
+                b'build',
+                self.opts.get('build', '').encode('utf8'),
+            ])
         self.read_task = asyncio.ensure_future(self.read_output())
-        self.flush_timeout = 2.0 if ClientFeatures.CONTINUATION in self.features else None
+        has_continuation = ClientFeatures.CONTINUATION in self.features
+        self.flush_timeout = 2.0 if has_continuation else None
         self.watchdog_task = asyncio.ensure_future(self.watchdog())
 
     async def close(self):
@@ -98,10 +113,11 @@ class KernelRunner:
         self.output_stream.close()
 
     async def feed_input(self, code_text):
-        self.input_stream.write([
-            b'input',
-            code_text.encode('utf8'),
-        ])
+        if self.waiting_input:
+            self.input_stream.write([
+                b'input',
+                code_text.encode('utf8'),
+            ])
 
     async def request_completions(self, code_text, opts):
         payload = {
@@ -201,18 +217,29 @@ class KernelRunner:
                     if rec.msg_type == 'finished':
                         o = json.loads(rec.data) if rec.data else {}
                         raise UserCodeFinished(o)
+                    elif rec.msg_type == 'build-finished':
+                        raise BuildFinished
                     elif rec.msg_type == 'waiting-input':
                         o = json.loads(rec.data) if rec.data else {}
                         raise InputRequestPending(o)
                     elif rec.msg_type == 'exec-timeout':
                         raise ExecTimeout
         except asyncio.TimeoutError:
+            self.waiting_input = False
             result = {
                 'status': 'continued',
             }
             type(self).aggregate_console(result, records, api_ver)
             return result
+        except BuildFinished as e:
+            self.waiting_input = False
+            result = {
+                'status': 'build-finished',
+            }
+            type(self).aggregate_console(result, records, api_ver)
+            return result
         except UserCodeFinished as e:
+            self.waiting_input = False
             result = {
                 'status': 'finished',
                 'options': e.opts,
@@ -220,13 +247,16 @@ class KernelRunner:
             type(self).aggregate_console(result, records, api_ver)
             return result
         except ExecTimeout:
+            self.waiting_input = False
             result = {
                 'status': 'exec-timeout',
             }
-            log.warning(f'Execution timeout detected on kernel {self.kernel_id}')
+            log.warning('Execution timeout detected on kernel '
+                        f'{self.kernel_id}')
             type(self).aggregate_console(result, records, api_ver)
             return result
         except InputRequestPending as e:
+            self.waiting_input = True
             result = {
                 'status': 'waiting-input',
                 'options': e.opts,
@@ -236,6 +266,7 @@ class KernelRunner:
         except asyncio.CancelledError:
             raise
         except:
+            self.waiting_input = False
             log.exception('unexpected error')
             raise
 
@@ -254,24 +285,35 @@ class KernelRunner:
                 if not self.console_queue.full():
                     if msg_type == b'stdout':
                         await self.console_queue.put(
-                            ResultRecord('stdout', decoders[0].decode(msg_data)))
+                            ResultRecord(
+                                'stdout',
+                                decoders[0].decode(msg_data),
+                            ))
                     elif msg_type == b'stderr':
                         await self.console_queue.put(
-                            ResultRecord('stderr', decoders[1].decode(msg_data)))
+                            ResultRecord(
+                                'stderr',
+                                decoders[1].decode(msg_data),
+                            ))
                     else:
                         msg_data = msg_data.decode('utf8')
                         await self.console_queue.put(ResultRecord(
                             msg_type.decode('ascii'),
                             msg_data))
-                if msg_type == b'finished':
+                if msg_type == b'build-finished':
                     # finalize incremental decoder
                     decoders[0].decode(b'', True)
                     decoders[1].decode(b'', True)
-                    decoders = (
-                        codecs.getincrementaldecoder('utf8')(),
-                        codecs.getincrementaldecoder('utf8')(),
-                    )
+                    self.input_stream.write([
+                        b'exec',
+                        self.opts.get('exec', '').encode('utf8'),
+                    ])
+                elif msg_type == b'finished':
+                    # finalize incremental decoder
+                    decoders[0].decode(b'', True)
+                    decoders[1].decode(b'', True)
                     self.finished_at = time.monotonic()
+                    break
             except (asyncio.CancelledError, aiozmq.ZmqStreamClosed):
                 break
             except:

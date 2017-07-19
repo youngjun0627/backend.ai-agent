@@ -1,46 +1,58 @@
 from setuptools import setup
-from pathlib import Path
-import pip
-import re
-
-here = Path(__file__).resolve().parent
-
+import sys
 try:
     import pypandoc
     long_description = pypandoc.convert('README.md', 'rst')
 except (IOError, ImportError):
     long_description = ""
 
-requires = []
-links = []
-requirements = pip.req.parse_requirements(
-    'requirements.txt', session=pip.download.PipSession()
-)
-for item in requirements:
-    if getattr(item, 'url', None):  # older pip has url
-        links.append(str(item.url))
-    if getattr(item, 'link', None):  # newer pip has link
-        links.append(str(item.link))
-    if item.req:
-        requires.append(str(item.req))  # always the package name
 
+requires = [
+    'ConfigArgParse',
+    'coloredlogs>=5.2',
+    'async_timeout>=1.1',
+    'pyzmq>=16.0',
+    'aiodocker',
+    'aiozmq>=0.7',
+    'aiohttp>=2.0.6',
+    'aioredis>=0.2.8',
+    'aiobotocore>=0.3.0',
+    'msgpack-python',
+    'namedlist',
+    'requests',
+    'requests_unixsocket',
+    'simplejson',
+    'uvloop>=0.8',
+]
+build_requires = [
+    'pypandoc',
+    'wheel',
+    'twine',
+]
+test_requires = [
+    'pytest>=3.1',
+    'pytest-asyncio',
+    'pytest-mock',
+    'asynctest',
+    'flake8',
+    'pep8-naming',
+]
+dev_requires = build_requires + test_requires + [
+    'pytest-sugar',
+]
+ci_requires = []
+monitor_requires = [
+    'datadog>=0.16.0',
+    'raven>=6.1',
+]
 
-def _get_version():
-    root_src = (here / 'sorna' / 'agent' / '__init__.py').read_text()
-    try:
-        version = re.findall(r"^__version__ = '([^']+)'\r?$", root_src, re.M)[0]
-    except IndexError:
-        raise RuntimeError('Unable to determine myself version.')
-    return version
+sys.path.insert(0, '.')
+import sorna.agent
 
 
 setup(
     name='sorna-agent',
-
-    # Versions should comply with PEP440.  For a discussion on single-sourcing
-    # the version across setup.py and the project code, see
-    # https://packaging.python.org/en/latest/single_source_version.html
-    version=_get_version(),
+    version=sorna.agent.__version__,
     description='Sorna agent',
     long_description=long_description,
     url='https://github.com/lablup/sorna-agent',
@@ -66,9 +78,11 @@ setup(
 
     python_requires='>=3.6',
     install_requires=requires,
-    dependency_links=links,
     extras_require={
-        'dev': ['pytest', 'pytest-asyncio', 'flake8', 'pep8-naming'],
-        'test': ['pytest', 'pytest-asyncio'],
+        'build': build_requires,
+        'test': test_requires,
+        'dev': dev_requires,
+        'ci': ci_requires,
+        'monitor': monitor_requires,
     },
 )

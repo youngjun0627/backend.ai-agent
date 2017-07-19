@@ -62,7 +62,7 @@ target/
 
 # Vim
 .*.swp
-venv/
+venv*/
 
 # Sorna
 scratches/

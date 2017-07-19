@@ -1,6 +1,49 @@
 Changes
 =======
 
+0.9.10 (2017-07-18)
+-------------------
+
+**FIX**
+
+ * Fix the wrong version range of an optional depedency package "datadog"
+
+0.9.9 (2017-07-18)
+------------------
+
+**IMPROVEMENTS**
+
+ * Improve packaging so that setup.py has the source list of dependencies
+   whereas requirements.txt has additional/local versions from exotic
+   sources.
+
+ * Support exception/event logging with Sentry and runtime statistics with Datadog.
+
+0.9.8 (2017-06-30)
+------------------
+
+**FIX**
+
+ - Fix interactive user inputs in the batch-mode execution.
+
+0.9.7 (2017-06-29)
+------------------
+
+**NEW**
+
+ - Add support for the batch-mode API with compiled languages such as
+   C/C++/Java/Rust.
+
+ - Add support for the file upload API for use with the batch-mode API.
+   (up to 20 files per request and 1 MiB per each file)
+
+**CHANGES**
+
+ - Only files stored in "/home/work.output" directories of kernel containers
+   are auto-uploaded to S3 as downloadable files, as now we rely on our
+   dedicated multi-media output interfaces to show plots and other graphics.
+   Previously, all non-hidden files in "/home/work" were uploaded.
+
 0.9.6 (2017-04-12)
 ------------------
 

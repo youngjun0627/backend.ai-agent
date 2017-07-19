@@ -3,7 +3,6 @@ from ipaddress import ip_address
 import logging, logging.config
 import os, os.path
 from pathlib import Path
-import re
 import secrets
 import signal
 import shutil
@@ -17,17 +16,31 @@ from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
 import aiotools
 from async_timeout import timeout
+import configargparse
 from namedlist import namedtuple
-import simplejson as json
 import uvloop
+import zmq, aiozmq, aiozmq.rpc
+try:
+    import datadog
+    datadog_available = True
+except ImportError:
+    datadog_available = False
+try:
+    import raven
+    raven_available = True
+except ImportError:
+    raven_available = False
 
 from sorna.common import utils, identity
 from sorna.common.etcd import AsyncEtcd
-from sorna.common.argparse import ipaddr, port_no, HostPortPair, host_port_pair, positive_int
+from sorna.common.argparse import (
+    ipaddr, port_no, HostPortPair,
+    host_port_pair, positive_int)
+from sorna.common.monitor import DummyDatadog, DummySentry
 from . import __version__
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
-from .stats import collect_stats, _collect_stats_sysfs, _collect_stats_api
+from .stats import collect_stats
 from .resources import libnuma, CPUAllocMap
 from .kernel import KernelRunner
 
@@ -51,6 +64,11 @@ supported_langs = {
     'lua5',
     'haskell',
     'octave4',
+    'cpp',
+    'c',
+    'java',
+    'go',
+    'rust',
 }
 lang_aliases = dict()
 max_upload_size = 5 * 1024 * 1024  # 5 MB
@@ -87,7 +105,7 @@ async def get_extra_volumes(docker, lang):
 
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
-    def __init__(self, config, loop=None):
+    def __init__(self, config, ddagent, sentry, loop=None):
         self.config = config
         #self.events = events
         self.container_registry = {}
@@ -104,6 +122,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.hb_timer = None
         self.stats_timer = None
         self.clean_timer = None
+        
+        self.datadog = ddagent
+        self.sentry = sentry
 
     async def detect_manager(self):
         log.info('detecting the manager...')
@@ -220,52 +241,85 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if lang in lang_aliases:
             lang = lang_aliases[lang]
         log.debug(f'rpc::create_kernel({lang}, {limits}, {mounts})')
-        kernel_id = await self._create_kernel(lang, None, limits, mounts)
-        stdin_port = self.container_registry[kernel_id]['stdin_port']
-        stdout_port = self.container_registry[kernel_id]['stdout_port']
-        return kernel_id, stdin_port, stdout_port
+        try:
+            kernel_id = await self._create_kernel(lang, None, limits, mounts)
+            stdin_port = self.container_registry[kernel_id]['stdin_port']
+            stdout_port = self.container_registry[kernel_id]['stdout_port']
+            return kernel_id, stdin_port, stdout_port
+        except:
+            self.sentry.captureException()
+            raise
 
     @aiozmq.rpc.method
     async def destroy_kernel(self, kernel_id: str):
         log.debug(f'rpc::destroy_kernel({kernel_id})')
-        await self._destroy_kernel(kernel_id, 'user-requested')
+        try:
+            await self._destroy_kernel(kernel_id, 'user-requested')
+        except:
+            self.sentry.captureException()
+            raise
 
     @aiozmq.rpc.method
     async def restart_kernel(self, kernel_id: str):
         log.debug(f'rpc::restart_kernel({kernel_id})')
-        restarting_kernels[kernel_id] = asyncio.Event()
-        await self._destroy_kernel(kernel_id, 'restarting')
-        lang = self.container_registry[kernel_id]['lang']
-        limits = self.container_registry[kernel_id]['limits']
-        mounts = self.container_registry[kernel_id]['mounts']
-        await self._create_kernel(lang, kernel_id, limits, mounts)
-        if kernel_id in restarting_kernels:
-            del restarting_kernels[kernel_id]
-        stdin_port = self.container_registry[kernel_id]['stdin_port']
-        stdout_port = self.container_registry[kernel_id]['stdout_port']
-        return stdin_port, stdout_port
+        try:
+            restarting_kernels[kernel_id] = asyncio.Event()
+            await self._destroy_kernel(kernel_id, 'restarting')
+            lang = self.container_registry[kernel_id]['lang']
+            limits = self.container_registry[kernel_id]['limits']
+            mounts = self.container_registry[kernel_id]['mounts']
+            await self._create_kernel(lang, kernel_id, limits, mounts)
+            if kernel_id in restarting_kernels:
+                del restarting_kernels[kernel_id]
+            stdin_port = self.container_registry[kernel_id]['stdin_port']
+            stdout_port = self.container_registry[kernel_id]['stdout_port']
+            return stdin_port, stdout_port
+        except:
+            self.sentry.captureException()
+            raise
 
     @aiozmq.rpc.method
     async def execute(self, api_version: int, kernel_id: str,
                       mode: str, code: str, opts: dict) -> dict:
         log.debug(f'rpc::execute({kernel_id}, ...)')
-        result = await self._execute(api_version, kernel_id, mode, code, opts)
-        return result
+        try:
+            result = await self._execute(api_version, kernel_id,
+                                         mode, code, opts)
+            return result
+        except:
+            self.sentry.captureException()
+            raise
+
+    @aiozmq.rpc.method
+    async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
+        log.debug(f'rpc::upload_file({kernel_id}, {filename})')
+        try:
+            await self._upload_file(kernel_id, filename, filedata)
+        except:
+            self.sentry.captureException()
+            raise
 
     @aiozmq.rpc.method
     async def reset(self):
         log.debug('rpc::reset()')
-        kern_ids = tuple(self.container_registry.keys())
+        kernel_ids = tuple(self.container_registry.keys())
         tasks = []
-        for kern_id in kern_ids:
-            try:
-                task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'agent-reset'))
-                tasks.append(task)
-            except:
-                log.exception(f'reset: destroying {kernel_id}')
-        await asyncio.gather(*tasks)
+        try:
+            for kernel_id in kernel_ids:
+                try:
+                    task = asyncio.ensure_future(
+                        self._destroy_kernel(kernel_id, 'agent-reset'))
+                    tasks.append(task)
+                except:
+                    self.sentry.captureException()
+                    log.exception(f'reset: destroying {kernel_id}')
+            await asyncio.gather(*tasks)
+        except:
+            self.sentry.captureException()
+            raise
 
-    async def _create_kernel(self, lang, kernel_id=None, limits=None, mounts=None):
+    async def _create_kernel(self, lang, kernel_id=None,
+                             limits=None, mounts=None):
         if not kernel_id:
             kernel_id = secrets.token_urlsafe(16)
             assert kernel_id not in self.container_registry
@@ -276,11 +330,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         image_name = f'lablup/kernel-{lang}'
         ret = await self.docker.images.get(image_name)
         # TODO: apply limits
-        version        = int(ret['ContainerConfig']['Labels'].get('io.sorna.version', '1'))
-        mem_limit      = ret['ContainerConfig']['Labels'].get('io.sorna.maxmem', '128m')
-        exec_timeout   = int(ret['ContainerConfig']['Labels'].get('io.sorna.timeout', '10'))
+        version        = int(ret['ContainerConfig']['Labels']
+                             .get('io.sorna.version', '1'))
+        mem_limit      = (ret['ContainerConfig']['Labels']
+                          .get('io.sorna.maxmem', '128m'))
+        exec_timeout   = int(ret['ContainerConfig']['Labels']
+                             .get('io.sorna.timeout', '10'))
         exec_timeout   = min(exec_timeout, self.config.exec_timeout)
-        envs_corecount = ret['ContainerConfig']['Labels'].get('io.sorna.envs.corecount', '')
+        envs_corecount = (ret['ContainerConfig']['Labels']
+                          .get('io.sorna.envs.corecount', ''))
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
 
         work_dir = self.config.scratch_root / kernel_id
@@ -295,13 +353,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 with timeout(10):
                     await restarting_kernels[kernel_id].wait()
             except asyncio.TimeoutError:
-                log.warning(f'timeout detected while restarting kernel {kernel_id}!')
+                log.warning('timeout detected while restarting '
+                            f'kernel {kernel_id}!')
                 del restarting_kernels[kernel_id]
                 asyncio.ensure_future(self.clean_kernel(kernel_id))
                 raise
         else:
             os.makedirs(work_dir)
-            requested_cores = int(ret['ContainerConfig']['Labels'].get('io.sorna.maxcores', '1'))
+            requested_cores = int(ret['ContainerConfig']['Labels']
+                                  .get('io.sorna.maxcores', '1'))
             num_cores = min(self.container_cpu_map.num_cores, requested_cores)
             numa_node, core_set = self.container_cpu_map.alloc(num_cores)
 
@@ -312,15 +372,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         mount_list = await get_extra_volumes(self.docker, lang)
         binds = [f'{work_dir}:/home/work:rw']
-        binds.extend(f'{v.name}:{v.container_path}:{v.mode}' for v in mount_list)
+        binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
+                     for v in mount_list)
         volumes = ['/home/work']
         volumes.extend(v.container_path for v in mount_list)
         devices = []
 
         # TODO: apply mounts
 
-        if 'yes' == ret['ContainerConfig']['Labels'].get('io.sorna.nvidia.enabled', 'no'):
-            extra_binds, extra_devices = await prepare_nvidia(self.docker, numa_node)
+        nvidia_enabled = (ret['ContainerConfig']['Labels']
+                          .get('io.sorna.nvidia.enabled', 'no'))
+        if 'yes' == nvidia_enabled:
+            extra_binds, extra_devices = \
+                await prepare_nvidia(self.docker, numa_node)
             binds.extend(extra_binds)
             devices.extend(extra_devices)
 
@@ -348,7 +412,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             },
         }
         kernel_name = f'kernel.{lang}.{kernel_id}'
-        container = await self.docker.containers.create(config=config, name=kernel_name)
+        container = await self.docker.containers.create(
+            config=config, name=kernel_name)
         await container.start()
         repl_in_port  = (await container.port(2000))[0]['HostPort']
         repl_out_port = (await container.port(2001))[0]['HostPort']
@@ -385,12 +450,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             cid = self.container_registry[kernel_id]['container_id']
         except KeyError:
-            log.warning(f'_destroy_kernel({kernel_id}) kernel missing (already dead?)')
+            log.warning(f'_destroy_kernel({kernel_id}) kernel missing '
+                        '(already dead?)')
             return
         container = self.docker.containers.container(cid)
-        runner_task = self.container_registry[kernel_id].get('runner_task', None)
+        runner_task = self.container_registry[kernel_id] \
+            .get('runner_task', None)
         if runner_task:
-            log.warning(f'_destroy_kernel({kernel_id}) interrupting running execution')
+            log.warning(f'_destroy_kernel({kernel_id}) interrupting '
+                        'running execution')
             runner_task.cancel()
             await runner_task
         runner = self.container_registry[kernel_id].get('runner', None)
@@ -404,12 +472,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await container.kill()
             # deleting containers will be done in docker monitor routine.
         except DockerError as e:
-            if e.status == 500 and 'is not running' in e.message:  # already dead
+            if e.status == 500 and 'is not running' in e.message:
+                # already dead
                 log.warning(f'_destroy_kernel({kernel_id}) kill 500')
                 pass
             elif e.status == 404:
-                log.warning(f'_destroy_kernel({kernel_id}) kill 404, forgetting this kernel')
-                self.container_cpu_map.free(self.container_registry[kernel_id]['core_set'])
+                log.warning(f'_destroy_kernel({kernel_id}) kill 404, '
+                            'forgetting this kernel')
+                self.container_cpu_map.free(
+                    self.container_registry[kernel_id]['core_set'])
                 del self.container_registry[kernel_id]
                 pass
             else:
@@ -419,12 +490,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _execute(self, api_version, kernel_id, mode, code_text, opts):
         work_dir = self.config.scratch_root / kernel_id
+        # Save kernel-generated output files in a separate sub-directory
+        # (to distinguish from user-uploaded files)
+        output_dir = work_dir / '.output'
 
         self.container_registry[kernel_id]['last_used'] = time.monotonic()
         self.container_registry[kernel_id]['num_queries'] += 1
 
         if 'runner' in self.container_registry[kernel_id]:
-            log.debug(f'_execute:v{api_version}({kernel_id}) use existing runner')
+            log.debug(f'_execute_code:v{api_version}({kernel_id}) use '
+                      'existing runner')
             runner = self.container_registry[kernel_id]['runner']
             # update runner mode
             runner.mode = mode
@@ -435,7 +510,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
             # TODO: import "connected" files from S3
             self.container_registry[kernel_id]['initial_file_stats'] \
-                    = scandir(work_dir, max_upload_size)
+                = scandir(output_dir, max_upload_size)
 
             runner = KernelRunner(
                 kernel_id,
@@ -455,7 +530,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await runner.feed_input(code_text)
 
         try:
-            self.container_registry[kernel_id]['runner_task'] = asyncio.Task.current_task()
+            self.container_registry[kernel_id]['runner_task'] = \
+                asyncio.Task.current_task()
             result = await runner.get_next_result(api_ver=api_version)
         except asyncio.CancelledError:
             await runner.close()
@@ -468,28 +544,31 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             del self.container_registry[kernel_id]['runner_task']
 
         try:
-            uploaded_files = []
+            output_files = []
 
             if result['status'] in ('finished', 'exec-timeout'):
 
                 log.debug(f"_execute({kernel_id}) {result['status']}")
                 # We reuse runner until the kernel dies.
 
-                final_file_stats = scandir(work_dir, max_upload_size)
-                if utils.nmget(result, 'options.upload_output_files', True):
+                final_file_stats = scandir(output_dir, max_upload_size)
+                if nmget(result, 'options.upload_output_files', True):
                     # TODO: separate as a new task
-                    # TODO: replace entry ID ('0') with some different identifier
-                    initial_file_stats = self.container_registry[kernel_id].get('initial_file_stats', None)
-                    if initial_file_stats:
-                        uploaded_files = await upload_output_files_to_s3(
-                            initial_file_stats, final_file_stats, '0',
-                            loop=self.loop)
-                        uploaded_files = [os.path.relpath(fn, work_dir) for fn in uploaded_files]
+                    # TODO: replace entry ID ('0') with some different ID
+                    initial_file_stats = \
+                        self.container_registry[kernel_id]['initial_file_stats']
+                    output_files = await upload_output_files_to_s3(
+                        initial_file_stats, final_file_stats, '0')
+                    output_files = [os.path.relpath(fn, output_dir)
+                                    for fn in output_files]
 
                 self.container_registry[kernel_id].pop('initial_file_stats', None)
 
-            if result['status'] == 'exec-timeout' and kernel_id in self.container_resgistry:  # maybe cleaned already
-                asyncio.ensure_future(self._destroy_kernel(kernel_id, 'exec-timeout'))
+            if (result['status'] == 'exec-timeout' and
+                    kernel_id in self.container_registry):
+                # clean up the kernel (maybe cleaned already)
+                asyncio.ensure_future(
+                    self._destroy_kernel(kernel_id, 'exec-timeout'))
 
             return {
                 'status': result['status'],
@@ -501,6 +580,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.exception('unexpected error')
             raise
+
+    async def _upload_file(self, kernel_id, filename, filedata):
+        work_dir = self.config.volume_root / kernel_id
+        try:
+            # create intermediate directories in the path
+            dest_path = (work_dir / filename).resolve(strict=False)
+            rel_path = dest_path.parent.relative_to(work_dir)
+        except ValueError:  # rel_path does not start with work_dir!
+            raise AssertionError('malformed upload filename and path.')
+        rel_path.mkdir(parents=True, exist_ok=True)
+        # TODO: use aiofiles?
+        with open(dest_path, 'wb') as f:
+            f.write(filedata)
 
     async def heartbeat(self, interval):
         '''
@@ -522,8 +614,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             with timeout(1.0):
                 log.debug('sending heartbeat')
-                await self.events.call.dispatch('instance_heartbeat', self.config.instance_id,
-                                                inst_info, running_kernels, interval)
+                await self.events.call.dispatch('instance_heartbeat',
+                                                self.config.inst_id,
+                                                inst_info, running_kernels,
+                                                interval)
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_heartbeat')
         except:
@@ -534,7 +628,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         running_containers = [self.container_registry[k]['container_id']
                               for k in running_kernels]
         try:
-            stats = await collect_stats(map(self.docker.containers.container, running_containers))
+            stats = await collect_stats(map(self.docker.containers.container,
+                                            running_containers))
         except asyncio.CancelledError:
             return
         kern_stats = {}
@@ -547,19 +642,22 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 continue
             if stats[idx] is None:
                 continue
-            stats[idx]['exec_timeout'] = self.container_registry[kern_id]['exec_timeout']
+            stats[idx]['exec_timeout'] = \
+                self.container_registry[kern_id]['exec_timeout']
             stats[idx]['idle_timeout'] = self.config.idle_timeout
             mem_limit = self.container_registry[kern_id]['mem_limit']
             mem_limit_in_kb = utils.readable_size_to_bytes(mem_limit) // 1024
             stats[idx]['mem_limit']   = mem_limit_in_kb
-            stats[idx]['num_queries'] = self.container_registry[kern_id]['num_queries']
+            stats[idx]['num_queries'] = \
+                self.container_registry[kern_id]['num_queries']
             last_used = self.container_registry[kern_id]['last_used']
             stats[idx]['idle'] = (time.monotonic() - last_used) * 1000
             kern_stats[kern_id] = stats[idx]
         try:
             with timeout(1.0):
                 log.debug('sending stats')
-                await self.events.call.dispatch('instance_stats', self.config.instance_id,
+                await self.events.call.dispatch('instance_stats',
+                                                self.config.inst_id,
                                                 kern_stats, interval)
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_stats')
@@ -604,9 +702,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     exit_code = evdata['Actor']['Attributes']['exitCode']
                 except KeyError:
                     exit_code = '(unknown)'
-                reason = 'destroyed'
                 log.debug('docker-event: container-terminated: '
-                          f'{container_id[:7]} with exit code {exit_code} ({kernel_id})')
+                          f'{container_id[:7]} with exit code {exit_code} '
+                          f'({kernel_id})')
                 asyncio.ensure_future(self.clean_kernel(kernel_id))
 
     async def clean_kernel(self, kernel_id):
@@ -633,8 +731,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             except FileNotFoundError:
                 pass
             try:
-                kernel_stat = self.container_registry[kernel_id].get('last_stat', None)
-                self.container_cpu_map.free(self.container_registry[kernel_id]['core_set'])
+                kernel_stat = \
+                    self.container_registry[kernel_id].get('last_stat', None)
+                self.container_cpu_map.free(
+                    self.container_registry[kernel_id]['core_set'])
                 del self.container_registry[kernel_id]
                 with timeout(1.0):
                     await self.events.call.dispatch('kernel_terminated',
@@ -656,7 +756,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 last_used = self.container_registry[kern_id]['last_used']
                 if now - last_used > self.config.idle_timeout:
                     log.info(f'destroying kernel {kern_id} as clean-up')
-                    task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'idle-timeout'))
+                    task = asyncio.ensure_future(
+                        self._destroy_kernel(kern_id, 'idle-timeout'))
                     tasks.append(task)
             except KeyError:
                 # The kernel may be destroyed by other means?
@@ -671,7 +772,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             for kern_id in kern_ids:
                 blocking_cleans[kern_id] = asyncio.Event()
         for kern_id in kern_ids:
-            task = asyncio.ensure_future(self._destroy_kernel(kern_id, 'agent-termination'))
+            task = asyncio.ensure_future(
+                self._destroy_kernel(kern_id, 'agent-termination'))
             tasks.append(task)
         await asyncio.gather(*tasks)
         if blocking:
@@ -692,7 +794,7 @@ async def server_main(loop, pidx, _args):
     log.info(f'myself: {args.instance_id} ({args.inst_type}), ip: {args.agent_ip}')
 
     # Start RPC server.
-    agent = AgentRPCServer(args, loop=loop)
+    agent = AgentRPCServer(args, _args[1], _args[2], loop=loop)
     await agent.init()
 
     # Run!
@@ -707,41 +809,54 @@ async def server_main(loop, pidx, _args):
 def main():
     global lang_aliases
 
-    argparser = configargparse.ArgumentParser()
-    argparser.add_argument('--namespace', type=str, default='local',
-                           help='The namespace of this Sorna cluster. (default: local)')
-    argparser.add_argument('--agent-ip-override', type=ipaddr, default=None, dest='agent_ip',
-                           env_var='SORNA_AGENT_IP',
-                           help='Manually set the IP address of this agent to report to the manager.')
-    argparser.add_argument('--agent-port', type=port_no, default=6001,
-                           env_var='SORNA_AGENT_PORT',
-                           help='The port number to listen on.')
-    argparser.add_argument('--redis-addr', type=host_port_pair,
-                           env_var='REDIS_ADDR',
-                           default=HostPortPair(ip_address('127.0.0.1'), 6379),
-                           help='The host:port pair of the Redis (agent registry) server.')
-    argparser.add_argument('--etcd-addr', type=host_port_pair,
-                           env_var='ETCD_ADDR',
-                           default=HostPortPair(ip_address('127.0.0.1'), 2379),
-                           help='The host:port pair of the etcd cluster or its proxy.')
-    argparser.add_argument('--event-addr', type=host_port_pair,
-                           default=HostPortPair(ip_address('127.0.0.1'), 5002),
-                           help='The host:port pair of the Gateway event server.')
-    argparser.add_argument('--exec-timeout', type=positive_int, default=180,
-                           help='The maximum period of time allowed for kernels to run user codes.')
-    argparser.add_argument('--idle-timeout', type=positive_int, default=600,
-                           help='The maximum period of time allowed for kernels to wait further requests.')
-    argparser.add_argument('--max-kernels', type=positive_int, default=1,
-                           help='Set the maximum number of kernels running in parallel.')
-    argparser.add_argument('--debug', action='store_true', default=False,
-                           env_var='DEBUG',
-                           help='Enable more verbose logging.')
-    argparser.add_argument('--kernel-aliases', type=str, default=None,
-                           help='The filename for additional kernel aliases')
-    argparser.add_argument('--scratch-root', type=Path, default=Path('/var/lib/sorna-volumes'),
-                           env_var='SORNA_SCRATCH_ROOT',
-                           help='The scratch directory to store container working directories.')
-    args = argparser.parse_args()
+    parser = configargparse.ArgumentParser()
+    parser.add('--namespace', type=str, default='local',
+               help='The namespace of this Sorna cluster. (default: local)')
+    parser.add('--agent-ip-override', type=ipaddr, default=None, dest='agent_ip',
+               env_var='SORNA_AGENT_IP',
+               help='Manually set the IP address of this agent to report to the '
+                    'manager.')
+    parser.add('--agent-port', type=port_no, default=6001,
+               env_var='SORNA_AGENT_PORT',
+               help='The port number to listen on.')
+    parser.add('--redis-addr', type=host_port_pair,
+               env_var='REDIS_ADDR',
+               default=HostPortPair(ip_address('127.0.0.1'), 6379),
+               help='The host:port pair of the Redis (agent registry) server.')
+    parser.add('--etcd-addr', type=host_port_pair,
+               env_var='ETCD_ADDR',
+               help='The host:port pair of the etcd cluster or its proxy.')
+               default=HostPortPair(ip_address('127.0.0.1'), 2379),
+    parser.add('--event-addr', type=host_port_pair,
+               default=HostPortPair(ip_address('127.0.0.1'), 5002),
+               help='The host:port pair of the Gateway event server.')
+    parser.add('--exec-timeout', type=positive_int, default=180,
+               help='The maximum period of time allowed for kernels to run user '
+                    'codes.')
+    parser.add('--idle-timeout', type=positive_int, default=600,
+               help='The maximum period of time allowed for kernels to wait '
+                    'further requests.')
+    parser.add('--max-kernels', type=positive_int, default=1,
+               help='Set the maximum number of kernels running in parallel.')
+    parser.add('--debug', action='store_true', default=False,
+               env_var='DEBUG',
+               help='Enable more verbose logging.')
+    parser.add('--kernel-aliases', type=str, default=None,
+               help='The filename for additional kernel aliases')
+    parser.add('--scratch-root', type=Path, default=Path('/var/lib/sorna-volumes'),
+               env_var='SORNA_SCRATCH_ROOT',
+               help='The scratch directory to store container working directories.')
+    if datadog_available:
+        parser.add('--datadog-api-key', env_var='DATADOG_API_KEY',
+                   type=str, default=None,
+                   help='The API key for Datadog monitoring agent.')
+        parser.add('--datadog-app-key', env_var='DATADOG_APP_KEY',
+                   type=str, default=None,
+                   help='The application key for Datadog monitoring agent.')
+    if raven_available:
+        parser.add('--raven-uri', env_var='RAVEN_URI', type=str, default=None,
+                   help='The sentry.io event report URL with DSN.')
+    args = parser.parse_args()
 
     logging.config.dictConfig({
         'version': 1,
@@ -781,10 +896,21 @@ def main():
 
     if args.agent_ip:
         args.agent_ip = str(args.agent_ip)
-    args.redis_addr = args.redis_addr if args.redis_addr else ('sorna-manager.lablup', 6379)
+    if not args.redis_addr:
+        args.redis_addr = ('sorna-manager.lablup', 6379)
 
     assert args.scratch_root.exists()
     assert args.scratch_root.is_dir()
+
+    ddagent = DummyDatadog()
+    sentry = DummySentry()
+    if datadog_available and args.datadog_api_key:
+        datadog.initialize(
+            api_key=args.datadog_api_key,
+            app_key=args.datadog_app_key)
+        ddagent = datadog
+    if raven_available and args.raven_uri:
+        sentry = raven.Client(args.raven_uri)
 
     # Load language aliases config.
     lang_aliases = {lang: lang for lang in supported_langs}
@@ -795,11 +921,11 @@ def main():
         'python34': 'python3',
         'python35': 'python3',
         'python36': 'python3',
-        'python3-deeplearning':   'python3-tensorflow',      # temporary alias
-        'tensorflow-python3':     'python3-tensorflow',      # package-oriented alias
-        'tensorflow-python3-gpu': 'python3-tensorflow-gpu',  # package-oriented alias
-        'caffe-python3':          'python3-caffe',           # package-oriented alias
-        'theano-python3':         'python3-theano',          # package-oriented alias
+        'python3-deeplearning':   'python3-tensorflow',
+        'tensorflow-python3':     'python3-tensorflow',
+        'tensorflow-python3-gpu': 'python3-tensorflow-gpu',
+        'caffe-python3':          'python3-caffe',
+        'theano-python3':         'python3-theano',
         'r': 'r3',
         'R': 'r3',
         'Rscript': 'r3',
@@ -812,6 +938,11 @@ def main():
         'git-shell': 'git',
         'shell': 'git',
         'ocatve': 'octave4',
+        'cpp': 'cpp',
+        'c': 'c',
+        'java': 'java',
+        'go': 'go',
+        'rust': 'rust',
     })
     if args.kernel_aliases:  # for when we want to add extra
         with open(args.kernel_aliases, 'r') as f:
@@ -828,7 +959,7 @@ def main():
         log_config.debug('debug mode enabled.')
 
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    aiotools.start_server(server_main, num_proc=1, args=(args,))
+    aiotools.start_server(server_main, num_proc=1, args=(args, ddagent, sentry))
     log.info('exit.')
 
 
