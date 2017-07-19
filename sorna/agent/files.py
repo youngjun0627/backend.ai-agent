@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from pathlib import Path
 
 import botocore, aiobotocore
 
@@ -43,12 +44,14 @@ async def upload_output_files_to_s3(initial_file_stats,
     return diff_files
 
 
-def scandir(root, allowed_max_size):
+def scandir(root: Path, allowed_max_size: int):
     '''
     Scans a directory recursively and returns a dictionary of all files and
     their last modified time.
     '''
     file_stats = dict()
+    if not isinstance(root, Path):
+        root = Path(root)
     if not root.exists():
         return file_stats
     for entry in os.scandir(root):

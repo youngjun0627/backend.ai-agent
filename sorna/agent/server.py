@@ -36,7 +36,7 @@ from sorna.common.etcd import AsyncEtcd
 from sorna.common.argparse import (
     ipaddr, port_no, HostPortPair,
     host_port_pair, positive_int)
-from sorna.common.monitor import DummyDatadog, DummySentry
+from sorna.common.monitor import DummyStatsd, DummySentry
 from . import __version__
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
@@ -105,7 +105,7 @@ async def get_extra_volumes(docker, lang):
 
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
-    def __init__(self, config, ddagent, sentry, loop=None):
+    def __init__(self, config, loop=None):
         self.config = config
         #self.events = events
         self.container_registry = {}
@@ -122,9 +122,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.hb_timer = None
         self.stats_timer = None
         self.clean_timer = None
-        
-        self.datadog = ddagent
-        self.sentry = sentry
+
+        self.statsd = DummyStatsd()
+        self.sentry = DummySentry()
+        if datadog_available and self.config.datadog_api_key:
+            self.statsd = datadog.statsd
+        if raven_available and self.config.raven_uri:
+            self.sentry = raven.Client(self.config.raven_uri)
 
     async def detect_manager(self):
         log.info('detecting the manager...')
@@ -164,8 +168,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.update_status('starting')
         await self.check_images()
 
+        # TODO: implement AgentEventPublisher
         self.agent_events = AgentEventPublisher(self.config.mq_addr)
-        await self.agent_events.init(self.config.mq_user, self.config.mq_password, self.config.namespace)
+        await self.agent_events.init(
+            self.config.mq_user, self.config.mq_password, self.config.namespace)
 
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
@@ -825,8 +831,8 @@ def main():
                help='The host:port pair of the Redis (agent registry) server.')
     parser.add('--etcd-addr', type=host_port_pair,
                env_var='ETCD_ADDR',
-               help='The host:port pair of the etcd cluster or its proxy.')
                default=HostPortPair(ip_address('127.0.0.1'), 2379),
+               help='The host:port pair of the etcd cluster or its proxy.')
     parser.add('--event-addr', type=host_port_pair,
                default=HostPortPair(ip_address('127.0.0.1'), 5002),
                help='The host:port pair of the Gateway event server.')
@@ -902,15 +908,11 @@ def main():
     assert args.scratch_root.exists()
     assert args.scratch_root.is_dir()
 
-    ddagent = DummyDatadog()
-    sentry = DummySentry()
     if datadog_available and args.datadog_api_key:
         datadog.initialize(
             api_key=args.datadog_api_key,
-            app_key=args.datadog_app_key)
-        ddagent = datadog
-    if raven_available and args.raven_uri:
-        sentry = raven.Client(args.raven_uri)
+            app_key=args.datadog_app_key,
+        )
 
     # Load language aliases config.
     lang_aliases = {lang: lang for lang in supported_langs}
@@ -959,7 +961,7 @@ def main():
         log_config.debug('debug mode enabled.')
 
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    aiotools.start_server(server_main, num_proc=1, args=(args, ddagent, sentry))
+    aiotools.start_server(server_main, num_proc=1, args=(args, ))
     log.info('exit.')
 
 

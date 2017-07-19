@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 from unittest import mock
 
 import aiobotocore
@@ -83,7 +84,7 @@ class TestScandir:
         new_time = first.stat().mtime + 5
         os.utime(second.strpath, (new_time, new_time))
 
-        file_stats = scandir(tmpdir, 1000)
+        file_stats = scandir(Path(tmpdir), 1000)
 
         assert len(file_stats) == 2
         assert file_stats[second.strpath] == file_stats[first.strpath] + 5
@@ -93,7 +94,7 @@ class TestScandir:
         file = tmpdir.join('.hidden_file')
         file.write('dark templar')
 
-        file_stats = scandir(tmpdir, 1000)
+        file_stats = scandir(Path(tmpdir), 1000)
 
         assert len(file_stats) == 0
 
@@ -101,16 +102,16 @@ class TestScandir:
         file = tmpdir.join('file.jpg')
         file.write('large file')
 
-        file_stats = scandir(tmpdir, 1)
+        file_stats = scandir(Path(tmpdir), 1)
 
         assert len(file_stats) == 0
 
     def test_scandir_returns_files_in_sub_folder(self, tmpdir):
         sub_folder = tmpdir.mkdir('sub')
         sub_file = sub_folder.join('sub-file.txt')
-        sub_file.write('sub')
+        sub_file.write('somedata')
 
-        file_stats = scandir(tmpdir, 1000)
+        file_stats = scandir(Path(tmpdir), 1000)
 
         assert len(file_stats) == 1
 

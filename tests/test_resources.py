@@ -42,23 +42,33 @@ class TestLibNuma:
 
         resources._numa_supported = original_numa_supported
 
-    def test_get_available_cores(self, monkeypatch):
-        numa = libnuma()
+    def test_get_available_cores_without_docker(self, monkeypatch):
 
-        # When sched_getaffinity does not exist.
         def mock_sched_getaffinity(pid):
             raise AttributeError
-        monkeypatch.setattr(os, 'sched_getaffinity', mock_sched_getaffinity,
-                            raising=False)
-        monkeypatch.setattr(os, 'cpu_count', lambda: 4)
 
+        def mock_requnix_session():
+            raise OSError
+
+        numa = libnuma()
+        monkeypatch.setattr(resources.requnix, 'Session', mock_requnix_session,
+                            raising=False)
+        monkeypatch.setattr(resources.os, 'sched_getaffinity',
+                            mock_sched_getaffinity,
+                            raising=False)
+        monkeypatch.setattr(resources.os, 'cpu_count', lambda: 4)
+
+        numa.get_available_cores.cache_clear()
         assert numa.get_available_cores() == {0, 1, 2, 3}
 
-        # When sched_getaffinity does exist.
-        def mock_sched_getaffinity2(_):
+        def mock_sched_getaffinity2(pid):
             return {0, 1}
-        monkeypatch.setattr(os, 'sched_getaffinity', mock_sched_getaffinity2,
+
+        monkeypatch.setattr(resources.os, 'sched_getaffinity',
+                            mock_sched_getaffinity2,
                             raising=False)
+
+        numa.get_available_cores.cache_clear()
         assert numa.get_available_cores() == {0, 1}
 
     def test_get_core_topology(self, mocker):
