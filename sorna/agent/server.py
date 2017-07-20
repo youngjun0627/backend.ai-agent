@@ -459,7 +459,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.exception('unexpected error')
             raise
         finally:
-            if 'runner_task' in self.container_registry[kernel_id]:
+            if nmget(self.container_registry, f'{kernel_id}/runner_atsk', None, '/'):
                 del self.container_registry[kernel_id]['runner_task']
 
         try:
