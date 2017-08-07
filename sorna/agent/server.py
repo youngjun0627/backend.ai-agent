@@ -31,7 +31,7 @@ try:
 except ImportError:
     raven_available = False
 
-from sorna.common import utils, identity
+from sorna.common import utils, identity, msgpack
 from sorna.common.etcd import AsyncEtcd
 from sorna.common.argparse import (
     ipaddr, port_no, HostPortPair,
@@ -113,10 +113,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.loop = loop if loop else asyncio.get_event_loop()
         self.docker = Docker()
+
         self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
-        self.agent_events = None
 
         self.server = None
+        self.event_sock = None
         self.monitor_fetch_task = None
         self.monitor_handle_task = None
         self.hb_timer = None
@@ -148,6 +149,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def deregister_myself(self):
         await self.etcd.delete_prefix(f'nodes/agents/{self.config.instance_id}')
 
+    async def send_event(self, event_name, *args):
+        if self.event_sock is None:
+            return
+        self.event_sock.write((
+            event_name.encode('ascii'),
+            self.config.instance_id.encode('utf8'),
+            msgpack.packb(args),
+        ))
+
     async def check_images(self):
         # Read desired image versions from etcd.
         for key, value in (await self.etcd.get_prefix('images')):
@@ -168,10 +178,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.update_status('starting')
         await self.check_images()
 
-        # TODO: implement AgentEventPublisher
-        self.agent_events = AgentEventPublisher(self.config.mq_addr)
-        await self.agent_events.init(
-            self.config.mq_user, self.config.mq_password, self.config.namespace)
+        self.event_sock = await aiozmq.create_zmq_stream(
+            zmq.PUSH, connect=f'tcp://{self.config.event_addr}')
 
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
@@ -193,10 +201,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.update_status('running')
 
         # Notify the gateway.
-        await self.agent_events.publish({
-            'type': 'instance-started',
-            'reason': '',
-        }, routing_key='events')
+        await self.send_event('instance_started')
 
     async def shutdown(self):
         await self.deregister_myself()
@@ -230,11 +235,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.docker.close()
 
         # Notify the gateway.
-        await self.agent_events.publish({
-            'type': 'instance-terminated',
-            'reason': 'shutdown',
-        }, routing_key='events')
-        await self.agent_events.close()
+        await self.send_event('instance_terminated', 'shutdown')
+        self.event_sock.close()
 
     @aiozmq.rpc.method
     def ping(self, msg: str) -> str:
@@ -329,9 +331,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if not kernel_id:
             kernel_id = secrets.token_urlsafe(16)
             assert kernel_id not in self.container_registry
-            await self.events.call.dispatch('kernel_creating', kernel_id)
+            await self.send_event('kernel_creating', kernel_id)
         else:
-            await self.events.call.dispatch('kernel_restarting', kernel_id)
+            await self.send_event('kernel_restarting', kernel_id)
 
         image_name = f'lablup/kernel-{lang}'
         ret = await self.docker.images.get(image_name)
@@ -610,7 +612,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         running_kernels = [k for k in self.container_registry.keys()]
         # Below dict should match with sorna.manager.structs.Instance
         inst_info = {
-            'id': self.config.instance_id,
             'ip': self.config.agent_ip,
             'addr': f'tcp://{self.config.agent_ip}:{self.config.agent_port}',
             'type': self.config.inst_type,
@@ -620,10 +621,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             with timeout(1.0):
                 log.debug('sending heartbeat')
-                await self.events.call.dispatch('instance_heartbeat',
-                                                self.config.inst_id,
-                                                inst_info, running_kernels,
-                                                interval)
+                await self.send_event('instance_heartbeat',
+                                      inst_info, running_kernels, interval)
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_heartbeat')
         except:
@@ -659,18 +658,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             last_used = self.container_registry[kern_id]['last_used']
             stats[idx]['idle'] = (time.monotonic() - last_used) * 1000
             kern_stats[kern_id] = stats[idx]
-        try:
-            with timeout(1.0):
-                log.debug('sending stats')
-                await self.events.call.dispatch('instance_stats',
-                                                self.config.inst_id,
-                                                kern_stats, interval)
-        except asyncio.TimeoutError:
-            log.warning('event dispatch timeout: instance_stats')
-        except asyncio.CancelledError:
-            pass
-        except:
-            log.exception('update_stats failure')
+
+        await self.send_event('instance_stats', kern_stats, interval)
 
     async def fetch_docker_events(self):
         while True:
@@ -742,14 +731,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 self.container_cpu_map.free(
                     self.container_registry[kernel_id]['core_set'])
                 del self.container_registry[kernel_id]
-                with timeout(1.0):
-                    await self.events.call.dispatch('kernel_terminated',
-                                                    kernel_id, 'destroyed',
-                                                    kernel_stat)
+                await self.send_event('kernel_terminated',
+                                      kernel_id, 'destroyed',
+                                      kernel_stat)
             except KeyError:
                 pass
-            except asyncio.TimeoutError:
-                log.warning('event dispatch timeout: kernel_terminated')
             if kernel_id in blocking_cleans:
                 blocking_cleans[kernel_id].set()
 
@@ -800,16 +786,15 @@ async def server_main(loop, pidx, _args):
     log.info(f'myself: {args.instance_id} ({args.inst_type}), ip: {args.agent_ip}')
 
     # Start RPC server.
-    agent = AgentRPCServer(args, _args[1], _args[2], loop=loop)
+    agent = AgentRPCServer(args, loop=loop)
     await agent.init()
 
     # Run!
-    yield
-
-    log.info('shutting down...')
-
-    # Shutdown the agent.
-    await agent.shutdown()
+    try:
+        yield
+    finally:
+        log.info('shutting down...')
+        await agent.shutdown()
 
 
 def main():
