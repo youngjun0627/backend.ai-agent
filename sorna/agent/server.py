@@ -549,7 +549,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.exception('unexpected error')
             raise
         finally:
-            del self.container_registry[kernel_id]['runner_task']
+            if nmget(self.container_registry, f'{kernel_id}/runner_atsk', None, '/'):
+                del self.container_registry[kernel_id]['runner_task']
 
         try:
             output_files = []

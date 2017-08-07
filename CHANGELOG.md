@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.9.11 (2017-07-19)
+-------------------
+
+**FIX**
+
+ * Add missing "sorna-common" dependency and update other requirements.
+
 0.9.10 (2017-07-18)
 -------------------
 
