@@ -90,6 +90,17 @@ class CPUAllocMap:
             self.core_shares[node][core_idx] += 1  # update the original share
         return node, allocated_cores
 
+    def update(self, core_set):
+        '''
+        Manually add a given core set as if it is allocated by us.
+        '''
+        any_core = next(iter(core_set))
+        node = libnuma.node_of_cpu(any_core)
+        self.alloc_per_node[node] += len(core_set)
+        for c in core_set:
+            core_idx = self.core_topo[node].index(c)
+            self.core_shares[node][core_idx] += 1
+
     def free(self, core_set):
         '''
         Remove the given set of CPU cores from the allocated shares.

@@ -143,6 +143,44 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.config.mq_addr = await self.etcd.get('mq/addr')
         log.info(f'using mq_addr {self.config.mq_addr}')
 
+    async def detect_running_containers(self):
+        for container in (await self.docker.containers.list()):
+            container_name = container['Names'][0].lstrip('/')
+            if not container_name.startswith('kernel.'):
+                continue
+            sess_id = container['Names'][0].split('.', 2)[-1]
+            if container['State'] in {'running', 'restarting', 'paused'}:
+                log.info(f'detected running kernel: {sess_id}')
+                ports = {}
+                for item in container['Ports']:
+                    ports[item['PrivatePort']] = item['PublicPort']
+                labels = container['Labels']
+                # NOTE: this changes the content of container incompatibly.
+                details = await container.show()
+                core_set = set(map(int, (details['HostConfig']['CpusetCpus']).split(',')))
+                self.container_cpu_map.update(core_set)
+                self.container_registry[sess_id] = {
+                    'lang': container['Image'],
+                    'version': int(container['Labels']['io.sorna.version']),
+                    'container_id': container._id,
+                    'container_ip': '127.0.0.1',
+                    'repl_in_port': ports[2000],
+                    'repl_out_port': ports[2001],
+                    'stdin_port': ports[2002],
+                    'stdout_port': ports[2003],
+                    'numa_node': libnuma.node_of_cpu(next(iter(core_set))),
+                    'core_set': core_set,
+                    'exec_timeout': min(self.config.exec_timeout,
+                                        int(container['Labels']['io.sorna.timeout'])),
+                    'last_used': time.monotonic(),
+                    'limits': None,
+                    # TODO: implement vfolders
+                    'mounts': None,
+                }
+            elif container['State'] in {'exited', 'dead', 'removing'}:
+                log.info(f'detected terminated kernel: {sess_id}')
+                await self.send_event('kernel_terminated', sess_id)
+
     async def update_status(self, status):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
 
@@ -176,6 +214,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         await self.detect_manager()
         await self.update_status('starting')
+        await self.detect_running_containers()
         await self.check_images()
 
         self.event_sock = await aiozmq.create_zmq_stream(
@@ -351,8 +390,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         work_dir = self.config.scratch_root / kernel_id
 
+        # TODO: implement
+        vfolders = []
+
         if kernel_id in restarting_kernels:
             core_set = self.container_registry[kernel_id]['core_set']
+            core_set_str = ','.join(map(str, sorted(core_set)))
             any_core = next(iter(core_set))
             numa_node = libnuma.node_of_cpu(any_core)
             num_cores = len(core_set)
@@ -386,7 +429,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         volumes.extend(v.container_path for v in mount_list)
         devices = []
 
-        # TODO: apply mounts
+        # TODO: implement vfolders and translate them into mounts
 
         nvidia_enabled = (ret['ContainerConfig']['Labels']
                           .get('io.sorna.nvidia.enabled', 'no'))
@@ -411,7 +454,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'HostConfig': {
                 'MemorySwap': 0,
                 'Memory': utils.readable_size_to_bytes(mem_limit),
-                'CpusetCpus': ','.join(map(str, sorted(core_set))),
+                'CpusetCpus': core_set_str,
                 'CpusetMems': f'{numa_node}',
                 'SecurityOpt': ['seccomp:unconfined'],
                 'Binds': binds,
@@ -438,12 +481,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,
             'stdout_port': stdout_port,
-            'cpu_shares': 1024,
             'numa_node': numa_node,
             'core_set': core_set,
-            'mem_limit': mem_limit,
             'exec_timeout': exec_timeout,
-            'num_queries': 0,
             'last_used': time.monotonic(),
             'limits': limits,
             'mounts': mounts,
@@ -503,7 +543,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         output_dir = work_dir / '.output'
 
         self.container_registry[kernel_id]['last_used'] = time.monotonic()
-        self.container_registry[kernel_id]['num_queries'] += 1
 
         if 'runner' in self.container_registry[kernel_id]:
             log.debug(f'_execute_code:v{api_version}({kernel_id}) use '
@@ -648,14 +687,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 continue
             if stats[idx] is None:
                 continue
-            stats[idx]['exec_timeout'] = \
-                self.container_registry[kern_id]['exec_timeout']
-            stats[idx]['idle_timeout'] = self.config.idle_timeout
-            mem_limit = self.container_registry[kern_id]['mem_limit']
-            mem_limit_in_kb = utils.readable_size_to_bytes(mem_limit) // 1024
-            stats[idx]['mem_limit']   = mem_limit_in_kb
-            stats[idx]['num_queries'] = \
-                self.container_registry[kern_id]['num_queries']
             last_used = self.container_registry[kern_id]['last_used']
             stats[idx]['idle'] = (time.monotonic() - last_used) * 1000
             kern_stats[kern_id] = stats[idx]
