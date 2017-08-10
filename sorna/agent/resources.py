@@ -5,6 +5,8 @@ import operator
 import os
 import sys
 
+import psutil
+import requests
 import requests_unixsocket as requnix
 
 log = logging.getLogger('sorna.agent.resources')
@@ -99,3 +101,32 @@ class CPUAllocMap:
         for c in core_set:
             core_idx = self.core_topo[node].index(c)
             self.core_shares[node][core_idx] -= 1
+
+
+def gpu_count():
+    '''
+    Get the number of GPU devices installed in this system
+    available via the nvidia-docker plugin.
+    '''
+
+    try:
+        r = requests.get('http://localhost:3476/gpu/info/json')
+        gpu_info = r.json()
+    except requests.exceptions.ConnectionError:
+        return 0
+    return len(gpu_info['Devices'])
+
+
+def detect_slots():
+    '''
+    Detect available resource of the system and calculate mem/cpu/gpu slots.
+    '''
+
+    mem_bytes = psutil.virtual_memory().total
+    num_cores = len(libnuma.get_available_cores())
+    num_gpus = gpu_count()
+    return (
+        mem_bytes // (2**20) // 256,
+        num_cores * 2,
+        num_gpus * 2,
+    )

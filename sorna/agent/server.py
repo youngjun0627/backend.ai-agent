@@ -41,7 +41,7 @@ from . import __version__
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
 from .stats import collect_stats
-from .resources import libnuma, CPUAllocMap
+from .resources import detect_slots, libnuma, CPUAllocMap
 from .kernel import KernelRunner
 
 log = logging.getLogger('sorna.agent.server')
