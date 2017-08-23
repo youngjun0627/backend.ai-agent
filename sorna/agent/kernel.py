@@ -303,7 +303,7 @@ class KernelRunner:
                     decoders[1].decode(b'', True)
                     self.finished_at = time.monotonic()
                     break
-            except (asyncio.CancelledError, aiozmq.ZmqStreamClosed):
+            except (asyncio.CancelledError, aiozmq.ZmqStreamClosed, GeneratorExit):
                 break
             except:
                 log.exception('unexpected error')

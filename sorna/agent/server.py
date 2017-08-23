@@ -261,6 +261,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.rpc_server.close()
         await self.rpc_server.wait_closed()
 
+        # Close all pending kernel runners.
+        for kernel_id, item in self.container_registry.items():
+            log.warning(f'cleaning up runner for {kernel_id}')
+            runner_task = item.get('runner_task')
+            if runner_task is not None and not runner_task.done():
+                runner_task.cancel()
+                await runner_task
+            runner = item.get('runner')
+            if runner is not None:
+                await runner.close()
+
         # Stop timers.
         self.hb_timer.cancel()
         self.stats_timer.cancel()
@@ -522,14 +533,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         '(already dead?)')
             return
         container = self.docker.containers.container(cid)
-        runner_task = self.container_registry[kernel_id] \
-            .get('runner_task', None)
+        runner_task = self.container_registry[kernel_id].get('runner_task')
         if runner_task:
             log.warning(f'_destroy_kernel({kernel_id}) interrupting '
                         'running execution')
             runner_task.cancel()
             await runner_task
-        runner = self.container_registry[kernel_id].get('runner', None)
+        runner = self.container_registry[kernel_id].get('runner')
         if runner:
             await runner.close()
             del self.container_registry[kernel_id]['runner']
@@ -562,7 +572,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # (to distinguish from user-uploaded files)
         output_dir = work_dir / '.output'
 
-        self.container_registry[kernel_id]['last_used'] = time.monotonic()
+        try:
+            self.container_registry[kernel_id]['last_used'] = time.monotonic()
+        except KeyError:
+            raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
+                               '(might be terminated)') from None
 
         if 'runner' in self.container_registry[kernel_id]:
             log.debug(f'_execute_code:v{api_version}({kernel_id}) use '
@@ -650,7 +664,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
 
     async def _upload_file(self, kernel_id, filename, filedata):
-        work_dir = self.config.volume_root / kernel_id
+        work_dir = self.config.scratch_root / kernel_id
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
