@@ -12,7 +12,7 @@ from typing import Callable
 
 import configargparse
 import zmq, aiozmq, aiozmq.rpc
-from aiodocker.docker import Docker
+from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
 import aiotools
 from async_timeout import timeout
@@ -103,6 +103,16 @@ async def get_extra_volumes(docker, lang):
     return mount_list
 
 
+def get_kernel_id_from_container(val):
+    name = val['Names'][0] if isinstance(val, DockerContainer) else val
+    if not name.startswith('kernel.'):
+        return None
+    try:
+        return name.split('.', 2)[-1]
+    except (IndexError, ValueError):
+        return None
+
+
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     def __init__(self, config, loop=None):
@@ -115,6 +125,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.docker = Docker()
 
         self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
+
+        self.slots = detect_slots()
 
         self.server = None
         self.event_sock = None
@@ -143,14 +155,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.config.mq_addr = await self.etcd.get('mq/addr')
         log.info(f'using mq_addr {self.config.mq_addr}')
 
-    async def detect_running_containers(self):
+    async def scan_running_containers(self):
         for container in (await self.docker.containers.list()):
-            container_name = container['Names'][0].lstrip('/')
-            if not container_name.startswith('kernel.'):
+            kernel_id = get_kernel_id_from_container(container)
+            if kernel_id is None:
                 continue
-            sess_id = container['Names'][0].split('.', 2)[-1]
             if container['State'] in {'running', 'restarting', 'paused'}:
-                log.info(f'detected running kernel: {sess_id}')
+                log.info(f'detected running kernel: {kernel_id}')
                 ports = {}
                 for item in container['Ports']:
                     ports[item['PrivatePort']] = item['PublicPort']
@@ -159,9 +170,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 details = await container.show()
                 core_set = set(map(int, (details['HostConfig']['CpusetCpus']).split(',')))
                 self.container_cpu_map.update(core_set)
-                self.container_registry[sess_id] = {
+                self.container_registry[kernel_id] = {
                     'lang': container['Image'],
-                    'version': int(container['Labels']['io.sorna.version']),
+                    'version': int(labels['io.sorna.version']),
                     'container_id': container._id,
                     'container_ip': '127.0.0.1',
                     'repl_in_port': ports[2000],
@@ -171,15 +182,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'numa_node': libnuma.node_of_cpu(next(iter(core_set))),
                     'core_set': core_set,
                     'exec_timeout': min(self.config.exec_timeout,
-                                        int(container['Labels']['io.sorna.timeout'])),
+                                        int(labels['io.sorna.timeout'])),
                     'last_used': time.monotonic(),
                     'limits': None,
                     # TODO: implement vfolders
                     'mounts': None,
                 }
             elif container['State'] in {'exited', 'dead', 'removing'}:
-                log.info(f'detected terminated kernel: {sess_id}')
-                await self.send_event('kernel_terminated', sess_id)
+                log.info(f'detected terminated kernel: {kernel_id}')
+                await self.send_event('kernel_terminated', kernel_id)
 
     async def update_status(self, status):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
@@ -190,6 +201,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def send_event(self, event_name, *args):
         if self.event_sock is None:
             return
+        log.debug(f'send_event({event_name})')
         self.event_sock.write((
             event_name.encode('ascii'),
             self.config.instance_id.encode('utf8'),
@@ -214,7 +226,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         await self.detect_manager()
         await self.update_status('starting')
-        await self.detect_running_containers()
+        await self.scan_running_containers()
         await self.check_images()
 
         self.event_sock = await aiozmq.create_zmq_stream(
@@ -231,8 +243,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Start serving requests.
         agent_addr = 'tcp://*:{}'.format(self.config.agent_port)
-        self.server = await aiozmq.rpc.serve_rpc(self, bind=agent_addr)
-        self.server.transport.setsockopt(zmq.LINGER, 200)
+        self.rpc_server = await aiozmq.rpc.serve_rpc(self, bind=agent_addr)
+        self.rpc_server.transport.setsockopt(zmq.LINGER, 200)
         log.info('serving at {0}'.format(agent_addr))
 
         # Ready.
@@ -246,13 +258,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.deregister_myself()
 
         # Stop receiving further requests.
-        self.server.close()
-        await self.server.wait_closed()
-
-        # TODO: skip this (#35)
-        # Clean all kernels.
-        await self.clean_all_kernels(blocking=True)
-        log.debug('shutdown: kernel cleanup done.')
+        self.rpc_server.close()
+        await self.rpc_server.wait_closed()
 
         # Stop timers.
         self.hb_timer.cancel()
@@ -283,17 +290,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     @aiozmq.rpc.method
     async def create_kernel(self, lang: str,
+                            kernel_id: str,
                             limits: dict=None,
-                            mounts: list=None) -> tuple:
+                            mounts: list=None) -> dict:
         if lang in lang_aliases:
             lang = lang_aliases[lang]
         log.debug(f'rpc::create_kernel({lang}, {limits}, {mounts})')
         try:
-            kernel_id = await self._create_kernel(lang, None, limits, mounts)
-            stdin_port = self.container_registry[kernel_id]['stdin_port']
-            stdout_port = self.container_registry[kernel_id]['stdout_port']
-            return kernel_id, stdin_port, stdout_port
+            return await self._create_kernel(lang, kernel_id, limits, mounts)
         except:
+            log.exception('unexpected error')
             self.sentry.captureException()
             raise
 
@@ -303,6 +309,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             await self._destroy_kernel(kernel_id, 'user-requested')
         except:
+            log.exception('unexpected error')
             self.sentry.captureException()
             raise
 
@@ -320,8 +327,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 del restarting_kernels[kernel_id]
             stdin_port = self.container_registry[kernel_id]['stdin_port']
             stdout_port = self.container_registry[kernel_id]['stdout_port']
+            repl_in_port = self.container_registry[kernel_id]['repl_in_port']
+            repl_out_port = self.container_registry[kernel_id]['repl_out_port']
             return stdin_port, stdout_port
         except:
+            log.exception('unexpected error')
             self.sentry.captureException()
             raise
 
@@ -334,6 +344,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                                          mode, code, opts)
             return result
         except:
+            log.exception('unexpected error')
             self.sentry.captureException()
             raise
 
@@ -343,6 +354,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             await self._upload_file(kernel_id, filename, filedata)
         except:
+            log.exception('unexpected error')
             self.sentry.captureException()
             raise
 
@@ -362,17 +374,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     log.exception(f'reset: destroying {kernel_id}')
             await asyncio.gather(*tasks)
         except:
+            log.exception('unexpected error')
             self.sentry.captureException()
             raise
 
-    async def _create_kernel(self, lang, kernel_id=None,
-                             limits=None, mounts=None):
-        if not kernel_id:
-            kernel_id = secrets.token_urlsafe(16)
-            assert kernel_id not in self.container_registry
-            await self.send_event('kernel_creating', kernel_id)
-        else:
-            await self.send_event('kernel_restarting', kernel_id)
+    async def _create_kernel(self, lang, kernel_id,
+                             limits, mounts):
+
+        await self.send_event('kernel_creating', kernel_id)
 
         image_name = f'lablup/kernel-{lang}'
         ret = await self.docker.images.get(image_name)
@@ -395,7 +404,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         if kernel_id in restarting_kernels:
             core_set = self.container_registry[kernel_id]['core_set']
-            core_set_str = ','.join(map(str, sorted(core_set)))
             any_core = next(iter(core_set))
             numa_node = libnuma.node_of_cpu(any_core)
             num_cores = len(core_set)
@@ -416,6 +424,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             num_cores = min(self.container_cpu_map.num_cores, requested_cores)
             numa_node, core_set = self.container_cpu_map.alloc(num_cores)
 
+        core_set_str = ','.join(map(str, sorted(core_set)))
         envs = {k: str(num_cores) for k in envs_corecount}
         log.debug(f'container config: mem_limit={mem_limit}, '
                   f'exec_timeout={exec_timeout}, '
@@ -428,6 +437,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         volumes = ['/home/work']
         volumes.extend(v.container_path for v in mount_list)
         devices = []
+        gpu_set = []
 
         # TODO: implement vfolders and translate them into mounts
 
@@ -438,6 +448,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await prepare_nvidia(self.docker, numa_node)
             binds.extend(extra_binds)
             devices.extend(extra_devices)
+            # TODO: update gpu_set
 
         config = {
             'Image': image_name,
@@ -492,7 +503,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug(f'kernel repl-out address: {kernel_ip}:{repl_out_port}')
         log.debug(f'kernel stdin address:  {kernel_ip}:{stdin_port}')
         log.debug(f'kernel stdout address: {kernel_ip}:{stdout_port}')
-        return kernel_id
+        return {
+            'id': kernel_id,
+            'repl_in_port': int(repl_in_port),
+            'repl_out_port': int(repl_out_port),
+            'stdin_port': int(stdin_port),
+            'stdout_port': int(stdout_port),
+            'container_id': container._id,
+            'cpu_set': tuple(core_set),
+            'gpu_set': tuple(gpu_set),
+        }
 
     async def _destroy_kernel(self, kernel_id, reason):
         try:
@@ -588,7 +608,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.exception('unexpected error')
             raise
         finally:
-            if nmget(self.container_registry, f'{kernel_id}/runner_atsk', None, '/'):
+            if utils.nmget(self.container_registry, f'{kernel_id}/runner_atsk', None, '/'):
                 del self.container_registry[kernel_id]['runner_task']
 
         try:
@@ -600,7 +620,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 # We reuse runner until the kernel dies.
 
                 final_file_stats = scandir(output_dir, max_upload_size)
-                if nmget(result, 'options.upload_output_files', True):
+                if utils.nmget(result, 'options.upload_output_files', True):
                     # TODO: separate as a new task
                     # TODO: replace entry ID ('0') with some different ID
                     initial_file_stats = \
@@ -623,7 +643,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'console': result['console'],
                 'completions': utils.nmget(result, 'completions', None),
                 'options': utils.nmget(result, 'options', None),
-                'files': uploaded_files,
+                'files': output_files,
             }
         except:
             log.exception('unexpected error')
@@ -649,26 +669,24 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         of executing this method automatically removes the instance from the
         manager database.
         '''
-        running_kernels = [k for k in self.container_registry.keys()]
-        # Below dict should match with sorna.manager.structs.Instance
-        inst_info = {
+
+        agent_info = {
             'ip': self.config.agent_ip,
             'addr': f'tcp://{self.config.agent_ip}:{self.config.agent_port}',
-            'type': self.config.inst_type,
-            'num_kernels': len(running_kernels),
-            'max_kernels': self.config.max_kernels,
+            'mem_slots': self.slots[0],
+            'cpu_slots': self.slots[1],
+            'gpu_slots': self.slots[2],
         }
         try:
-            with timeout(1.0):
-                log.debug('sending heartbeat')
-                await self.send_event('instance_heartbeat',
-                                      inst_info, running_kernels, interval)
+            await self.send_event('instance_heartbeat', agent_info)
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_heartbeat')
         except:
             log.exception('instance_heartbeat failure')
 
     async def update_stats(self, interval):
+        pass
+        '''
         running_kernels = [k for k in self.container_registry.keys()]
         running_containers = [self.container_registry[k]['container_id']
                               for k in running_kernels]
@@ -692,6 +710,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             kern_stats[kern_id] = stats[idx]
 
         await self.send_event('instance_stats', kern_stats, interval)
+        '''
 
     async def fetch_docker_events(self):
         while True:
@@ -722,9 +741,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 # When containers die, we immediately clean up them.
                 container_id = evdata['id']
                 container_name = evdata['Actor']['Attributes']['name']
-                if not container_name.startswith('kernel.'):
+                kernel_id = get_kernel_id_from_container(container_name)
+                if kernel_id is None:
                     continue
-                kernel_id = container_name.split('.', maxsplit=2)[2]
                 try:
                     exit_code = evdata['Actor']['Attributes']['exitCode']
                 except KeyError:
