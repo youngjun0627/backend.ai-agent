@@ -1,5 +1,6 @@
 import asyncio
 import codecs
+import enum
 import io
 import logging
 import time
@@ -18,6 +19,11 @@ log = logging.getLogger(__name__)
 # (excluding control signals such as 'finished' and 'waiting-input'
 # since they are passed as separate status field.)
 outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log', 'completion'}
+
+
+class ExecutionPhase(enum.Enum):
+    BUILD = 1
+    RUN = 2
 
 
 class ClientFeatures(StringSetFlag):
@@ -61,8 +67,12 @@ class KernelRunner:
         self.kernel_id = kernel_id
         assert mode in ('query', 'batch', 'complete')
         self.mode = mode
+        self.phase: ExecutionPhase
         if mode == 'batch':
+            self.phase = ExecutionPhase.BUILD
             assert 'build' in opts or 'exec' in opts
+        else:
+            self.phase = ExecutionPhase.RUN
         self.opts = opts
         self.kernel_ip = kernel_ip
         self.repl_in_port  = repl_in_port
@@ -109,10 +119,11 @@ class KernelRunner:
         self.output_stream.close()
 
     async def feed_input(self, code_text):
-        self.input_stream.write([
-            b'input',
-            code_text.encode('utf8'),
-        ])
+        if self.phase == 'run':
+            self.input_stream.write([
+                b'input',
+                code_text.encode('utf8'),
+            ])
 
     async def request_completions(self, code_text, opts):
         payload = {
@@ -226,6 +237,7 @@ class KernelRunner:
             type(self).aggregate_console(result, records, api_ver)
             return result
         except BuildFinished as e:
+            self.phase = ExecutionPhase.RUN
             result = {
                 'status': 'build-finished',
             }

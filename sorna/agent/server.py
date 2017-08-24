@@ -464,6 +464,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         config = {
             'Image': image_name,
             'Tty': True,
+            'OpenStdin': True,
+            'Privileged': False,
             'Volumes': {v: {} for v in volumes},
             'StopSignal': 'SIGINT',
             'ExposedPorts': {
