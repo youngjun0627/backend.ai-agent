@@ -217,6 +217,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # If there are newer images, pull them.
         # TODO: implement
 
+    async def clean_runner(kernel_id):
+        if kernel_id not in self.container_registry:
+            return
+        log.debug(f'cleaning up runner for {kernel_id}')
+        item = self.container_registry[kernel_id]
+        runner_task = item.get('runner_task')
+        if runner_task is not None and not runner_task.done():
+            runner_task.cancel()
+            await runner_task
+        runner = item.get('runner')
+        if runner is not None:
+            await runner.close()
 
     async def init(self):
         # Show Docker version info.
@@ -262,15 +274,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.rpc_server.wait_closed()
 
         # Close all pending kernel runners.
-        for kernel_id, item in self.container_registry.items():
-            log.warning(f'cleaning up runner for {kernel_id}')
-            runner_task = item.get('runner_task')
-            if runner_task is not None and not runner_task.done():
-                runner_task.cancel()
-                await runner_task
-            runner = item.get('runner')
-            if runner is not None:
-                await runner.close()
+        for kernel_id in self.container_registry.keys():
+            await self.clean_runner(kernel_id)
 
         # Stop timers.
         self.hb_timer.cancel()
@@ -548,7 +553,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             # stats must be collected before killing it.
             last_stat = (await collect_stats([container]))[0]
-            self.container_registry[kernel_id]['last_stat'] = last_stat
+            try:
+                self.container_registry[kernel_id]['last_stat'] = last_stat
+            except KeyError:
+                pass
             await container.kill()
             # deleting containers will be done in docker monitor routine.
         except DockerError as e:
@@ -773,6 +781,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             container_id = self.container_registry[kernel_id]['container_id']
             container = self.docker.containers.container(container_id)
+            await self.clean_runner(kernel_id)
             try:
                 await container.delete()
             except DockerError as e:
