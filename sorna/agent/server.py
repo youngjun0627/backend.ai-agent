@@ -10,7 +10,6 @@ import sys
 import time
 from typing import Callable
 
-import configargparse
 import zmq, aiozmq, aiozmq.rpc
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
@@ -83,10 +82,6 @@ _extra_volumes = {
     ],
 }
 
-restarting_kernels = {}
-blocking_cleans = {}
-
-
 async def get_extra_volumes(docker, lang):
     avail_volumes = (await docker.volumes.list())['Volumes']
     if not avail_volumes:
@@ -124,6 +119,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.loop = loop if loop else asyncio.get_event_loop()
         self.docker = Docker()
+
+        self.restarting_kernels = {}
+        self.blocking_cleans = {}
 
         self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
 
@@ -169,8 +167,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 labels = container['Labels']
                 # NOTE: this changes the content of container incompatibly.
                 details = await container.show()
-                core_set = set(map(int, (details['HostConfig']['CpusetCpus']).split(',')))
-                self.container_cpu_map.update(core_set)
+                cpu_set = set(map(int, (details['HostConfig']['CpusetCpus']).split(',')))
+                self.container_cpu_map.update(cpu_set)
                 self.container_registry[kernel_id] = {
                     'lang': container['Image'],
                     'version': int(labels['io.sorna.version']),
@@ -180,8 +178,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'repl_out_port': ports[2001],
                     'stdin_port': ports[2002],
                     'stdout_port': ports[2003],
-                    'numa_node': libnuma.node_of_cpu(next(iter(core_set))),
-                    'core_set': core_set,
+                    'numa_node': libnuma.node_of_cpu(next(iter(cpu_set))),
+                    'cpu_set': cpu_set,
+                    'gpu_set': [],  # TODO: implement (using labels?)
                     'exec_timeout': min(self.config.exec_timeout,
                                         int(labels['io.sorna.timeout'])),
                     'last_used': time.monotonic(),
@@ -218,7 +217,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # If there are newer images, pull them.
         # TODO: implement
 
-    async def clean_runner(kernel_id):
+    async def clean_runner(self, kernel_id):
         if kernel_id not in self.container_registry:
             return
         log.debug(f'cleaning up runner for {kernel_id}')
@@ -306,15 +305,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return msg
 
     @aiozmq.rpc.method
-    async def create_kernel(self, lang: str,
-                            kernel_id: str,
-                            limits: dict=None,
-                            mounts: list=None) -> dict:
-        if lang in lang_aliases:
-            lang = lang_aliases[lang]
-        log.debug(f'rpc::create_kernel({lang}, {limits}, {mounts})')
+    async def create_kernel(self, kernel_id: str, config: dict) -> dict:
+        config['lang'] = lang_aliases.get(config['lang'], config['lang'])
+        log.debug(f"rpc::create_kernel({config['lang']})")
         try:
-            return await self._create_kernel(lang, kernel_id, limits, mounts)
+            return await self._create_kernel(kernel_id, config)
         except:
             log.exception('unexpected error')
             self.sentry.captureException()
@@ -331,22 +326,23 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
 
     @aiozmq.rpc.method
-    async def restart_kernel(self, kernel_id: str):
+    async def restart_kernel(self, kernel_id: str, prev_config: dict):
         log.debug(f'rpc::restart_kernel({kernel_id})')
         try:
-            restarting_kernels[kernel_id] = asyncio.Event()
+            self.restarting_kernels[kernel_id] = asyncio.Event()
             await self._destroy_kernel(kernel_id, 'restarting')
-            lang = self.container_registry[kernel_id]['lang']
-            limits = self.container_registry[kernel_id]['limits']
-            mounts = self.container_registry[kernel_id]['mounts']
-            await self._create_kernel(lang, kernel_id, limits, mounts)
-            if kernel_id in restarting_kernels:
-                del restarting_kernels[kernel_id]
-            stdin_port = self.container_registry[kernel_id]['stdin_port']
-            stdout_port = self.container_registry[kernel_id]['stdout_port']
-            repl_in_port = self.container_registry[kernel_id]['repl_in_port']
-            repl_out_port = self.container_registry[kernel_id]['repl_out_port']
-            return stdin_port, stdout_port
+            await self._create_kernel(kernel_id, prev_config)
+            if kernel_id in self.restarting_kernels:
+                del self.restarting_kernels[kernel_id]
+            return {
+                'container_id': self.container_registry[kernel_id]['container_id'],
+                'cpu_set': list(self.container_registry[kernel_id]['cpu_set']),
+                'gpu_set': list(self.container_registry[kernel_id]['gpu_set']),
+                'repl_in_port': self.container_registry[kernel_id]['repl_in_port'],
+                'repl_out_port': self.container_registry[kernel_id]['repl_out_port'],
+                'stdin_port': self.container_registry[kernel_id]['stdin_port'],
+                'stdout_port': self.container_registry[kernel_id]['stdout_port'],
+            }
         except:
             log.exception('unexpected error')
             self.sentry.captureException()
@@ -395,10 +391,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             self.sentry.captureException()
             raise
 
-    async def _create_kernel(self, lang, kernel_id,
-                             limits, mounts):
+    async def _create_kernel(self, kernel_id, config):
 
         await self.send_event('kernel_creating', kernel_id)
+
+        lang = config['lang']
+        mounts = config.get('mounts')
+        limits = config.get('limits')
 
         image_name = f'lablup/kernel-{lang}'
         ret = await self.docker.images.get(image_name)
@@ -419,33 +418,36 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # TODO: implement
         vfolders = []
 
-        if kernel_id in restarting_kernels:
-            core_set = self.container_registry[kernel_id]['core_set']
-            any_core = next(iter(core_set))
-            numa_node = libnuma.node_of_cpu(any_core)
-            num_cores = len(core_set)
+        if kernel_id in self.restarting_kernels:
             # Wait until the previous container is actually deleted.
             try:
                 with timeout(10):
-                    await restarting_kernels[kernel_id].wait()
+                    await self.restarting_kernels[kernel_id].wait()
             except asyncio.TimeoutError:
                 log.warning('timeout detected while restarting '
                             f'kernel {kernel_id}!')
-                del restarting_kernels[kernel_id]
+                del self.restarting_kernels[kernel_id]
                 asyncio.ensure_future(self.clean_kernel(kernel_id))
+                # TODO: send kernel_terminated?
                 raise
         else:
             os.makedirs(work_dir)
+
+        cpu_set = config.get('cpu_set')
+        if cpu_set is None:
             requested_cores = int(ret['ContainerConfig']['Labels']
                                   .get('io.sorna.maxcores', '1'))
             num_cores = min(self.container_cpu_map.num_cores, requested_cores)
-            numa_node, core_set = self.container_cpu_map.alloc(num_cores)
+            numa_node, cpu_set = self.container_cpu_map.alloc(num_cores)
+        else:
+            num_cores = len(cpu_set)
+            numa_node = libnuma.node_of_cpu(next(iter(cpu_set)))
 
-        core_set_str = ','.join(map(str, sorted(core_set)))
+        cpu_set_str = ','.join(map(str, sorted(cpu_set)))
         envs = {k: str(num_cores) for k in envs_corecount}
         log.debug(f'container config: mem_limit={mem_limit}, '
                   f'exec_timeout={exec_timeout}, '
-                  f'cores={core_set!r}@{numa_node}')
+                  f'cores={cpu_set!r}@{numa_node}')
 
         mount_list = await get_extra_volumes(self.docker, lang)
         binds = [f'{work_dir}:/home/work:rw']
@@ -454,7 +456,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         volumes = ['/home/work']
         volumes.extend(v.container_path for v in mount_list)
         devices = []
-        gpu_set = []
+        gpu_set = config.get('gpu_set', [])
 
         # TODO: implement vfolders and translate them into mounts
 
@@ -484,7 +486,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'HostConfig': {
                 'MemorySwap': 0,
                 'Memory': utils.readable_size_to_bytes(mem_limit),
-                'CpusetCpus': core_set_str,
+                'CpusetCpus': cpu_set_str,
                 'CpusetMems': f'{numa_node}',
                 'SecurityOpt': ['seccomp:unconfined'],
                 'Binds': binds,
@@ -512,7 +514,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'stdin_port': stdin_port,
             'stdout_port': stdout_port,
             'numa_node': numa_node,
-            'core_set': core_set,
+            'cpu_set': cpu_set,
+            'gpu_set': gpu_set,
             'exec_timeout': exec_timeout,
             'last_used': time.monotonic(),
             'limits': limits,
@@ -529,8 +532,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'stdin_port': int(stdin_port),
             'stdout_port': int(stdout_port),
             'container_id': container._id,
-            'cpu_set': tuple(core_set),
-            'gpu_set': tuple(gpu_set),
+            'cpu_set': list(cpu_set),
+            'gpu_set': list(gpu_set),
         }
 
     async def _destroy_kernel(self, kernel_id, reason):
@@ -539,6 +542,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except KeyError:
             log.warning(f'_destroy_kernel({kernel_id}) kernel missing '
                         '(already dead?)')
+            await self.clean_kernel(kernel_id)
             return
         container = self.docker.containers.container(cid)
         runner_task = self.container_registry[kernel_id].get('runner_task')
@@ -569,7 +573,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 log.warning(f'_destroy_kernel({kernel_id}) kill 404, '
                             'forgetting this kernel')
                 self.container_cpu_map.free(
-                    self.container_registry[kernel_id]['core_set'])
+                    self.container_registry[kernel_id]['cpu_set'])
                 del self.container_registry[kernel_id]
                 pass
             else:
@@ -589,11 +593,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
                                '(might be terminated)') from None
 
-        if 'runner' in self.container_registry[kernel_id]:
+        runner = self.container_registry[kernel_id].get('runner')
+        if runner is not None:
             log.debug(f'_execute_code:v{api_version}({kernel_id}) use '
                       'existing runner')
-            runner = self.container_registry[kernel_id]['runner']
-            # update runner mode
+            # update runner mode (for completion)
             runner.mode = mode
         else:
             features = set()
@@ -794,8 +798,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     log.warning(f'container deletion: {e!r}')
         except KeyError:
             pass
-        if kernel_id in restarting_kernels:
-            restarting_kernels[kernel_id].set()
+        if kernel_id in self.restarting_kernels:
+            self.restarting_kernels[kernel_id].set()
         else:
             work_dir = self.config.scratch_root / kernel_id
             try:
@@ -806,15 +810,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 kernel_stat = \
                     self.container_registry[kernel_id].get('last_stat', None)
                 self.container_cpu_map.free(
-                    self.container_registry[kernel_id]['core_set'])
+                    self.container_registry[kernel_id]['cpu_set'])
                 del self.container_registry[kernel_id]
                 await self.send_event('kernel_terminated',
                                       kernel_id, 'destroyed',
                                       kernel_stat)
             except KeyError:
                 pass
-            if kernel_id in blocking_cleans:
-                blocking_cleans[kernel_id].set()
+            if kernel_id in self.blocking_cleans:
+                self.blocking_cleans[kernel_id].set()
 
     async def clean_old_kernels(self, interval):
         now = time.monotonic()
@@ -839,17 +843,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         tasks = []
         if blocking:
             for kern_id in kern_ids:
-                blocking_cleans[kern_id] = asyncio.Event()
+                self.blocking_cleans[kern_id] = asyncio.Event()
         for kern_id in kern_ids:
             task = asyncio.ensure_future(
                 self._destroy_kernel(kern_id, 'agent-termination'))
             tasks.append(task)
         await asyncio.gather(*tasks)
         if blocking:
-            waiters = [blocking_cleans[kern_id].wait() for kern_id in kern_ids]
+            waiters = [self.blocking_cleans[kern_id].wait() for kern_id in kern_ids]
             await asyncio.gather(*waiters)
             for kern_id in kern_ids:
-                del blocking_cleans[kern_id]
+                del self.blocking_cleans[kern_id]
 
 
 @aiotools.actxmgr
