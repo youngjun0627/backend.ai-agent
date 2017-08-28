@@ -21,6 +21,14 @@ log = logging.getLogger(__name__)
 outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log', 'completion'}
 
 
+class KernelFeatures(StringSetFlag):
+    UIDMATCH = 'uidmatch'
+    USER_INPUT = 'user-input'
+    BATCH_MODE = 'batch'
+    QUERY_MODE = 'query'
+    TTY_MODE = 'tty'
+
+
 class ExecutionPhase(enum.Enum):
     BUILD = 1
     RUN = 2
