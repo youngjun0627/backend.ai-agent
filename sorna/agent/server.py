@@ -82,6 +82,7 @@ _extra_volumes = {
     ],
 }
 
+
 async def get_extra_volumes(docker, lang):
     avail_volumes = (await docker.volumes.list())['Volumes']
     if not avail_volumes:
@@ -365,7 +366,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
         log.debug(f'rpc::upload_file({kernel_id}, {filename})')
         try:
-            await self._upload_file(kernel_id, filename, filedata)
+            await self._accept_file(kernel_id, filename, filedata)
         except:
             log.exception('unexpected error')
             self.sentry.captureException()
@@ -677,7 +678,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.exception('unexpected error')
             raise
 
-    async def _upload_file(self, kernel_id, filename, filedata):
+    async def _accept_file(self, kernel_id, filename, filedata):
         work_dir = self.config.scratch_root / kernel_id
         try:
             # create intermediate directories in the path
