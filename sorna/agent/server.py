@@ -105,6 +105,7 @@ async def get_extra_volumes(docker, lang):
 
 def get_kernel_id_from_container(val):
     name = val['Names'][0] if isinstance(val, DockerContainer) else val
+    name = name.lstrip('/')
     if not name.startswith('kernel.'):
         return None
     try:
