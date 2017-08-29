@@ -637,7 +637,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if result['status'] in ('finished', 'exec-timeout'):
 
                 log.debug(f"_execute({kernel_id}) {result['status']}")
-                # We reuse runner until the kernel dies.
+                await runner.close()
+                del self.container_registry[kernel_id]['runner']
+
+                # TODO-OPTIMIZE: reuse runner until the kernel dies??
 
                 final_file_stats = scandir(output_dir, max_upload_size)
                 if utils.nmget(result, 'options.upload_output_files', True):

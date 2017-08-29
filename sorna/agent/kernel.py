@@ -69,13 +69,14 @@ class KernelRunner:
 
     def __init__(self, kernel_id, mode, opts,
                  kernel_ip, repl_in_port, repl_out_port,
-                 exec_timeout, features=None):
+                 exec_timeout, client_features=None):
         self.started_at = None
         self.finished_at = None
         self.kernel_id = kernel_id
         assert mode in ('query', 'batch', 'complete')
         self.mode = mode
         self.phase: ExecutionPhase
+        self.accepts_input = False
         if mode == 'batch':
             self.phase = ExecutionPhase.BUILD
             assert 'build' in opts or 'exec' in opts
@@ -85,13 +86,15 @@ class KernelRunner:
         self.kernel_ip = kernel_ip
         self.repl_in_port  = repl_in_port
         self.repl_out_port = repl_out_port
+        self.input_stream = None
+        self.output_stream = None
         assert exec_timeout > 0
         self.exec_timeout = exec_timeout
         self.max_record_size = 10485760  # 10 MBytes
         self.console_queue = asyncio.Queue(maxsize=1024)
         self.input_queue = asyncio.Queue()
         self.read_task = None
-        self.features = features or set()
+        self.client_features = client_features or set()
 
     async def start(self):
         self.started_at = time.monotonic()
@@ -105,33 +108,37 @@ class KernelRunner:
         self.output_stream.transport.setsockopt(zmq.LINGER, 50)
 
         if self.mode == 'query':
-            pass
+            self.accepts_input = True
         elif self.mode == 'batch':
             self.input_stream.write([
                 b'build',
                 self.opts.get('build', '').encode('utf8'),
             ])
         self.read_task = asyncio.ensure_future(self.read_output())
-        has_continuation = ClientFeatures.CONTINUATION in self.features
+        has_continuation = ClientFeatures.CONTINUATION in self.client_features
         self.flush_timeout = 2.0 if has_continuation else None
         self.watchdog_task = asyncio.ensure_future(self.watchdog())
 
     async def close(self):
-        if not self.read_task.done():
+        if self.read_task and not self.read_task.done():
             self.read_task.cancel()
             await self.read_task
-        if not self.watchdog_task.done():
+        if self.watchdog_task and not self.watchdog_task.done():
             self.watchdog_task.cancel()
             await self.watchdog_task
-        self.input_stream.close()
-        self.output_stream.close()
+        if self.input_stream and not self.input_stream.at_closing():
+            self.input_stream.close()
+        if self.output_stream and not self.output_stream.at_closing():
+            self.output_stream.close()
 
     async def feed_input(self, code_text):
-        if self.phase == 'run':
+        if self.accepts_input:
+            log.warning(f'runnner.feed_input {code_text!r}')
             self.input_stream.write([
                 b'input',
                 code_text.encode('utf8'),
             ])
+            self.accepts_input = False
 
     async def request_completions(self, code_text, opts):
         payload = {
@@ -252,6 +259,7 @@ class KernelRunner:
             type(self).aggregate_console(result, records, api_ver)
             return result
         except UserCodeFinished as e:
+            self.accepts_input = True
             result = {
                 'status': 'finished',
                 'options': e.opts,
@@ -259,6 +267,7 @@ class KernelRunner:
             type(self).aggregate_console(result, records, api_ver)
             return result
         except ExecTimeout:
+            self.accepts_input = True
             result = {
                 'status': 'exec-timeout',
             }
@@ -267,6 +276,7 @@ class KernelRunner:
             type(self).aggregate_console(result, records, api_ver)
             return result
         except InputRequestPending as e:
+            self.accepts_input = True
             result = {
                 'status': 'waiting-input',
                 'options': e.opts,
@@ -289,6 +299,8 @@ class KernelRunner:
         while True:
             try:
                 msg_type, msg_data = await self.output_stream.read()
+                # TODO: test if save-load runner states is working
+                #       by printing received messages here
                 if len(msg_data) > self.max_record_size:
                     msg_data = msg_data[:self.max_record_size]
                 if not self.console_queue.full():
