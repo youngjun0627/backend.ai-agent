@@ -22,21 +22,21 @@ outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log', 'completion'}
 
 
 class KernelFeatures(StringSetFlag):
-    UIDMATCH = 'uidmatch'
+    UID_MATCH = 'uid-match'
     USER_INPUT = 'user-input'
     BATCH_MODE = 'batch'
     QUERY_MODE = 'query'
     TTY_MODE = 'tty'
 
 
-class ExecutionPhase(enum.Enum):
-    BUILD = 1
-    RUN = 2
-
-
 class ClientFeatures(StringSetFlag):
     INPUT = 'input'
     CONTINUATION = 'continuation'
+
+
+class ExecutionPhase(enum.Enum):
+    BUILD = 1
+    RUN = 2
 
 
 class InputRequestPending(Exception):

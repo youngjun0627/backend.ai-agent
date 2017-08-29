@@ -443,7 +443,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         cpu_set_str = ','.join(map(str, sorted(cpu_set)))
         envs = {k: str(num_cores) for k in envs_corecount}
-        if KernelFeatures.UIDMATCH in kernel_features:
+        if KernelFeatures.UID_MATCH in kernel_features:
             envs['LOCAL_USER_ID'] = os.getuid()
         log.debug(f'container config: mem_limit={mem_limit}, '
                   f'exec_timeout={exec_timeout}, '
