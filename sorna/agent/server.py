@@ -191,7 +191,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 }
             elif container['State'] in {'exited', 'dead', 'removing'}:
                 log.info(f'detected terminated kernel: {kernel_id}')
-                await self.send_event('kernel_terminated', kernel_id)
+                await self.send_event('kernel_terminated', kernel_id, 'self-terminated', None)
 
     async def update_status(self, status):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
@@ -221,7 +221,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def clean_runner(self, kernel_id):
         if kernel_id not in self.container_registry:
             return
-        log.debug(f'cleaning up runner for {kernel_id}')
+        log.debug(f'interrupting & cleaning up runner for {kernel_id}')
         item = self.container_registry[kernel_id]
         runner_task = item.get('runner_task')
         if runner_task is not None and not runner_task.done():
@@ -427,7 +427,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                             f'kernel {kernel_id}!')
                 del self.restarting_kernels[kernel_id]
                 asyncio.ensure_future(self.clean_kernel(kernel_id))
-                # TODO: send kernel_terminated?
                 raise
         else:
             os.makedirs(work_dir)
@@ -545,16 +544,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.clean_kernel(kernel_id)
             return
         container = self.docker.containers.container(cid)
-        runner_task = self.container_registry[kernel_id].get('runner_task')
-        if runner_task:
-            log.warning(f'_destroy_kernel({kernel_id}) interrupting '
-                        'running execution')
-            runner_task.cancel()
-            await runner_task
-        runner = self.container_registry[kernel_id].get('runner')
-        if runner:
-            await runner.close()
-            del self.container_registry[kernel_id]['runner']
+        await self.clean_runner(kernel_id)
         try:
             # stats must be collected before killing it.
             last_stat = (await collect_stats([container]))[0]
@@ -600,9 +590,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             # update runner mode (for completion)
             runner.mode = mode
         else:
-            features = set()
+            client_features = set()
             if api_version == 2:
-                features |= {'input', 'continuation'}
+                client_features |= {'input', 'continuation'}
 
             # TODO: import "connected" files from S3
             self.container_registry[kernel_id]['initial_file_stats'] \
@@ -615,9 +605,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 self.container_registry[kernel_id]['repl_in_port'],
                 self.container_registry[kernel_id]['repl_out_port'],
                 self.container_registry[kernel_id]['exec_timeout'],
-                features)
+                client_features)
             log.debug(f'_execute:v{api_version}({kernel_id}) start new runner')
             self.container_registry[kernel_id]['runner'] = runner
+            # TODO: restoration of runners after agent restarts
             await runner.start()
 
         if mode == 'complete':
@@ -780,6 +771,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 log.debug('docker-event: container-terminated: '
                           f'{container_id[:7]} with exit code {exit_code} '
                           f'({kernel_id})')
+                await self.send_event('kernel_terminated',
+                                      kernel_id, 'self-terminated',
+                                      None)
                 asyncio.ensure_future(self.clean_kernel(kernel_id))
 
     async def clean_kernel(self, kernel_id):
@@ -807,14 +801,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             except FileNotFoundError:
                 pass
             try:
-                kernel_stat = \
-                    self.container_registry[kernel_id].get('last_stat', None)
+                # TODO: Store kernel_stat somewhere else and use it when sending "kernel_terminated"
+                #kernel_stat = \
+                #    self.container_registry[kernel_id].get('last_stat', None)
                 self.container_cpu_map.free(
                     self.container_registry[kernel_id]['cpu_set'])
                 del self.container_registry[kernel_id]
-                await self.send_event('kernel_terminated',
-                                      kernel_id, 'destroyed',
-                                      kernel_stat)
             except KeyError:
                 pass
             if kernel_id in self.blocking_cleans:
