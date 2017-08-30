@@ -4,8 +4,8 @@ Sorna Agent
 Package Structure
 -----------------
 
- * sorna
-   * agent: The agent server implementation
+* sorna
+   * agent: The agent daemon implementation
 
 Installation
 ------------
@@ -68,10 +68,8 @@ Example supervisord config:
    command = /home/sorna/run-agent.sh
    environment = AWS_ACCESS_KEY_ID="...",AWS_SECRET_ACCESS_KEy="...",AWS_REGION="...",AWS_S3_BUCKET="..."
 
-TCP Port numbers to open:
-~~~~~~~~~~~~~~~~~~~~~~~~~
+TCP Port numbers to open against the manager
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
- * 6001: ZeroMQ-based internal agent control protocol
- * Docker REPL containers will use automatically-mapped host-side port numbers,
-   and they do not need to be open to other hosts (localhost-only).
-   Inside containers, the REPL daemons use the fixed port numbers: 2000-2003.
+* 6001: ZeroMQ-based internal agent control protocol.
+* The containers will open arbitrary ports for their local 2000-2003 ports for REPL I/O and TTY I/O.
