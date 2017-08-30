@@ -1,6 +1,8 @@
 from setuptools import setup
 from pathlib import Path
 
+from sorna.agent.version import VERSION
+
 
 requires = [
     'ConfigArgParse',
@@ -43,7 +45,7 @@ monitor_requires = [
 
 setup(
     name='sorna-agent',
-    version='0.9.12',
+    version=VERSION,
     description='Sorna agent',
     long_description=Path('README.rst').read_text(),
     url='https://github.com/lablup/sorna-agent',
