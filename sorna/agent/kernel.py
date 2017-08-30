@@ -1,5 +1,6 @@
 import asyncio
 import codecs
+import enum
 import io
 import logging
 import time
