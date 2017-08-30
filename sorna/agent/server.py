@@ -36,7 +36,7 @@ from sorna.common.argparse import (
     ipaddr, port_no, HostPortPair,
     host_port_pair, positive_int)
 from sorna.common.monitor import DummyStatsd, DummySentry
-from . import __version__
+from .version import VERSION
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
 from .stats import collect_stats
@@ -1014,7 +1014,7 @@ def main():
                 assert target in supported_langs
                 lang_aliases[alias] = target
 
-    log.info(f'Sorna Agent {__version__}')
+    log.info(f'Sorna Agent {VERSION}')
     log.info(f'runtime: {utils.env_info()}')
 
     log_config = logging.getLogger('sorna.agent.config')

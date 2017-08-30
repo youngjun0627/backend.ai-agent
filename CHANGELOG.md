@@ -1,6 +1,22 @@
 Changes
 =======
 
+0.9.14 (2017-08-29)
+-------------------
+
+**FIX**
+
+ * Fix and improve version reference mechanisms.
+ * Fix missing import error vanished during hostfix cherrypick
+
+0.9.12 (2017-08-29)
+-------------------
+
+**IMPROVEMENTS**
+
+ * It now applies the same UID to the spawned containers if they have the "uid-match"
+   feature label flag. (backported from develop)
+
 0.9.11 (2017-07-19)
 -------------------
 

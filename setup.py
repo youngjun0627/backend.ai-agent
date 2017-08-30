@@ -1,10 +1,7 @@
 from setuptools import setup
-import sys
-try:
-    import pypandoc
-    long_description = pypandoc.convert('README.md', 'rst')
-except (IOError, ImportError):
-    long_description = ""
+from pathlib import Path
+
+from sorna.agent.version import VERSION
 
 
 requires = [
@@ -26,7 +23,6 @@ requires = [
     'sorna-common~=1.0.0',
 ]
 build_requires = [
-    'pypandoc',
     'wheel',
     'twine',
 ]
@@ -47,15 +43,12 @@ monitor_requires = [
     'raven>=6.1',
 ]
 
-sys.path.insert(0, '.')
-import sorna.agent
-
 
 setup(
     name='sorna-agent',
-    version=sorna.agent.__version__,
+    version=VERSION,
     description='Sorna agent',
-    long_description=long_description,
+    long_description=Path('README.rst').read_text(),
     url='https://github.com/lablup/sorna-agent',
     author='Lablup Inc.',
     author_email='joongi@lablup.com',
