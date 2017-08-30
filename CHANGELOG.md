@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.9.13 (2017-08-29)
+-------------------
+
+**FIX**
+
+ * Fix and improve version reference mechanisms.
+
 0.9.12 (2017-08-29)
 -------------------
 
