@@ -38,7 +38,7 @@ from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
 from .stats import collect_stats
 from .resources import libnuma, CPUAllocMap
-from .kernel import KernelRunner
+from .kernel import KernelRunner, KernelFeatures
 
 log = logging.getLogger('sorna.agent.server')
 
@@ -255,17 +255,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         image_name = f'lablup/kernel-{lang}'
         ret = await self.docker.images.get(image_name)
+        image_labels = ret['ContainerConfig']['Labels']
         # TODO: apply limits
-        version        = int(ret['ContainerConfig']['Labels']
-                             .get('io.sorna.version', '1'))
-        mem_limit      = (ret['ContainerConfig']['Labels']
-                          .get('io.sorna.maxmem', '128m'))
-        exec_timeout   = int(ret['ContainerConfig']['Labels']
-                             .get('io.sorna.timeout', '10'))
+        version        = int(image_labels.get('io.sorna.version', '1'))
+        mem_limit      = image_labels.get('io.sorna.maxmem', '128m')
+        exec_timeout   = int(image_labels.get('io.sorna.timeout', '10'))
         exec_timeout   = min(exec_timeout, self.config.exec_timeout)
-        envs_corecount = (ret['ContainerConfig']['Labels']
-                          .get('io.sorna.envs.corecount', ''))
+        envs_corecount = image_labels.get('io.sorna.envs.corecount', '')
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
+        kernel_features = set(image_labels.get('io.sorna.features', '').split())
 
         work_dir = self.config.volume_root / kernel_id
 
@@ -292,6 +290,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             numa_node, core_set = self.container_cpu_map.alloc(num_cores)
 
         envs = {k: str(num_cores) for k in envs_corecount}
+        if KernelFeatures.UIDMATCH in kernel_features:
+            envs['LOCAL_USER_ID'] = os.getuid()
         log.debug(f'container config: mem_limit={mem_limit}, '
                   f'exec_timeout={exec_timeout}, '
                   f'cores={core_set!r}@{numa_node}')

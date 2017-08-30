@@ -20,6 +20,14 @@ log = logging.getLogger(__name__)
 outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log'}
 
 
+class KernelFeatures(StringSetFlag):
+    UIDMATCH = 'uidmatch'
+    USER_INPUT = 'user-input'
+    BATCH_MODE = 'batch'
+    QUERY_MODE = 'query'
+    TTY_MODE = 'tty'
+
+
 class ClientFeatures(StringSetFlag):
     INPUT = 'input'
     CONTINUATION = 'continuation'
