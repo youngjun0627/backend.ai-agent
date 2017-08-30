@@ -1,6 +1,6 @@
 from typing import Tuple
 
-VERSION_INFO: Tuple[int, int, int] = (0, 9, 13)
+VERSION_INFO: Tuple[int, int, int] = (0, 9, 14)
 VERSION: str = '{}.{}.{}'.format(*VERSION_INFO)
 
 

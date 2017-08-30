@@ -1,12 +1,13 @@
 Changes
 =======
 
-0.9.13 (2017-08-29)
+0.9.14 (2017-08-29)
 -------------------
 
 **FIX**
 
  * Fix and improve version reference mechanisms.
+ * Fix missing import error vanished during hostfix cherrypick
 
 0.9.12 (2017-08-29)
 -------------------
