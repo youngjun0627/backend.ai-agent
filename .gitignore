@@ -59,7 +59,11 @@ target/
 # IDE stuffs
 .idea/
 .env
+.envrc
 
 # Vim
 .*.swp
 venv*/
+
+# Development files
+scratches/
