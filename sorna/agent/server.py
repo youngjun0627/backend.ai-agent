@@ -182,8 +182,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'numa_node': libnuma.node_of_cpu(next(iter(cpu_set))),
                     'cpu_set': cpu_set,
                     'gpu_set': [],  # TODO: implement (using labels?)
-                    'exec_timeout': min(self.config.exec_timeout,
-                                        int(labels['io.sorna.timeout'])),
+                    'exec_timeout': int(labels['io.sorna.timeout']),
                     'last_used': time.monotonic(),
                     'limits': None,
                     # TODO: implement vfolders
@@ -408,7 +407,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         version        = int(image_labels.get('io.sorna.version', '1'))
         mem_limit      = image_labels.get('io.sorna.maxmem', '128m')
         exec_timeout   = int(image_labels.get('io.sorna.timeout', '10'))
-        exec_timeout   = min(exec_timeout, self.config.exec_timeout)
         envs_corecount = image_labels.get('io.sorna.envs.corecount', '')
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
         kernel_features = set(image_labels.get('io.sorna.features', '').split())
@@ -898,14 +896,9 @@ def main():
     parser.add('--event-addr', type=host_port_pair,
                default=HostPortPair(ip_address('127.0.0.1'), 5002),
                help='The host:port pair of the Gateway event server.')
-    parser.add('--exec-timeout', type=positive_int, default=180,
-               help='The maximum period of time allowed for kernels to run user '
-                    'codes.')
     parser.add('--idle-timeout', type=positive_int, default=600,
                help='The maximum period of time allowed for kernels to wait '
                     'further requests.')
-    parser.add('--max-kernels', type=positive_int, default=1,
-               help='Set the maximum number of kernels running in parallel.')
     parser.add('--debug', action='store_true', default=False,
                env_var='DEBUG',
                help='Enable more verbose logging.')
