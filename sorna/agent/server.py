@@ -244,6 +244,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.event_sock = await aiozmq.create_zmq_stream(
             zmq.PUSH, connect=f'tcp://{self.config.event_addr}')
+        self.event_sock.transport.setsockopt(zmq.LINGER, 50)
 
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
