@@ -8,7 +8,7 @@ import signal
 import shutil
 import sys
 import time
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 import zmq, aiozmq, aiozmq.rpc
 from aiodocker.docker import Docker, DockerContainer
@@ -41,7 +41,7 @@ from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
 from .stats import collect_stats
 from .resources import detect_slots, libnuma, CPUAllocMap
-from .kernel import KernelRunner, KernelFeatures
+from .kernel import KernelRunner, KernelFeatures, ExpectedInput
 
 log = logging.getLogger('sorna.agent.server')
 
@@ -187,6 +187,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'limits': None,
                     # TODO: implement vfolders
                     'mounts': None,
+                    'runner_tasks': set(),
                 }
             elif container['State'] in {'exited', 'dead', 'removing'}:
                 log.info(f'detected terminated kernel: {kernel_id}')
@@ -222,10 +223,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             return
         log.debug(f'interrupting & cleaning up runner for {kernel_id}')
         item = self.container_registry[kernel_id]
-        runner_task = item.get('runner_task')
-        if runner_task is not None and not runner_task.done():
-            runner_task.cancel()
-            await runner_task
+        for t in item['runner_tasks']:
+            if not t.done():
+                t.cancel()
+                await t
         runner = item.get('runner')
         if runner is not None:
             await runner.close()
@@ -327,6 +328,27 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
 
     @aiozmq.rpc.method
+    async def interrupt_kernel(self, kernel_id: str, mode: str):
+        log.debug(f'rpc::interrupt_kernel({kernel_id})')
+        try:
+            await self._interrupt_kernel(kernel_id, mode)
+        except:
+            log.exception('unexpected error')
+            self.sentry.captureException()
+            raise
+
+    @aiozmq.rpc.method
+    async def get_completions(self, kernel_id: str, mode: str,
+                              text: str, opts: dict):
+        log.debug(f'rpc::get_completions({kernel_id})')
+        try:
+            await self._get_completions(kernel_id, mode, text, opts)
+        except:
+            log.exception('unexpected error')
+            self.sentry.captureException()
+            raise
+
+    @aiozmq.rpc.method
     async def restart_kernel(self, kernel_id: str, prev_config: dict):
         log.debug(f'rpc::restart_kernel({kernel_id})')
         try:
@@ -351,11 +373,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     @aiozmq.rpc.method
     async def execute(self, api_version: int, kernel_id: str,
-                      mode: str, code: str, opts: dict) -> dict:
+                      run_id: str, mode: str, code: str, opts: dict) -> dict:
         log.debug(f'rpc::execute({kernel_id}, ...)')
         try:
             result = await self._execute(api_version, kernel_id,
-                                         mode, code, opts)
+                                         run_id, mode, code, opts)
             return result
         except:
             log.exception('unexpected error')
@@ -518,6 +540,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'last_used': time.monotonic(),
             'limits': limits,
             'mounts': mounts,
+            'runner_tasks': set(),
         }
         log.debug(f'kernel repl-in address: {kernel_ip}:{repl_in_port}')
         log.debug(f'kernel repl-out address: {kernel_ip}:{repl_out_port}')
@@ -570,7 +593,29 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
 
-    async def _execute(self, api_version, kernel_id, mode, code_text, opts):
+    async def _ensure_runner(self, kernel_id):
+        # TODO: clean up
+        api_version = 3
+        runner = self.container_registry[kernel_id].get('runner')
+        if runner is not None:
+            log.debug(f'_execute_code:v{api_version}({kernel_id}) use '
+                      'existing runner')
+        else:
+            client_features = {'input', 'continuation'}
+            runner = KernelRunner(
+                kernel_id,
+                self.container_registry[kernel_id]['container_ip'],
+                self.container_registry[kernel_id]['repl_in_port'],
+                self.container_registry[kernel_id]['repl_out_port'],
+                self.container_registry[kernel_id]['exec_timeout'],
+                client_features)
+            log.debug(f'_execute:v{api_version}({kernel_id}) start new runner')
+            self.container_registry[kernel_id]['runner'] = runner
+            # TODO: restoration of runners after agent restarts
+            await runner.start()
+        return runner
+
+    async def _execute(self, api_version, kernel_id, run_id, mode, text, opts):
         work_dir = self.config.scratch_root / kernel_id
         # Save kernel-generated output files in a separate sub-directory
         # (to distinguish from user-uploaded files)
@@ -582,43 +627,29 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
                                '(might be terminated)') from None
 
-        runner = self.container_registry[kernel_id].get('runner')
-        if runner is not None:
-            log.debug(f'_execute_code:v{api_version}({kernel_id}) use '
-                      'existing runner')
-            # update runner mode (for completion)
-            runner.mode = mode
-        else:
-            client_features = set()
-            if api_version == 2:
-                client_features |= {'input', 'continuation'}
-
-            # TODO: import "connected" files from S3
-            self.container_registry[kernel_id]['initial_file_stats'] \
-                = scandir(output_dir, max_upload_size)
-
-            runner = KernelRunner(
-                kernel_id,
-                mode, opts,
-                self.container_registry[kernel_id]['container_ip'],
-                self.container_registry[kernel_id]['repl_in_port'],
-                self.container_registry[kernel_id]['repl_out_port'],
-                self.container_registry[kernel_id]['exec_timeout'],
-                client_features)
-            log.debug(f'_execute:v{api_version}({kernel_id}) start new runner')
-            self.container_registry[kernel_id]['runner'] = runner
-            # TODO: restoration of runners after agent restarts
-            await runner.start()
-
-        if mode == 'complete':
-            await runner.request_completions(code_text, opts)
-        else:
-            await runner.feed_input(code_text)
+        runner = await self._ensure_runner(kernel_id)
 
         try:
-            self.container_registry[kernel_id]['runner_task'] = \
-                asyncio.Task.current_task()
+            myself = asyncio.Task.current_task()
+            self.container_registry[kernel_id]['runner_tasks'].add(myself)
+
+            await runner.attach_output_queue(run_id)
+
+            if runner.expects == ExpectedInput.USER_CODE:
+                self.container_registry[kernel_id]['initial_file_stats'] \
+                    = scandir(output_dir, max_upload_size)
+                runner.mode = mode
+                if mode == 'batch':
+                    await runner.feed_batch_opts(opts)
+                else:
+                    await runner.feed_code(text)
+            elif runner.expects == ExpectedInput.USER_INPUT:
+                await runner.feed_input(text)
+            elif runner.expects == ExpectedInput.CONTINUATION:
+                # don't need to provide additional inputs
+                pass
             result = await runner.get_next_result(api_ver=api_version)
+
         except asyncio.CancelledError:
             await runner.close()
             del self.container_registry[kernel_id]['runner']
@@ -628,7 +659,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
         finally:
             if utils.nmget(self.container_registry, f'{kernel_id}/runner_atsk', None, '/'):
-                del self.container_registry[kernel_id]['runner_task']
+                self.container_registry[kernel_id]['runner_tasks'].remove(myself)
 
         try:
             output_files = []
@@ -636,10 +667,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if result['status'] in ('finished', 'exec-timeout'):
 
                 log.debug(f"_execute({kernel_id}) {result['status']}")
-                await runner.close()
-                del self.container_registry[kernel_id]['runner']
-
-                # TODO-OPTIMIZE: reuse runner until the kernel dies??
 
                 final_file_stats = scandir(output_dir, max_upload_size)
                 if utils.nmget(result, 'options.upload_output_files', True):
@@ -670,6 +697,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.exception('unexpected error')
             raise
+
+    async def _get_completions(self, kernel_id, text, opts):
+        runner = await self._ensure_runner(kernel_id)
+        result = await runner.feed_and_get_completion(text, opts)
+        return { 'status': 'finished', 'completions': result }
+
+    async def _interrupt_kernel(self, kernel_id):
+        runner = await self._ensure_runner(kernel_id)
+        await runner.feed_interrupt()
+        return { 'status': 'finished' }
 
     async def _accept_file(self, kernel_id, filename, filedata):
         work_dir = self.config.scratch_root / kernel_id
@@ -785,6 +822,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.clean_runner(kernel_id)
             try:
                 await container.delete()
+                #pass
             except DockerError as e:
                 if e.status == 400 and 'already in progress' in e.message:
                     pass
