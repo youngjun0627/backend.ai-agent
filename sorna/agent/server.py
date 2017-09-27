@@ -731,6 +731,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         agent_info = {
             'ip': self.config.agent_ip,
+            'region': self.config.region,
             'addr': f'tcp://{self.config.agent_ip}:{self.config.agent_port}',
             'mem_slots': self.slots[0],
             'cpu_slots': self.slots[1],
@@ -896,6 +897,7 @@ async def server_main(loop, pidx, _args):
     args.inst_type = await identity.get_instance_type()
     if not args.agent_ip:
         args.agent_ip = await identity.get_instance_ip()
+    args.region = await identity.get_instance_region()
     log.info(f'myself: {args.instance_id} ({args.inst_type}), ip: {args.agent_ip}')
 
     # Start RPC server.
