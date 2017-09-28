@@ -141,7 +141,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if datadog_available and self.config.datadog_api_key:
             self.statsd = datadog.statsd
         if raven_available and self.config.raven_uri:
-            self.sentry = raven.Client(self.config.raven_uri)
+            self.sentry = raven.Client(
+                self.config.raven_uri,
+                release=raven.fetch_package_version('sorna-agent'))
 
     async def detect_manager(self):
         log.info('detecting the manager...')
