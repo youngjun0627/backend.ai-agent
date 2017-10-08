@@ -125,6 +125,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.blocking_cleans = {}
 
         self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
+        self.redis_addr = None
 
         self.slots = detect_slots()
 
@@ -154,8 +155,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     manager_id = ev.value
                     break
         log.info(f'detecting the manager: OK ({manager_id})')
-        self.config.mq_addr = await self.etcd.get('mq/addr')
-        log.info(f'using mq_addr {self.config.mq_addr}')
+        self.redis_addr = await self.etcd.get('nodes/redis')
+        log.info(f'configured redis_addr: {self.redis_addr}')
 
     async def scan_running_containers(self):
         for container in (await self.docker.containers.list()):
@@ -927,10 +928,6 @@ def main():
     parser.add('--agent-port', type=port_no, default=6001,
                env_var='SORNA_AGENT_PORT',
                help='The port number to listen on.')
-    parser.add('--redis-addr', type=host_port_pair,
-               env_var='REDIS_ADDR',
-               default=HostPortPair(ip_address('127.0.0.1'), 6379),
-               help='The host:port pair of the Redis (agent registry) server.')
     parser.add('--etcd-addr', type=host_port_pair,
                env_var='ETCD_ADDR',
                default=HostPortPair(ip_address('127.0.0.1'), 2379),
@@ -999,8 +996,6 @@ def main():
 
     if args.agent_ip:
         args.agent_ip = str(args.agent_ip)
-    if not args.redis_addr:
-        args.redis_addr = ('sorna-manager.lablup', 6379)
 
     assert args.scratch_root.exists()
     assert args.scratch_root.is_dir()
