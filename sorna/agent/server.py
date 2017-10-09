@@ -157,6 +157,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info(f'detecting the manager: OK ({manager_id})')
         self.redis_addr = await self.etcd.get('nodes/redis')
         log.info(f'configured redis_addr: {self.redis_addr}')
+        self.redis_stat_pool = await aioredis.create_pool(
+            self.redis_addr,
+            create_connection_timeout=3.0,
+            encoding='utf8',
+            db=0)  # REDIS_STAT_DB in backend.ai-manager
 
     async def scan_running_containers(self):
         for container in (await self.docker.containers.list()):
@@ -748,8 +753,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.exception('instance_heartbeat failure')
 
     async def update_stats(self, interval):
-        pass
-        '''
         running_kernels = [k for k in self.container_registry.keys()]
         running_containers = [self.container_registry[k]['container_id']
                               for k in running_kernels]
@@ -758,22 +761,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                                             running_containers))
         except asyncio.CancelledError:
             return
-        kern_stats = {}
-        # Attach limits to collected stats.
-        # Here, there may be destroyed kernels due to coroutine interleaving.
-        for idx, stat in enumerate(stats):
-            kern_id = running_kernels[idx]
-            if kern_id not in self.container_registry:
-                stats[idx] = None
-                continue
-            if stats[idx] is None:
-                continue
-            last_used = self.container_registry[kern_id]['last_used']
-            stats[idx]['idle'] = (time.monotonic() - last_used) * 1000
-            kern_stats[kern_id] = stats[idx]
-
-        await self.send_event('instance_stats', kern_stats, interval)
-        '''
+        async with self.redis_stat_pool.get() as rs:
+            pipe = rs.pipeline()
+            for idx, stat in enumerate(stats):
+                kernel_id = running_kernels[idx]
+                pipe.hmset_dict(kernel_id, stat)
+                pipe.expire(kernel_id, 30.0)  # secs
+            await pipe.execute()
 
     async def fetch_docker_events(self):
         while True:
