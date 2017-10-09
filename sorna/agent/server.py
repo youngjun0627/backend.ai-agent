@@ -72,6 +72,7 @@ supported_langs = {
 }
 lang_aliases = dict()
 max_upload_size = 5 * 1024 * 1024  # 5 MB
+stat_cache_lifespan = 30.0  # 30 secs
 
 VolumeInfo = namedtuple('VolumeInfo', 'name container_path mode')
 _extra_volumes = {
@@ -126,7 +127,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.blocking_cleans = {}
 
         self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
-        self.redis_addr = None
+        self.config.redis_addr = None
 
         self.slots = detect_slots()
 
@@ -156,14 +157,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     manager_id = ev.value
                     break
         log.info(f'detecting the manager: OK ({manager_id})')
-        self.redis_addr = host_port_pair(await self.etcd.get('nodes/redis'))
-        log.info(f'configured redis_addr: {self.redis_addr}')
-        self.redis_stat_pool = await aioredis.create_pool(
-            self.redis_addr.as_sockaddr(),
-            create_connection_timeout=3.0,
-            encoding='utf8',
-            db=0)  # REDIS_STAT_DB in backend.ai-manager
+        self.config.redis_addr = host_port_pair(await self.etcd.get('nodes/redis'))
         self.config.event_addr = host_port_pair(await self.etcd.get('nodes/manager/event_addr'))
+        log.info(f'configured redis_addr: {self.config.redis_addr}')
         log.info(f'configured event_addr: {self.config.event_addr}')
 
     async def scan_running_containers(self):
@@ -253,6 +249,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.scan_running_containers()
         await self.check_images()
 
+        self.redis_stat_pool = await aioredis.create_pool(
+            self.config.redis_addr.as_sockaddr(),
+            create_connection_timeout=3.0,
+            encoding='utf8',
+            db=0)  # REDIS_STAT_DB in backend.ai-manager
+
         self.event_sock = await aiozmq.create_zmq_stream(
             zmq.PUSH, connect=f'tcp://{self.config.event_addr}')
         self.event_sock.transport.setsockopt(zmq.LINGER, 50)
@@ -308,6 +310,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             pass
         await self.docker.close()
+
+        self.redis_stat_pool.close()
+        await self.redis_stat_pool.wait_closed()
 
         # Notify the gateway.
         await self.send_event('instance_terminated', 'shutdown')
@@ -579,14 +584,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         container = self.docker.containers.container(cid)
         await self.clean_runner(kernel_id)
         try:
-            # stats must be collected before killing it.
+            # last moment stats must be collected before killing the container.
             last_stat = (await collect_stats([container]))[0]
-            try:
-                self.container_registry[kernel_id]['last_stat'] = last_stat
-            except KeyError:
-                pass
+            async with self.redis_stat_pool.get() as rs:
+                pipe = rs.pipeline()
+                pipe.hmset_dict(kernel_id, last_stat)
+                pipe.expire(kernel_id, stat_cache_lifespan)
+                await pipe.execute()
             await container.kill()
-            # deleting containers will be done in docker monitor routine.
+            # the container will be deleted in the docker monitoring coroutine.
         except DockerError as e:
             if e.status == 500 and 'is not running' in e.message:
                 # already dead
@@ -769,7 +775,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             for idx, stat in enumerate(stats):
                 kernel_id = running_kernels[idx]
                 pipe.hmset_dict(kernel_id, stat)
-                pipe.expire(kernel_id, 30.0)  # secs
+                pipe.expire(kernel_id, stat_cache_lifespan)
             await pipe.execute()
 
     async def fetch_docker_events(self):
@@ -842,9 +848,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             except FileNotFoundError:
                 pass
             try:
-                # TODO: Store kernel_stat somewhere else and use it when sending "kernel_terminated"
-                #kernel_stat = \
-                #    self.container_registry[kernel_id].get('last_stat', None)
                 self.container_cpu_map.free(
                     self.container_registry[kernel_id]['cpu_set'])
                 del self.container_registry[kernel_id]
