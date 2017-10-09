@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping
 import zmq, aiozmq, aiozmq.rpc
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
+import aioredis
 import aiotools
 from async_timeout import timeout
 import configargparse
@@ -155,10 +156,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     manager_id = ev.value
                     break
         log.info(f'detecting the manager: OK ({manager_id})')
-        self.redis_addr = await self.etcd.get('nodes/redis')
+        self.redis_addr = host_port_pair(await self.etcd.get('nodes/redis'))
         log.info(f'configured redis_addr: {self.redis_addr}')
         self.redis_stat_pool = await aioredis.create_pool(
-            self.redis_addr,
+            self.redis_addr.as_sockaddr(),
             create_connection_timeout=3.0,
             encoding='utf8',
             db=0)  # REDIS_STAT_DB in backend.ai-manager
