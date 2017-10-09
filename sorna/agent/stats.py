@@ -22,46 +22,51 @@ def _collect_stats_sysfs(container):
     mem_prefix = f'/sys/fs/cgroup/memory/docker/{container._id}/'
     io_prefix = f'/sys/fs/cgroup/blkio/docker/{container._id}/'
 
-    cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage') / 1e6
-    mem_max_bytes = read_sysfs(mem_prefix + 'memory.max_usage_in_bytes')
-    mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes')
+    try:
+        cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage') / 1e6
+        mem_max_bytes = read_sysfs(mem_prefix + 'memory.max_usage_in_bytes')
+        mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes')
 
-    io_stats = Path(io_prefix + 'blkio.throttle.io_service_bytes').read_text()
-    # example data:
-    #   8:0 Read 13918208
-    #   8:0 Write 0
-    #   8:0 Sync 0
-    #   8:0 Async 13918208
-    #   8:0 Total 13918208
-    #   Total 13918208
-    io_read_bytes = 0
-    io_write_bytes = 0
-    for line in io_stats.splitlines():
-        if line.startswith('Total '):
-            continue
-        dev, op, bytes = line.strip().split()
-        if op == 'Read':
-            io_read_bytes += int(bytes)
-        elif op == 'Write':
-            io_write_bytes += int(bytes)
+        io_stats = Path(io_prefix + 'blkio.throttle.io_service_bytes').read_text()
+        # example data:
+        #   8:0 Read 13918208
+        #   8:0 Write 0
+        #   8:0 Sync 0
+        #   8:0 Async 13918208
+        #   8:0 Total 13918208
+        #   Total 13918208
+        io_read_bytes = 0
+        io_write_bytes = 0
+        for line in io_stats.splitlines():
+            if line.startswith('Total '):
+                continue
+            dev, op, bytes = line.strip().split()
+            if op == 'Read':
+                io_read_bytes += int(bytes)
+            elif op == 'Write':
+                io_write_bytes += int(bytes)
 
-    pid_list = sorted(read_sysfs(cpu_prefix + 'tasks', numeric_list))
-    primary_pid = pid_list[0]
-    net_dev_stats = Path(f'/proc/{primary_pid}/net/dev').read_text()
-    # example data:
-    #   Inter-|   Receive                                                |  Transmit
-    #    face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
-    #     eth0:     1296     16    0    0    0     0          0         0      816      10    0    0    0     0       0          0
-    #       lo:        0      0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
-    net_rx_bytes = 0
-    net_tx_bytes = 0
-    for line in net_dev_stats.splitlines():
-        if '|' in line:
-            continue
-        data = line.strip().split()
-        if data[0].startswith('eth'):
-            net_rx_bytes += int(data[1])
-            net_tx_bytes += int(data[9])
+        pid_list = sorted(read_sysfs(cpu_prefix + 'tasks', numeric_list))
+        primary_pid = pid_list[0]
+        net_dev_stats = Path(f'/proc/{primary_pid}/net/dev').read_text()
+        # example data:
+        #   Inter-|   Receive                                                |  Transmit
+        #    face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+        #     eth0:     1296     16    0    0    0     0          0         0      816      10    0    0    0     0       0          0
+        #       lo:        0      0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+        net_rx_bytes = 0
+        net_tx_bytes = 0
+        for line in net_dev_stats.splitlines():
+            if '|' in line:
+                continue
+            data = line.strip().split()
+            if data[0].startswith('eth'):
+                net_rx_bytes += int(data[1])
+                net_tx_bytes += int(data[9])
+    except IOError:
+        log.warning('cannot read stats: '
+                    f'sysfs unreadable for container {container._id[:7]}!')
+        return None
 
     return {
         'cpu_used': cpu_used,
@@ -78,7 +83,8 @@ async def _collect_stats_api(container):
     try:
         ret = await container.stats(stream=False)
     except (DockerError, aiohttp.ClientResponseError):
-        log.warning(f'container {container._id[:7]} missing on heartbeat')
+        log.warning('cannot read stats: '
+                    f'API error for container {container._id[:7]}!')
         return None
     else:
         cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
