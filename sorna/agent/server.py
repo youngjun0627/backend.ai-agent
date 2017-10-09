@@ -163,6 +163,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             create_connection_timeout=3.0,
             encoding='utf8',
             db=0)  # REDIS_STAT_DB in backend.ai-manager
+        self.config.event_addr = host_port_pair(await self.etcd.get('nodes/manager/event_addr'))
+        log.info(f'configured event_addr: {self.config.event_addr}')
 
     async def scan_running_containers(self):
         for container in (await self.docker.containers.list()):
@@ -915,7 +917,7 @@ def main():
 
     parser = configargparse.ArgumentParser()
     parser.add('--namespace', type=str, default='local',
-               help='The namespace of this Sorna cluster. (default: local)')
+               help='The namespace of this Backend.AI cluster. (default: local)')
     parser.add('--agent-ip-override', type=ipaddr, default=None, dest='agent_ip',
                env_var='SORNA_AGENT_IP',
                help='Manually set the IP address of this agent to report to the '
@@ -927,9 +929,6 @@ def main():
                env_var='ETCD_ADDR',
                default=HostPortPair(ip_address('127.0.0.1'), 2379),
                help='The host:port pair of the etcd cluster or its proxy.')
-    parser.add('--event-addr', type=host_port_pair,
-               default=HostPortPair(ip_address('127.0.0.1'), 5002),
-               help='The host:port pair of the Gateway event server.')
     parser.add('--idle-timeout', type=positive_int, default=600,
                help='The maximum period of time allowed for kernels to wait '
                     'further requests.')
