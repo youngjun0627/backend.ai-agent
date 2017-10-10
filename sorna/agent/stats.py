@@ -45,6 +45,8 @@ def _collect_stats_sysfs(container):
                 io_read_bytes += int(bytes)
             elif op == 'Write':
                 io_write_bytes += int(bytes)
+        io_max_scratch_size = 0
+        io_cur_scratch_size = 0
 
         pid_list = sorted(read_sysfs(cpu_prefix + 'tasks', numeric_list))
         primary_pid = pid_list[0]
@@ -76,6 +78,8 @@ def _collect_stats_sysfs(container):
         'net_tx_bytes': net_tx_bytes,
         'io_read_bytes': io_read_bytes,
         'io_write_bytes': io_write_bytes,
+        'io_max_scratch_size': io_max_scratch_size,
+        'io_cur_scratch_size': io_cur_scratch_size,
     }
 
 
@@ -90,6 +94,7 @@ async def _collect_stats_api(container):
         cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
         mem_max_bytes = nmget(ret, 'memory_stats.max_usage', 0)
         mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
+
         io_read_bytes = 0
         io_write_bytes = 0
         for item in nmget(ret, 'blkio_stats.io_service_bytes_recursive', []):
@@ -97,6 +102,9 @@ async def _collect_stats_api(container):
                 io_read_bytes += item['value']
             elif item['op'] == 'Write':
                 io_write_bytes += item['value']
+        io_max_scratch_size = 0
+        io_cur_scratch_size = 0
+
         net_rx_bytes = 0
         net_tx_bytes = 0
         for dev in nmget(ret, 'networks', {}).values():
@@ -110,6 +118,8 @@ async def _collect_stats_api(container):
         'net_tx_bytes': net_tx_bytes,
         'io_read_bytes': io_read_bytes,
         'io_write_bytes': io_write_bytes,
+        'io_max_scratch_size': io_max_scratch_size,
+        'io_cur_scratch_size': io_cur_scratch_size,
     }
 
 
