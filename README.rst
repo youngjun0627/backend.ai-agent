@@ -86,6 +86,8 @@ Networking
 ~~~~~~~~~~
 
 Basically all TCP ports must be transparently open to the manager.
+The manager and agent should run in the same local network or different
+networks reachable via VPNs.
 
 The operation of agent itself does not require both incoming/outgoing access to
 the public Internet, but if the user's computation programs need, the docker
