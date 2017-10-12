@@ -116,7 +116,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     def __init__(self, config, loop=None):
         self.config = config
-        #self.events = events
         self.container_registry = {}
         self.container_cpu_map = CPUAllocMap()
 
