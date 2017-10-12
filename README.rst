@@ -1,6 +1,10 @@
 Backend.AI Agent
 ================
 
+The Backend.AI Agent is a small daemon that reports the status of a worker
+computater (either a physical server or a virtualized cloud instance)
+to the manager and performs computation requests assigned by the manager.
+
 Package Structure
 -----------------
 
@@ -20,8 +24,8 @@ or Linux distros.
 
    pip install backend.ai-agent
 
-For development:
-~~~~~~~~~~~~~~~~
+For development
+~~~~~~~~~~~~~~~
 
 We recommend to use an isolated virtual environment.
 This installs the current working copy and backend.ai-common as "editable" packages.
@@ -38,8 +42,8 @@ This installs the current working copy and backend.ai-common as "editable" packa
 Deployment
 ----------
 
-Running from a command line:
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Running from a command line
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Minimal command to execute:
 
@@ -57,8 +61,8 @@ containers).  You can change the location by ``--scratch-root`` option.
 
 For more arguments and options, run the command with ``--help`` option.
 
-Example agent config:
-~~~~~~~~~~~~~~~~~~~~~
+Example config for agent server/instances
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``/etc/supervisord/conf.d/agent.conf``:
 
@@ -78,8 +82,15 @@ Example agent config:
    source /home/user/venv/bin/activate
    exec python -m ai.backend.agent.server --etcd-addr localhost:2379
 
-TCP Port numbers to open against the manager
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Networking
+~~~~~~~~~~
 
-* 6001: ZeroMQ-based internal agent control protocol.
-* The containers will open arbitrary ports for their local 2000-2003 ports for REPL I/O and TTY I/O.
+Basically all TCP ports must be transparently open to the manager.
+
+The operation of agent itself does not require both incoming/outgoing access to
+the public Internet, but if the user's computation programs need, the docker
+containers should be able to access the public Internet (maybe via some
+corporate firewalls).
+
+Several optional features such as automatic kernel image updates may require
+outgoing public Internet access from the agent as well.
