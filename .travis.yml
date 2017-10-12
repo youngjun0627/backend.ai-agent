@@ -21,7 +21,7 @@ env:
 
 # TODO: the test suite should be updated
 matrix:
-  allowed_failures:
+  allow_failures:
     - python: "3.6"
 
 # stage def.
