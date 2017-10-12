@@ -1,4 +1,3 @@
-import pathlib
 import re
 
 import asynctest
@@ -84,6 +83,7 @@ def mock_docker(mocker):
         return m
     return _generate
 
+
 @pytest.mark.asyncio
 async def test_prepare_nvidia_no_nvdocker(mocker, mock_docker):
 
@@ -111,7 +111,7 @@ async def test_prepare_nvidia_no_gpu(
     mocked_requests.side_effect = [mocked_nvparams, mocked_gpuinfo]
 
     mocked_docker = mock_docker(existing_volumes=['x'])  # no existing volumes
-    mocked_docker_volcreate = mocked_docker.volumes.create = asynctest.CoroutineMock()
+    mocked_docker.volumes.create = asynctest.CoroutineMock()
 
     mocked_path = mocker.patch('ai.backend.agent.gpu.Path')
     mocked_path_obj = mocker.MagicMock()
@@ -295,3 +295,6 @@ async def test_prepare_nvidia_numa_multinode(
     mocked_path.assert_any_call('/sys/bus/pci/devices/0000:00:1f.0/numa_node')
     mocked_path.assert_any_call('/sys/bus/pci/devices/0000:80:00.0/numa_node')
     mocked_path.assert_any_call('/sys/bus/pci/devices/0000:81:00.0/numa_node')
+
+
+# flake8: noqa: E501

@@ -125,15 +125,13 @@ class KernelRunner:
         if self.watchdog_task and not self.watchdog_task.done():
             self.watchdog_task.cancel()
             await self.watchdog_task
-        if (self.input_stream and
-            not self.input_stream.at_closing() and
+        if (self.input_stream and not self.input_stream.at_closing() and
             self.input_stream.transport):
             # only when really closable...
             self.input_stream.close()
-        if (self.output_stream and
-            not self.output_stream.at_closing() and
-            # only when really closable...
+        if (self.output_stream and not self.output_stream.at_closing() and
             self.output_stream.transport):
+            # only when really closable...
             self.output_stream.close()
 
     async def feed_batch_opts(self, opts):

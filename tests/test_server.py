@@ -54,7 +54,8 @@ def mock_volumes_list():
 @pytest.fixture
 async def mock_agent(monkeypatch):
     config = argparse.Namespace()
-    config.etcd_addr = host_port_pair(os.environ.get('BACKEND_ETCD_ADDR', 'localhost:2379'))
+    config.etcd_addr = host_port_pair(
+        os.environ.get('BACKEND_ETCD_ADDR', 'localhost:2379'))
     config.namespace = os.environ.get('BACKEND_NAMESPACE', 'local')
     config.instance_id = 'i-testing'
     config.instance_ip = '127.0.0.1'
@@ -67,8 +68,8 @@ async def mock_agent(monkeypatch):
     monkeypatch.setattr(server_mod.AsyncEtcd, 'get',
                         asynctest.CoroutineMock(), raising=False)
     # TODO
-    #monkeypatch.setattr(server_mod.AgentEventPublisher, 'publish',
-    #                    asynctest.CoroutineMock(), raising=False)
+    # monkeypatch.setattr(server_mod.AgentEventPublisher, 'publish',
+    #                     asynctest.CoroutineMock(), raising=False)
 
     agent = AgentRPCServer(config)
     print('mock_agent init1')
@@ -128,6 +129,7 @@ async def test_create_kernel(mock_agent):
     assert inport == 1
     assert outport == 2
 
+
 @pytest.mark.asyncio
 async def test_destroy_kernel(mock_agent):
     agent = mock_agent
@@ -135,6 +137,7 @@ async def test_destroy_kernel(mock_agent):
     await agent.destroy_kernel('fakeid')
     agent._destroy_kernel.assert_called_once_with('fakeid',
                                                   'user-requested')
+
 
 @pytest.mark.asyncio
 async def test_restart_kernel(mock_agent):
@@ -153,10 +156,11 @@ async def test_restart_kernel(mock_agent):
     assert inport == 1
     assert outport == 2
 
+
 @pytest.mark.asyncio
 async def test_execute_code(mocker, mock_agent):
     agent = mock_agent
-    #agent._execute_code = asynctest.CoroutineMock(return_value={'mock': 1})
+    # agent._execute_code = asynctest.CoroutineMock(return_value={'mock': 1})
 
     result = await agent.execute_code(
         api_version=2,
@@ -166,6 +170,7 @@ async def test_execute_code(mocker, mock_agent):
         opts={})
 
     assert result == {'mock': 1}
+
 
 @pytest.mark.asyncio
 async def test_reset(mock_agent):
@@ -178,6 +183,7 @@ async def test_reset(mock_agent):
     assert 2 == agent._destroy_kernel.call_count
     agent._destroy_kernel.assert_any_call('1', 'agent-reset')
     agent._destroy_kernel.assert_any_call('2', 'agent-reset')
+
 
 ################################
 # AgentRPCServer._create_kernel
@@ -226,6 +232,7 @@ async def test__create_kernel_with_minimal_confs(mock_agent, tmpdir):
     assert container_info['stdout_port'] == 'stdout'
     assert container_info['cpu_shares'] == 1024
     assert container_info['num_queries'] == 0
+
 
 @pytest.mark.asyncio
 async def test__create_kernel_with_existing_kernel_id(mock_agent,
@@ -281,6 +288,7 @@ async def test__create_kernel_with_existing_kernel_id(mock_agent,
     restarting_kernels = old_restarting_kernels
 ################################
 
+
 @pytest.mark.asyncio
 async def test__destroy_kernel(mocker, mock_agent):
     kernel_id, reason = 'fake-kernel-id', 'fake-reason'
@@ -311,6 +319,7 @@ async def test__destroy_kernel(mocker, mock_agent):
     mock_container.kill.assert_called_once_with()
     assert 'last_stat' in agent.container_registry[kernel_id]
     assert 'last_stat' not in agent.container_registry['other-kernel-id']
+
 
 ###############################
 # AgentRPCServer._execute_code
@@ -377,6 +386,7 @@ async def test__execute_code(mocker, mock_agent, tmpdir, up_files):
         assert 0 == mock_upload_to_s3.call_count
         assert result['files'] == []  # not 'fake-uploaded-files'
 
+
 @pytest.mark.asyncio
 async def test__execute_code_timeout_error(mocker, mock_agent, tmpdir):
     entry_id = 'fake-entry-id'
@@ -412,6 +422,7 @@ async def test__execute_code_timeout_error(mocker, mock_agent, tmpdir):
                                                   'exec-timeout')
 ###############################
 
+
 @pytest.mark.asyncio
 async def test_heartbeat(mock_agent):
     agent = mock_agent
@@ -435,6 +446,7 @@ async def test_heartbeat(mock_agent):
         'instance_heartbeat', fake_config_info['inst_id'], mock.ANY,
         ['kernel-id-1', 'kernel-id-2'], 5)
 
+
 @pytest.mark.asyncio
 async def test_update_stats(mocker, mock_agent):
     mock_collect_stats = mocker.patch('ai.backend.agent.server.collect_stats',
@@ -456,7 +468,7 @@ async def test_update_stats(mocker, mock_agent):
             'exec_timeout': 10,
             'mem_limit': 1024,
             'num_queries': 2,
-            'last_used': 000000,
+            'last_used': 0,
         },
     }
     agent.config.idle_timeout = 30
@@ -470,7 +482,8 @@ async def test_update_stats(mocker, mock_agent):
     assert mock_stats[0]['idle_timeout'] == 30
     assert mock_stats[0]['mem_limit'] == 1
     assert mock_stats[0]['num_queries'] == 2
-    assert mock_stats[0]['idle'] > 000000
+    assert mock_stats[0]['idle'] > 0
+
 
 @pytest.mark.asyncio
 async def test_fetch_docker_events(mock_agent):
@@ -481,13 +494,14 @@ async def test_fetch_docker_events(mock_agent):
 
     assert 3 == agent.docker.events.run.call_count  # 0, 1, raise err
 
+
 @pytest.mark.asyncio
 async def test_monitor_clean_kernel_upon_action_die(mock_agent):
     agent = mock_agent
     mock_subscriber = agent.docker.events.subscribe.return_value = \
             mock.Mock()
     mock_subscriber.get = asynctest.CoroutineMock()
-    mock_evdata = mock_subscriber.get.side_effect = [{
+    mock_subscriber.get.side_effect = [{
         'Action': 'die',
         'id': 'fake-container-id',
         'Actor': {
@@ -501,6 +515,7 @@ async def test_monitor_clean_kernel_upon_action_die(mock_agent):
     await agent.monitor()
 
     agent.clean_kernel.assert_called_once_with('fake-kernel-id')
+
 
 @pytest.mark.asyncio
 async def test_clean_kernel(mock_agent, tmpdir):
@@ -524,6 +539,7 @@ async def test_clean_kernel(mock_agent, tmpdir):
     agent.container_cpu_map.free.assert_called_once_with(mock.ANY)
     assert 'kernel-id-1' not in agent.container_registry
 
+
 @pytest.mark.asyncio
 async def test_clean_old_kernels(mock_agent):
     agent = mock_agent
@@ -540,6 +556,7 @@ async def test_clean_old_kernels(mock_agent):
     agent._destroy_kernel.assert_called_once_with(
         'kernel-id-1', 'idle-timeout')
 
+
 @pytest.mark.asyncio
 async def test_do_not_clean_new_kernels(mock_agent):
     agent = mock_agent
@@ -554,6 +571,7 @@ async def test_do_not_clean_new_kernels(mock_agent):
     await agent.clean_old_kernels()
 
     agent._destroy_kernel.assert_not_called()
+
 
 @pytest.mark.asyncio
 async def test_clean_all_kernels(mock_agent):

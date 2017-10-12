@@ -3,23 +3,19 @@ from ipaddress import ip_address
 import logging, logging.config
 import os, os.path
 from pathlib import Path
-import secrets
-import signal
 import shutil
-import sys
 import time
-from typing import Any, Callable, Mapping
 
-import zmq, aiozmq, aiozmq.rpc
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
 import aioredis
 import aiotools
+import aiozmq, aiozmq.rpc
 from async_timeout import timeout
 import configargparse
 from namedlist import namedtuple
 import uvloop
-import zmq, aiozmq, aiozmq.rpc
+import zmq
 try:
     import datadog
     datadog_available = True
@@ -157,7 +153,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     break
         log.info(f'detecting the manager: OK ({manager_id})')
         self.config.redis_addr = host_port_pair(await self.etcd.get('nodes/redis'))
-        self.config.event_addr = host_port_pair(await self.etcd.get('nodes/manager/event_addr'))
+        self.config.event_addr = host_port_pair(
+            await self.etcd.get('nodes/manager/event_addr'))
         log.info(f'configured redis_addr: {self.config.redis_addr}')
         log.info(f'configured event_addr: {self.config.event_addr}')
 
@@ -174,7 +171,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 labels = container['Labels']
                 # NOTE: this changes the content of container incompatibly.
                 details = await container.show()
-                cpu_set = set(map(int, (details['HostConfig']['CpusetCpus']).split(',')))
+                cpu_set = set(
+                    map(int, (details['HostConfig']['CpusetCpus']).split(',')))
                 self.container_cpu_map.update(cpu_set)
                 self.container_registry[kernel_id] = {
                     'lang': container['Image'],
@@ -197,7 +195,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 }
             elif container['State'] in {'exited', 'dead', 'removing'}:
                 log.info(f'detected terminated kernel: {kernel_id}')
-                await self.send_event('kernel_terminated', kernel_id, 'self-terminated', None)
+                await self.send_event('kernel_terminated', kernel_id,
+                                      'self-terminated', None)
 
     async def update_status(self, status):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
@@ -274,7 +273,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('serving at {0}'.format(agent_addr))
 
         # Ready.
-        await self.etcd.put(f'nodes/agents/{self.config.instance_id}/ip', self.config.agent_ip)
+        await self.etcd.put(f'nodes/agents/{self.config.instance_id}/ip',
+                            self.config.agent_ip)
         await self.update_status('running')
 
         # Notify the gateway.
@@ -451,7 +451,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         work_dir = self.config.scratch_root / kernel_id
 
         # TODO: implement
-        vfolders = []
+        vfolders = []  # noqa
 
         if kernel_id in self.restarting_kernels:
             # Wait until the previous container is actually deleted.
@@ -674,8 +674,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.exception('unexpected error')
             raise
         finally:
-            if utils.nmget(self.container_registry, f'{kernel_id}/runner_atsk', None, '/'):
-                self.container_registry[kernel_id]['runner_tasks'].remove(myself)
+            runner_tasks = utils.nmget(self.container_registry,
+                                       f'{kernel_id}/runner_tasks', None, '/')
+            if runner_tasks is not None:
+                runner_tasks.remove(myself)
 
         try:
             output_files = []
@@ -717,12 +719,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def _get_completions(self, kernel_id, text, opts):
         runner = await self._ensure_runner(kernel_id)
         result = await runner.feed_and_get_completion(text, opts)
-        return { 'status': 'finished', 'completions': result }
+        return {'status': 'finished', 'completions': result}
 
     async def _interrupt_kernel(self, kernel_id):
         runner = await self._ensure_runner(kernel_id)
         await runner.feed_interrupt()
-        return { 'status': 'finished' }
+        return {'status': 'finished'}
 
     async def _accept_file(self, kernel_id, filename, filedata):
         work_dir = self.config.scratch_root / kernel_id
@@ -828,7 +830,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.clean_runner(kernel_id)
             try:
                 await container.delete()
-                #pass
             except DockerError as e:
                 if e.status == 400 and 'already in progress' in e.message:
                     pass
@@ -939,7 +940,8 @@ def main():
                help='Enable more verbose logging.')
     parser.add('--kernel-aliases', type=str, default=None,
                help='The filename for additional kernel aliases')
-    parser.add('--scratch-root', type=Path, default=Path('/var/lib/backend.ai-scratches'),
+    parser.add('--scratch-root', type=Path,
+               default=Path('/var/cache/scratches'),
                env_var='BACKEND_SCRATCH_ROOT',
                help='The scratch directory to store container working directories.')
     if datadog_available:
@@ -1049,7 +1051,8 @@ def main():
         log_config.debug('debug mode enabled.')
 
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    aiotools.start_server(server_main, num_workers=1, use_threading=True, args=(args, ))
+    aiotools.start_server(server_main, num_workers=1,
+                          use_threading=True, args=(args, ))
     log.info('exit.')
 
 

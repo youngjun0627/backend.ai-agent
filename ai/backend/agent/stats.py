@@ -52,10 +52,10 @@ def _collect_stats_sysfs(container):
         primary_pid = pid_list[0]
         net_dev_stats = Path(f'/proc/{primary_pid}/net/dev').read_text()
         # example data:
-        #   Inter-|   Receive                                                |  Transmit
-        #    face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
-        #     eth0:     1296     16    0    0    0     0          0         0      816      10    0    0    0     0       0          0
-        #       lo:        0      0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+        #   Inter-|   Receive                                                |  Transmit                                                  # noqa: E501
+        #    face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed    # noqa: E501
+        #     eth0:     1296     16    0    0    0     0          0         0      816      10    0    0    0     0       0          0    # noqa: E501
+        #       lo:        0      0    0    0    0     0          0         0        0       0    0    0    0     0       0          0    # noqa: E501
         net_rx_bytes = 0
         net_tx_bytes = 0
         for line in net_dev_stats.splitlines():

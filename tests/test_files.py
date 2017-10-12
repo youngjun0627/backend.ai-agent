@@ -73,7 +73,6 @@ class TestUploadOutputFilesToS3:
         assert diff == mock_diff.return_value
 
 
-
 class TestScandir:
     def test_scandir(self, tmpdir):
         # Create two files.

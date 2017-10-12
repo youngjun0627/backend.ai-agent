@@ -1,6 +1,3 @@
-import os
-
-import pytest
 from unittest import mock
 
 import ai.backend.agent.resources as resources

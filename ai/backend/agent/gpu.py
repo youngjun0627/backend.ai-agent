@@ -45,11 +45,13 @@ async def prepare_nvidia(docker, numa_node):
             for gpu in gpu_info['Devices']:
                 if gpu['Path'] == dev:
                     try:
-                        pci_path = f"/sys/bus/pci/devices/{gpu['PCI']['BusID'].lower()}/numa_node"
+                        pci_id = gpu['PCI']['BusID'].lower()
+                        pci_path = f"/sys/bus/pci/devices/{pci_id}/numa_node"
                         gpu_node = int(Path(pci_path).read_text().strip())
                     except FileNotFoundError:
                         gpu_node = -1
-                    # Even when numa_node file exists, gpu_node may become -1 (e.g., Amazon p2 instances)
+                    # Even when numa_node file exists, gpu_node may become -1
+                    # (e.g., Amazon p2 instances)
                     if gpu_node == numa_node or gpu_node == -1:
                         devices.append(dev)
     devices = [{
