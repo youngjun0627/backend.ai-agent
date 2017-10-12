@@ -1,6 +1,17 @@
 Changes
 =======
 
+1.0.0 (2017-10-17)
+------------------
+
+**CHANGES**
+
+ * Rename the package to "Backend.AI" and the import path to "ai.backend.agent"
+ * Rewrite interaction with the manager
+ * Read configuration from etcd shared with the manager
+ * Add FIFO-style scheduling of overlapped execution requests
+ * Implement I/O and network statistic collection using sysfs
+
 0.9.14 (2017-08-29)
 -------------------
 
