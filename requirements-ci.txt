@@ -1,3 +1,4 @@
+--no-binary protobuf protobuf
 -e git+https://github.com/achimnol/aiodocker@master#egg=aiodocker
 -e git+https://github.com/lablup/backend.ai-common@{BRANCH}#egg=backend.ai-common
 -e .[build,test,ci]
