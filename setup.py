@@ -1,7 +1,7 @@
 from setuptools import setup
 from pathlib import Path
 
-from sorna.agent.version import VERSION
+from ai.backend.agent.version import VERSION
 
 
 requires = [
@@ -14,13 +14,15 @@ requires = [
     'aiohttp~=2.2.0',
     'aioredis>=0.2.8',
     'aiobotocore>=0.3.0',
+    'aiotools>=0.4.4',
     'namedlist',
+    'psutil',
     'requests',
     'requests_unixsocket',
     'simplejson',
     'uvloop>=0.8',
     'psutil>=5.2.2',
-    'sorna-common~=1.0.0',
+    'backend.ai-common~=1.0.0',
 ]
 build_requires = [
     'wheel',
@@ -32,7 +34,6 @@ test_requires = [
     'pytest-mock',
     'asynctest',
     'flake8',
-    'pep8-naming',
 ]
 dev_requires = build_requires + test_requires + [
     'pytest-sugar',
@@ -45,11 +46,11 @@ monitor_requires = [
 
 
 setup(
-    name='sorna-agent',
+    name='backend.ai-agent',
     version=VERSION,
-    description='Sorna agent',
+    description='Backend.AI Agent',
     long_description=Path('README.rst').read_text(),
-    url='https://github.com/lablup/sorna-agent',
+    url='https://github.com/lablup/backend.ai-agent',
     author='Lablup Inc.',
     author_email='joongi@lablup.com',
     license='LGPLv3',
@@ -67,8 +68,7 @@ setup(
         'Topic :: Software Development',
     ],
 
-    packages=['sorna.agent'],
-    namespace_packages=['sorna'],
+    packages=['ai.backend.agent'],
 
     python_requires='>=3.6',
     install_requires=requires,

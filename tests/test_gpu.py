@@ -5,7 +5,7 @@ import asynctest
 import pytest
 import requests
 
-from sorna.agent.gpu import prepare_nvidia
+from ai.backend.agent.gpu import prepare_nvidia
 
 
 class MockResponse:
@@ -113,7 +113,7 @@ async def test_prepare_nvidia_no_gpu(
     mocked_docker = mock_docker(existing_volumes=['x'])  # no existing volumes
     mocked_docker_volcreate = mocked_docker.volumes.create = asynctest.CoroutineMock()
 
-    mocked_path = mocker.patch('sorna.agent.gpu.Path')
+    mocked_path = mocker.patch('ai.backend.agent.gpu.Path')
     mocked_path_obj = mocker.MagicMock()
     mocked_path_obj.read_text.return_value = '-1'
     mocked_path.return_value = mocked_path_obj
@@ -145,7 +145,7 @@ async def test_prepare_nvidia_no_numa(
     mocked_docker = mock_docker(existing_volumes=['x'])  # no existing volumes
     mocked_docker_volcreate = mocked_docker.volumes.create = asynctest.CoroutineMock()
 
-    mocked_path = mocker.patch('sorna.agent.gpu.Path')
+    mocked_path = mocker.patch('ai.backend.agent.gpu.Path')
     mocked_path_obj = mocker.MagicMock()
     mocked_path_obj.read_text.return_value = '-1'
     mocked_path.return_value = mocked_path_obj
@@ -185,7 +185,7 @@ async def test_prepare_nvidia_no_numa2(
     mocked_docker_volcreate = mocked_docker.volumes.create = asynctest.CoroutineMock()
 
     # For old systems without NUMA, the sysfs may not have numa_node files!
-    mocked_path = mocker.patch('sorna.agent.gpu.Path')
+    mocked_path = mocker.patch('ai.backend.agent.gpu.Path')
     mocked_path_obj = mocker.MagicMock()
     mocked_path_obj.read_text.side_effect = FileNotFoundError
     mocked_path.return_value = mocked_path_obj
@@ -225,7 +225,7 @@ async def test_prepare_nvidia_existing_vols(
     mocked_docker = mock_docker(existing_volumes=['x', 'nvidia_extra'])
     mocked_docker_volcreate = mocked_docker.volumes.create = asynctest.CoroutineMock()
 
-    mocked_path = mocker.patch('sorna.agent.gpu.Path')
+    mocked_path = mocker.patch('ai.backend.agent.gpu.Path')
     mocked_path_obj = mocker.MagicMock()
     mocked_path_obj.read_text.return_value = '0'
     mocked_path.return_value = mocked_path_obj
@@ -265,7 +265,7 @@ async def test_prepare_nvidia_numa_multinode(
     mocked_docker = mock_docker(existing_volumes=['x'])  # no existing volumes
     mocked_docker_volcreate = mocked_docker.volumes.create = asynctest.CoroutineMock()
 
-    mocked_path = mocker.patch('sorna.agent.gpu.Path')
+    mocked_path = mocker.patch('ai.backend.agent.gpu.Path')
     mocked_path_obj = mocker.MagicMock()
 
     def get_node_of_gpu():

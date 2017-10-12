@@ -31,12 +31,12 @@ try:
 except ImportError:
     raven_available = False
 
-from sorna.common import utils, identity, msgpack
-from sorna.common.etcd import AsyncEtcd
-from sorna.common.argparse import (
+from ai.backend.common import utils, identity, msgpack
+from ai.backend.common.etcd import AsyncEtcd
+from ai.backend.common.argparse import (
     ipaddr, port_no, HostPortPair,
     host_port_pair, positive_int)
-from sorna.common.monitor import DummyStatsd, DummySentry
+from ai.backend.common.monitor import DummyStatsd, DummySentry
 from .version import VERSION
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
@@ -44,7 +44,7 @@ from .stats import collect_stats
 from .resources import detect_slots, libnuma, CPUAllocMap
 from .kernel import KernelRunner, KernelFeatures, ExpectedInput
 
-log = logging.getLogger('sorna.agent.server')
+log = logging.getLogger('ai.backend.agent.server')
 
 supported_langs = {
     'python2',
@@ -145,7 +145,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if raven_available and self.config.raven_uri:
             self.sentry = raven.Client(
                 self.config.raven_uri,
-                release=raven.fetch_package_version('sorna-agent'))
+                release=raven.fetch_package_version('backend.ai-agent'))
 
     async def detect_manager(self):
         log.info('detecting the manager...')
@@ -921,11 +921,11 @@ def main():
     parser.add('--namespace', type=str, default='local',
                help='The namespace of this Backend.AI cluster. (default: local)')
     parser.add('--agent-ip-override', type=ipaddr, default=None, dest='agent_ip',
-               env_var='SORNA_AGENT_IP',
+               env_var='BACKEND_AGENT_IP',
                help='Manually set the IP address of this agent to report to the '
                     'manager.')
     parser.add('--agent-port', type=port_no, default=6001,
-               env_var='SORNA_AGENT_PORT',
+               env_var='BACKEND_AGENT_PORT',
                help='The port number to listen on.')
     parser.add('--etcd-addr', type=host_port_pair,
                env_var='ETCD_ADDR',
@@ -939,8 +939,8 @@ def main():
                help='Enable more verbose logging.')
     parser.add('--kernel-aliases', type=str, default=None,
                help='The filename for additional kernel aliases')
-    parser.add('--scratch-root', type=Path, default=Path('/var/lib/sorna-volumes'),
-               env_var='SORNA_SCRATCH_ROOT',
+    parser.add('--scratch-root', type=Path, default=Path('/var/lib/backend.ai-scratches'),
+               env_var='BACKEND_SCRATCH_ROOT',
                help='The scratch directory to store container working directories.')
     if datadog_available:
         parser.add('--datadog-api-key', env_var='DATADOG_API_KEY',
@@ -1041,10 +1041,10 @@ def main():
                 assert target in supported_langs
                 lang_aliases[alias] = target
 
-    log.info(f'Sorna Agent {VERSION}')
+    log.info(f'Backend.AI Agent {VERSION}')
     log.info(f'runtime: {utils.env_info()}')
 
-    log_config = logging.getLogger('sorna.agent.config')
+    log_config = logging.getLogger('ai.backend.agent.config')
     if args.debug:
         log_config.debug('debug mode enabled.')
 

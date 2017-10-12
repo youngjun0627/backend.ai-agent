@@ -9,13 +9,13 @@ import pytest
 import simplejson as json
 from aiodocker.docker import Docker
 
-import sorna.agent.server as server_mod
-from sorna.agent.resources import CPUAllocMap
-from sorna.agent.server import (
+import ai.backend.agent.server as server_mod
+from ai.backend.agent.resources import CPUAllocMap
+from ai.backend.agent.server import (
     get_extra_volumes,
     AgentRPCServer,
 )
-from sorna.common.argparse import host_port_pair
+from ai.backend.common.argparse import host_port_pair
 
 
 @pytest.fixture
@@ -54,8 +54,8 @@ def mock_volumes_list():
 @pytest.fixture
 async def mock_agent(monkeypatch):
     config = argparse.Namespace()
-    config.etcd_addr = host_port_pair(os.environ.get('SORNA_ETCD_ADDR', 'localhost:2379'))
-    config.namespace = os.environ.get('SORNA_NAMESPACE', 'local')
+    config.etcd_addr = host_port_pair(os.environ.get('BACKEND_ETCD_ADDR', 'localhost:2379'))
+    config.namespace = os.environ.get('BACKEND_NAMESPACE', 'local')
     config.instance_id = 'i-testing'
     config.instance_ip = '127.0.0.1'
     config.datadog_api_key = None
@@ -257,7 +257,7 @@ async def test__create_kernel_with_existing_kernel_id(mock_agent,
     lang = 'python3'
     kernel_id = 'fake-kernel-id'
 
-    from sorna.agent.server import restarting_kernels
+    from ai.backend.agent.server import restarting_kernels
     old_restarting_kernels = restarting_kernels
     restarting_kernels[kernel_id] = mock.Mock()
     restarting_kernels[kernel_id].wait = asynctest.CoroutineMock()
@@ -285,7 +285,7 @@ async def test__create_kernel_with_existing_kernel_id(mock_agent,
 async def test__destroy_kernel(mocker, mock_agent):
     kernel_id, reason = 'fake-kernel-id', 'fake-reason'
 
-    mock_collect_stats = mocker.patch('sorna.agent.server.collect_stats',
+    mock_collect_stats = mocker.patch('ai.backend.agent.server.collect_stats',
                                       new_callable=asynctest.CoroutineMock)
     mock_collect_stats.return_value = [mock.Mock()]
 
@@ -336,14 +336,14 @@ async def test__execute_code(mocker, mock_agent, tmpdir, up_files):
         })
     ]
     mock_upload_to_s3 = mocker.patch(
-        'sorna.agent.server.upload_output_files_to_s3',
+        'ai.backend.agent.server.upload_output_files_to_s3',
         new_callable=asynctest.CoroutineMock
     )
     mock_upload_to_s3.return_value = ['fake-uploaded-files']
     mock_container_sock = mock.Mock()
     mock_container_sock.read = asynctest.CoroutineMock(
         return_value=read_data)
-    mock_aiozmq = mocker.patch('sorna.agent.server.aiozmq')
+    mock_aiozmq = mocker.patch('ai.backend.agent.server.aiozmq')
     mock_aiozmq.create_zmq_stream = asynctest.CoroutineMock()
     mock_aiozmq.create_zmq_stream.return_value = mock_container_sock
 
@@ -389,7 +389,7 @@ async def test__execute_code_timeout_error(mocker, mock_agent, tmpdir):
     mock_container_sock = mock.Mock()
     mock_container_sock.read = asynctest.CoroutineMock(
         side_effect=asyncio.TimeoutError)
-    mock_aiozmq = mocker.patch('sorna.agent.server.aiozmq')
+    mock_aiozmq = mocker.patch('ai.backend.agent.server.aiozmq')
     mock_aiozmq.create_zmq_stream = asynctest.CoroutineMock()
     mock_aiozmq.create_zmq_stream.return_value = mock_container_sock
 
@@ -437,7 +437,7 @@ async def test_heartbeat(mock_agent):
 
 @pytest.mark.asyncio
 async def test_update_stats(mocker, mock_agent):
-    mock_collect_stats = mocker.patch('sorna.agent.server.collect_stats',
+    mock_collect_stats = mocker.patch('ai.backend.agent.server.collect_stats',
                                       new_callable=asynctest.CoroutineMock)
     mock_stats = mock_collect_stats.return_value = [
         {
@@ -529,7 +529,7 @@ async def test_clean_old_kernels(mock_agent):
     agent = mock_agent
     agent.container_registry = {
         'kernel-id-1': {
-            'last_used': 000000,
+            'last_used': 0,
         },
     }
     agent.config.idle_timeout = 1
@@ -545,7 +545,7 @@ async def test_do_not_clean_new_kernels(mock_agent):
     agent = mock_agent
     agent.container_registry = {
         'kernel-id-1': {
-            'last_used': 000000,
+            'last_used': 0,
         },
     }
     agent.config.idle_timeout = 999999
@@ -560,7 +560,7 @@ async def test_clean_all_kernels(mock_agent):
     agent = mock_agent
     agent.container_registry = {
         'kernel-id-1': {
-            'last_used': 000000,
+            'last_used': 0,
         },
     }
     agent._destroy_kernel = asynctest.CoroutineMock()

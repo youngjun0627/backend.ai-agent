@@ -5,7 +5,7 @@ from pathlib import Path
 
 import botocore, aiobotocore
 
-log = logging.getLogger('sorna.agent.files')
+log = logging.getLogger('ai.backend.agent.files')
 
 # the names of following AWS variables follow boto3 convention.
 s3_access_key = os.environ.get('AWS_ACCESS_KEY_ID', 'dummy-access-key')

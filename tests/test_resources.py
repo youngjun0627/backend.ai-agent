@@ -3,8 +3,8 @@ import os
 import pytest
 from unittest import mock
 
-import sorna.agent.resources as resources
-from sorna.agent.resources import libnuma, CPUAllocMap
+import ai.backend.agent.resources as resources
+from ai.backend.agent.resources import libnuma, CPUAllocMap
 
 
 class TestLibNuma:

@@ -7,7 +7,7 @@ import aiobotocore
 import asynctest
 import pytest
 
-from sorna.agent.files import (
+from ai.backend.agent.files import (
     upload_output_files_to_s3, scandir, diff_file_stats
 )
 
@@ -25,7 +25,7 @@ async def mock_awaitable(**kwargs):
 class TestUploadOutputFilesToS3:
     @pytest.fixture
     def fake_s3_keys(self):
-        import sorna.agent.files as files
+        import ai.backend.agent.files as files
         original_access_key = files.s3_access_key
         original_secret_key = files.s3_secret_key
         files.s3_access_key = 'fake-access-key'
@@ -63,7 +63,7 @@ class TestUploadOutputFilesToS3:
 
     async def test_s3_access_key_required(self, mocker):
         mock_warn = mocker.patch.object(logging.Logger, 'warning')
-        mock_diff = mocker.patch('sorna.agent.files.diff_file_stats')
+        mock_diff = mocker.patch('ai.backend.agent.files.diff_file_stats')
         mock_diff.return_value = 'mock diff'
 
         diff = await upload_output_files_to_s3(

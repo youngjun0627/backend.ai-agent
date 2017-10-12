@@ -1,52 +1,69 @@
-sudo: required
-
 language: python
-python:
-  - "3.6"
 cache: pip
-
 services:
   - docker
-  - rabbitmq
 
+# stage decl.
+stages:
+  - name: test
+  - name: deploy
+    if: tag IS present
+
+# build matrix for test stage
+python:
+  - "3.6"
+os:
+  - linux
 env:
   global:
-    - SORNA_ETCD_ADDR=localhost:2379
-    - SORNA_MQ_ADDR=localhost:5672
-    - SORNA_MQ_LOGIN=guest
-    - SORNA_MQ_PASS=guest
-    - SORNA_NAMESPACE=local
+    - BACKEND_ETCD_ADDR=localhost:2379
+    - BACKEND_NAMESPACE=local
 
-install:
-  - pip install -U pip setuptools
-  - sed -i'' -e "s/{BRANCH}/$TRAVIS_BRANCH/g" requirements-ci.txt
-  - pip install -U -r requirements-ci.txt
+# stage def.
+jobs:
+  include:
 
-before_script:
-  - mkdir -p /tmp/etcd
-  - sudo rabbitmqctl add_vhost "$SORNA_NAMESPACE"
-  - sudo rabbitmqctl set_permissions -p "$SORNA_NAMESPACE" "$SORNA_MQ_LOGIN" '.*' '.*' '.*'
-  - docker run -d -p 2379:2379 -p 2380:2380
-     -v /tmp/etcd:/etcd-data
-     --name sorna-etcd
-     quay.io/coreos/etcd:v3.1.8
-     /usr/local/bin/etcd
-     -name sorna-etcd
-     -data-dir /etcd-data
-     -listen-client-urls http://0.0.0.0:2379
-     -advertise-client-urls http://0.0.0.0:2379
-     -listen-peer-urls http://0.0.0.0:2380
-     -initial-advertise-peer-urls http://0.0.0.0:2380
-     -initial-cluster sorna-etcd=http://0.0.0.0:2380
-     -initial-cluster-token sorna-etcd-token
-     -initial-cluster-state new
-     -auto-compaction-retention 1
+    - stage: test
+      install:
+        - pip install -U pip setuptools
+        - sed -i'' -e "s/{BRANCH}/$TRAVIS_BRANCH/g" requirements-ci.txt
+        - pip install -U -r requirements-ci.txt
+      before_script:
+        - mkdir -p /tmp/etcd
+        - docker run -d -p 2379:2379 -p 2380:2380
+           -v /tmp/etcd:/etcd-data
+           --name backendai-etcd
+           quay.io/coreos/etcd:v3.2.8
+           /usr/local/bin/etcd
+           --name backendai-etcd
+           --data-dir /etcd-data
+           --listen-client-urls http://0.0.0.0:2379
+           --advertise-client-urls http://0.0.0.0:2379
+           --listen-peer-urls http://0.0.0.0:2380
+           --initial-advertise-peer-urls http://0.0.0.0:2380
+           --initial-cluster backendai-etcd=http://0.0.0.0:2380
+           --initial-cluster-token backendai-etcd-token
+           --initial-cluster-state new
+           --auto-compaction-retention 1
+      script:
+        - python -m flake8 ai/backend tests
+        - python -m pytest -m "not integration" --cov=ai/backend
+      after_success:
+        - codecov
 
-script:
-  - python -m pytest -m "not integration" --cov=sorna.agent
-
-after_success:
-  - codecov
+    - stage: deploy
+      python: "3.6"
+      install: skip
+      script: skip
+      deploy:
+        on:
+          tags: true
+        provider: pypi
+        distributions: sdist bdist_wheel
+        skip_upload_docs: true
+        user: lablup
+        password:
+          secure: "dauLot/g37MaxO6EqS1pEwejvK9YBmdtmzj9q68B3V6Dj0X/4poC4kG4RM0yjVzTrsPX/cUdkrw1QxK7Dw/716X+4bdOofQl/GJoFyuJXe971nPgf/JIvKOTDyGL1Y4Ur8lqBNKaYu5G9IfJqbiYzmMJXcqat1C+dQmmVTd8sK5Jt1/gfAtnl7T/KQr6qehx2SZ7o7RwhMmuuXtVeq/kvxxzppKfMV8Ap5lejg5qzFlPm8mp5Nqe6WNM9BwiiuaXYtAoxb5LaKJg8cwl7kqaONuW30+C9KEwkkLdz18EM9hhw4C62FgpjPhOmKcMOWLu3WgPTD8ggkdUZ9iYq9EbSHJmBMKEUvdemxnocKCHAGnYAghW9Jh2d3Mcrx1PYZqlD3ZQuNTm4++BnlhBZfGDnf9//uD03ISe/RINTt+FhpLIx4MxUlrqcTvyzwodXQU27NnDArKPh1wgvk3qGUTtgHvSFrZt2wccGM89qLCe+LMWF2IV3bFataoDMmjDkQQF6YuB23ghL6UhEYKUIMcX63oMVhkmm7WSwhiWJe2MvAoa+3nrqQTTeQmINLlFLxbTewg5MCLwfRO5iu1IVjrSPTmB5yeWSE6UUNGmRHE43U11F/iP0cGNNymydbX3slRm6IAp2np3ZQ8sDhKJXlmv9M9/QHmlXT+b0+XaMXaP88g="
 
 notifications:
   webhooks:

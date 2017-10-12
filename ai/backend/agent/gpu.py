@@ -4,7 +4,7 @@ import re
 
 import requests
 
-log = logging.getLogger('sorna.agent.gpu')
+log = logging.getLogger('ai.backend.agent.gpu')
 
 
 async def prepare_nvidia(docker, numa_node):

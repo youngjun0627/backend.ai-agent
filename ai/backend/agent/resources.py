@@ -9,7 +9,7 @@ import psutil
 import requests
 import requests_unixsocket as requnix
 
-log = logging.getLogger('sorna.agent.resources')
+log = logging.getLogger('ai.backend.agent.resources')
 
 _numa_supported = False
 

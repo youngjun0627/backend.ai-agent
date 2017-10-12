@@ -1,10 +1,11 @@
 from pathlib import Path
+import sys
 from unittest import mock
 
 import asynctest
 import pytest
 
-from sorna.agent.stats import (
+from ai.backend.agent.stats import (
     _collect_stats_sysfs, _collect_stats_api, collect_stats, read_sysfs
 )
 
@@ -50,8 +51,10 @@ def mock_container():
     return mock_container
 
 
+@pytest.mark.skipif(sys.platform != 'linux',
+                    reason="sysfs is only available in Linux")
 def test_collect_stats_sysfs(mocker, mock_container):
-    mock_read_sysfs = mocker.patch('sorna.agent.stats.read_sysfs')
+    mock_read_sysfs = mocker.patch('ai.backend.agent.stats.read_sysfs')
     mock_read_sysfs.side_effect = [1e5, 1024]
 
     stat = _collect_stats_sysfs(mock_container)
@@ -74,9 +77,9 @@ async def test_collect_stats_api(mock_container):
 
 @pytest.mark.asyncio
 async def test_collect_stats(mocker):
-    mock_sys = mocker.patch('sorna.agent.stats.sys')
-    mock_sysfs = mocker.patch('sorna.agent.stats._collect_stats_sysfs')
-    mock_api = mocker.patch('sorna.agent.stats._collect_stats_api')
+    mock_sys = mocker.patch('ai.backend.agent.stats.sys')
+    mock_sysfs = mocker.patch('ai.backend.agent.stats._collect_stats_sysfs')
+    mock_api = mocker.patch('ai.backend.agent.stats._collect_stats_api')
 
     mock_sysfs.assert_not_called()
     mock_api.assert_not_called()

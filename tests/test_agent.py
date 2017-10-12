@@ -9,7 +9,7 @@ from aiodocker.exceptions import DockerError
 import asynctest
 import pytest
 
-from sorna.agent.server import AgentRPCServer
+from ai.backend.agent.server import AgentRPCServer
 
 
 @pytest.fixture
@@ -122,7 +122,7 @@ class TestAgent:
         assert 'last_stat' in agent.container_registry[kernel_id2]
 
     async def test_execute_code_python3(self, agent, mocker):
-        mock_match_result = mocker.patch('sorna.agent.server.match_result')
+        mock_match_result = mocker.patch('ai.backend.agent.server.match_result')
         mock_match_result.return_value = 'match result'
 
         kernel_id, _, _ = await agent.create_kernel('python3', {})
@@ -181,7 +181,7 @@ with open('test.txt', 'w', encoding='utf8') as f:
             assert '한글 테스트' in data
 
     async def test_too_large_file_not_uploaded(self, agent, tmpdir, mocker):
-        from sorna.agent import server
+        from ai.backend.agent import server
         original_max_upload_size = server.max_upload_size
         server.max_upload_size = 1
 

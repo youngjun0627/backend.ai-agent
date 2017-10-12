@@ -12,7 +12,7 @@ from namedlist import namedlist
 import simplejson as json
 import zmq
 
-from sorna.common.utils import StringSetFlag
+from ai.backend.common.utils import StringSetFlag
 
 log = logging.getLogger(__name__)
 

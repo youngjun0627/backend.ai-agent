@@ -12,9 +12,9 @@ from pathlib import Path
 import aiohttp
 from aiodocker.exceptions import DockerError
 
-from sorna.common.utils import nmget
+from ai.backend.common.utils import nmget
 
-log = logging.getLogger('sorna.agent.stats')
+log = logging.getLogger('ai.backend.agent.stats')
 
 
 def _collect_stats_sysfs(container):
