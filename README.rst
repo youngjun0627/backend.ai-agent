@@ -45,19 +45,26 @@ Deployment
 Running from a command line
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Minimal command to execute:
+The minimal command to execute:
 
 .. code-block:: sh
 
-   python -m ai.backend.agent.server --etcd-addr localhost:2379
+   python -m ai.backend.agent.server --etcd-addr localhost:2379 --namespace my-cluster
 
 The agent reads most configurations from the given etcd v3 server where
 the cluster administrator or the Backend.AI manager stores all the necessary
 settings.
 
+The etcd address and namespace must match with the manager to make the agent
+paired and activated.
+By specifying distinguished namespaces, you may share a single etcd cluster with multiple
+separate Backend.AI clusters.
+
 By default the agent uses ``/var/cache/scratches`` directory for making temporary
 home directories used by kernel containers (the ``/home/work`` volume mounted in
-containers).  You can change the location by ``--scratch-root`` option.
+containers).  Note that the directory must exist in prior and the agent-running
+user must have ownership of it.  You can change the location by
+``--scratch-root`` option.
 
 For more arguments and options, run the command with ``--help`` option.
 
@@ -80,7 +87,9 @@ Example config for agent server/instances
 
    #!/bin/sh
    source /home/user/venv/bin/activate
-   exec python -m ai.backend.agent.server --etcd-addr localhost:2379
+   exec python -m ai.backend.agent.server \
+        --etcd-addr localhost:2379 \
+        --namespace my-cluster
 
 Networking
 ~~~~~~~~~~
