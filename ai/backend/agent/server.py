@@ -1049,7 +1049,7 @@ def main():
         log_config.debug('debug mode enabled.')
 
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    aiotools.start_server(server_main, num_proc=1, args=(args, ))
+    aiotools.start_server(server_main, num_workers=1, use_threading=True, args=(args, ))
     log.info('exit.')
 
 
