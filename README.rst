@@ -2,7 +2,7 @@ Backend.AI Agent
 ================
 
 The Backend.AI Agent is a small daemon that reports the status of a worker
-computater (either a physical server or a virtualized cloud instance)
+computer (either a physical server or a virtualized cloud instance)
 to the manager and performs computation requests assigned by the manager.
 
 Package Structure
