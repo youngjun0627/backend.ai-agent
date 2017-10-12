@@ -1,41 +1,39 @@
-Sorna Agent
-===========
+Backend.AI Agent
+================
 
 Package Structure
 -----------------
 
-* sorna
+* ai.backend
    * agent: The agent daemon implementation
+
 
 Installation
 ------------
 
-Sorna Agent requires Python 3.5 or higher.  We highly recommend to use
+Backend.AI Agent requires Python 3.6 or higher.  We highly recommend to use
 `pyenv <https://github.com/yyuu/pyenv>`_ for an isolated setup of custom Python
 versions that might be different from default installations managed by your OS
 or Linux distros.
 
 .. code-block:: sh
 
-   pip install sorna-agent
-
-Due to limitation in current version (9.0.1) of pip, you may encounter errors
-while installing **aiodocker**.  In that case, run ``pip install -r
-requirements.txt`` and try again.
+   pip install backend.ai-agent
 
 For development:
 ~~~~~~~~~~~~~~~~
 
 We recommend to use an isolated virtual environment.
-This installs the current working copy and sorna-common as "editable" packages.
+This installs the current working copy and backend.ai-common as "editable" packages.
 
 .. code-block:: sh
 
-   git clone https://github.com/lablup/sorna-agent.git
-   python -m venv venv-sorna
-   source venv-sorna/bin/activate
-   pip install -U pip setuptools wheel  # ensure latest versions
-   pip install -r requirements-dev.txt
+   git clone https://github.com/lablup/backend.ai-agent.git
+   python -m venv /home/user/venv
+   source /home/user/venv/bin/activate
+   pip install -U pip setuptools   # ensure latest versions
+   pip install -U -r requirements-dev.txt
+
 
 Deployment
 ----------
@@ -43,30 +41,42 @@ Deployment
 Running from a command line:
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-To handle uploads of generated files to AWS S3, you need to set several
-environment variables.  If they are not set, the file upload feature is
-disabled.  Currently we only support S3-based uploads.
+Minimal command to execute:
 
 .. code-block:: sh
 
-   export AWS_ACCESS_KEY_ID="..."
-   export AWS_SECRET_ACCESS_KEY="..."
-   export AWS_REGION="..."     # e.g., ap-northeast-2
-   export AWS_S3_BUCKET="..."  # e.g., my-precious-sorna
-   python -m sorna.agent.server --manager-addr tcp://localhost:5001 --max-kernels 15
+   python -m ai.backend.agent.server --etcd-addr localhost:2379
 
-For details about arguments, run the server with ``--help``.
+The agent reads most configurations from the given etcd v3 server where
+the cluster administrator or the Backend.AI manager stores all the necessary
+settings.
 
-Example supervisord config:
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+By default the agent uses ``/var/cache/scratches`` directory for making temporary
+home directories used by kernel containers (the ``/home/work`` volume mounted in
+containers).  You can change the location by ``--scratch-root`` option.
+
+For more arguments and options, run the command with ``--help`` option.
+
+Example agent config:
+~~~~~~~~~~~~~~~~~~~~~
+
+``/etc/supervisord/conf.d/agent.conf``:
 
 .. code-block:: dosini
 
-   [program:sorna-agent]
+   [program:backend.ai-agent]
+   user = user
    stopsignal = TERM
    stopasgroup = true
-   command = /home/sorna/run-agent.sh
-   environment = AWS_ACCESS_KEY_ID="...",AWS_SECRET_ACCESS_KEy="...",AWS_REGION="...",AWS_S3_BUCKET="..."
+   command = /home/user/run-agent.sh
+
+``/home/user/run-agent.sh``:
+
+.. code-block:: sh
+
+   #!/bin/sh
+   source /home/user/venv/bin/activate
+   exec python -m ai.backend.agent.server --etcd-addr localhost:2379
 
 TCP Port numbers to open against the manager
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
