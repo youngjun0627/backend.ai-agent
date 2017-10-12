@@ -71,7 +71,7 @@ For more arguments and options, run the command with ``--help`` option.
 Example config for agent server/instances
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``/etc/supervisord/conf.d/agent.conf``:
+``/etc/supervisor/conf.d/agent.conf``:
 
 .. code-block:: dosini
 
