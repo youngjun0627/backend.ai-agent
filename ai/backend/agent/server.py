@@ -345,10 +345,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
 
     @aiozmq.rpc.method
-    async def interrupt_kernel(self, kernel_id: str, mode: str):
+    async def interrupt_kernel(self, kernel_id: str):
         log.debug(f'rpc::interrupt_kernel({kernel_id})')
         try:
-            await self._interrupt_kernel(kernel_id, mode)
+            await self._interrupt_kernel(kernel_id)
         except:
             log.exception('unexpected error')
             self.sentry.captureException()
