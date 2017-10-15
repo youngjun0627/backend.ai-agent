@@ -9,7 +9,8 @@ Package Structure
 -----------------
 
 * ai.backend
-   * agent: The agent daemon implementation
+
+  * agent: The agent daemon implementation
 
 
 Installation
