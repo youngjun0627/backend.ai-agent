@@ -28,7 +28,6 @@ except ImportError:
     raven_available = False
 
 from ai.backend.common import utils, identity, msgpack
-from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.argparse import (
     ipaddr, port_no, HostPortPair,
     host_port_pair, positive_int)
@@ -121,7 +120,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.restarting_kernels = {}
         self.blocking_cleans = {}
 
-        self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
+        self.etcd = None
         self.config.redis_addr = None
 
         self.slots = detect_slots()
@@ -145,8 +144,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def detect_manager(self):
         log.info('detecting the manager...')
+        from ai.backend.common.etcd import AsyncEtcd
+        self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
         manager_id = await self.etcd.get('nodes/manager')
         if manager_id is None:
+            log.warning('watching etcd to wait for the manager being availabile')
             async for ev in self.etcd.watch('nodes/manager'):
                 if ev.event == 'put':
                     manager_id = ev.value
@@ -908,11 +910,11 @@ async def server_main(loop, pidx, _args):
     await agent.init()
 
     # Run!
-    try:
-        yield
-    finally:
-        log.info('shutting down...')
-        await agent.shutdown()
+    yield
+
+    # Shutdown.
+    log.info('shutting down...')
+    await agent.shutdown()
 
 
 def main():

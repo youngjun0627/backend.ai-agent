@@ -121,7 +121,7 @@ def gpu_count():
     '''
 
     try:
-        r = requests.get('http://localhost:3476/gpu/info/json')
+        r = requests.get('http://localhost:3476/gpu/info/json', timeout=0.5)
         gpu_info = r.json()
     except requests.exceptions.ConnectionError:
         return 0

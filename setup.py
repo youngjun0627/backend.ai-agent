@@ -14,7 +14,7 @@ requires = [
     'aiohttp~=2.2.0',
     'aioredis>=0.2.8',
     'aiobotocore>=0.3.0',
-    'aiotools>=0.4.4',
+    'aiotools>=0.4.5',
     'namedlist',
     'psutil',
     'requests',
@@ -22,7 +22,7 @@ requires = [
     'simplejson',
     'uvloop>=0.8',
     'psutil>=5.2.2',
-    'backend.ai-common~=1.0.0',
+    'backend.ai-common~=1.0.3',
 ]
 build_requires = [
     'wheel',
