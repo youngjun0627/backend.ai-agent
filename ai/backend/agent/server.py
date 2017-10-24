@@ -525,7 +525,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'Memory': utils.readable_size_to_bytes(mem_limit),
                 'CpusetCpus': cpu_set_str,
                 'CpusetMems': f'{numa_node}',
-                'SecurityOpt': ['seccomp:unconfined'],
+                'SecurityOpt': ['seccomp=unconfined'],
                 'Binds': binds,
                 'Devices': devices,
                 'PublishAllPorts': True,
