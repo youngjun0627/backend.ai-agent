@@ -373,8 +373,8 @@ class KernelRunner:
         # We should use incremental decoder because some kernels may
         # send us incomplete UTF-8 byte sequences (e.g., Julia).
         decoders = (
-            codecs.getincrementaldecoder('utf8')(),
-            codecs.getincrementaldecoder('utf8')(),
+            codecs.getincrementaldecoder('utf8')(errors='replace'),
+            codecs.getincrementaldecoder('utf8')(errors='replace'),
         )
         while True:
             try:
