@@ -66,7 +66,7 @@ supported_langs = {
     'rust',
 }
 lang_aliases = dict()
-max_upload_size = 5 * 1024 * 1024  # 5 MB
+max_upload_size = 100 * 1024 * 1024  # 100 MB
 stat_cache_lifespan = 30.0  # 30 secs
 
 VolumeInfo = namedtuple('VolumeInfo', 'name container_path mode')
@@ -695,7 +695,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     initial_file_stats = \
                         self.container_registry[kernel_id]['initial_file_stats']
                     output_files = await upload_output_files_to_s3(
-                        initial_file_stats, final_file_stats, '0')
+                        initial_file_stats, final_file_stats, work_dir, kernel_id)
                     output_files = [os.path.relpath(fn, output_dir)
                                     for fn in output_files]
 

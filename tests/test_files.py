@@ -1,6 +1,7 @@
 import logging
 import os
 from pathlib import Path
+import tempfile
 from unittest import mock
 
 import aiobotocore
@@ -12,158 +13,165 @@ from ai.backend.agent.files import (
 )
 
 
-async def mock_awaitable(**kwargs):
-    """
-    Mock awaitable.
-    An awaitable can be a native coroutine object "returned from" a native
-    coroutine function.
-    """
-    return asynctest.CoroutineMock(**kwargs)
+def mock_awaitable(return_value):
+    async def mock_coro(*args, **kwargs):
+        return return_value
+    return mock.Mock(wraps=mock_coro)
+
+
+@pytest.fixture
+def fake_s3_keys():
+    import ai.backend.agent.files as files
+    original_access_key = files.s3_access_key
+    original_secret_key = files.s3_secret_key
+    files.s3_access_key = 'fake-access-key'
+    files.s3_secret_key = 'fake-secret-key'
+
+    yield
+
+    files.s3_access_key = original_access_key
+    files.s3_secret_key = original_secret_key
 
 
 @pytest.mark.asyncio
-class TestUploadOutputFilesToS3:
-    @pytest.fixture
-    def fake_s3_keys(self):
-        import ai.backend.agent.files as files
-        original_access_key = files.s3_access_key
-        original_secret_key = files.s3_secret_key
-        files.s3_access_key = 'fake-access-key'
-        files.s3_secret_key = 'fake-secret-key'
+async def test_upload_output_files_to_s3(fake_s3_keys, mocker):
+    fake_id = 'fake-entry-id'
+    mock_get_session = mocker.patch.object(aiobotocore, 'get_session')
+    mock_session = mock_get_session.return_value = mock.Mock()
+    mock_client = mock_session.create_client.return_value = mock.Mock()
+    mock_client.put_object = mock_awaitable(None)
 
-        yield
-
-        files.s3_access_key = original_access_key
-        files.s3_secret_key = original_secret_key
-
-    async def test_upload_output_files_to_s3(self, fake_s3_keys, mocker,
-                                             tmpdir):
-        # Fake information
-        fake_id = 'fake-entry-id'
-
-        # Mocking
-        mock_get_session = mocker.patch.object(aiobotocore, 'get_session')
-        mock_session = mock_get_session.return_value = mock.Mock()
-        mock_client = mock_session.create_client.return_value = mock.Mock()
-        mock_client.put_object.return_value = mock_awaitable()
-
-        # File to be updated
+    with tempfile.TemporaryDirectory() as tmpdir:
         fs1 = scandir(tmpdir, 1000)
-        file = tmpdir.join('file.txt')
-        file.write('file')
+
+        file1 = Path(tmpdir) / 'file.txt'
+        file1.write_bytes(b'random-content')
+        subdir = Path(tmpdir) / 'subdir'
+        subdir.mkdir()
+        file2 = subdir / 'file.txt'
+        file2.write_bytes(b'awesome-content')
+
         fs2 = scandir(tmpdir, 1000)
+        diff = await upload_output_files_to_s3(fs1, fs2, tmpdir, fake_id)
 
-        diff = await upload_output_files_to_s3(fs1, fs2, fake_id)
+    assert len(diff) == 2
+    mock_client.put_object.assert_any_call(
+        Bucket=mock.ANY, Key=f'bucket/fake-entry-id/file.txt',
+        Body=b'random-content', ACL='public-read'
+    )
+    mock_client.put_object.assert_any_call(
+        Bucket=mock.ANY, Key=f'bucket/fake-entry-id/subdir/file.txt',
+        Body=b'awesome-content', ACL='public-read'
+    )
 
-        assert len(diff) == 1
-        mock_client.put_object.assert_called_once_with(
-            Bucket=mock.ANY, Key='bucket/fake-entry-id/{}'.format(file.strpath),
-            Body=b'file', ACL='public-read'
-        )
 
-    async def test_s3_access_key_required(self, mocker):
-        mock_warn = mocker.patch.object(logging.Logger, 'warning')
-        mock_diff = mocker.patch('ai.backend.agent.files.diff_file_stats')
-        mock_diff.return_value = 'mock diff'
+@pytest.mark.asyncio
+async def test_s3_access_key_required(mocker):
+    mock_warn = mocker.patch.object(logging.Logger, 'warning')
+    mock_diff = mocker.patch('ai.backend.agent.files.diff_file_stats')
+    mock_diff.return_value = 'mock diff'
 
+    with tempfile.TemporaryDirectory() as tmpdir:
         diff = await upload_output_files_to_s3(
-            mock.Mock(), mock.Mock(), 'fake-id')
+            mock.Mock(), mock.Mock(), tmpdir, 'fake-id')
 
-        mock_warn.assert_called_once_with(mock.ANY)
-        assert diff == mock_diff.return_value
+    mock_warn.assert_called_once_with(mock.ANY)
+    assert diff == mock_diff.return_value
 
 
-class TestScandir:
-    def test_scandir(self, tmpdir):
-        # Create two files.
-        first = tmpdir.join('first.txt')
-        first.write('first')
-        second = tmpdir.join('second.txt')
-        second.write('second')
-        new_time = first.stat().mtime + 5
-        os.utime(second.strpath, (new_time, new_time))
-
-        file_stats = scandir(Path(tmpdir), 1000)
-
-        assert len(file_stats) == 2
-        assert file_stats[second.strpath] == file_stats[first.strpath] + 5
-
-    def test_scandir_skip_hidden_files(self, tmpdir):
-        # Create a hidden file.
-        file = tmpdir.join('.hidden_file')
-        file.write('dark templar')
+def test_scandir():
+    # Create two files.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        first = Path(tmpdir) / 'first.txt'
+        first.write_text('first')
+        second = Path(tmpdir) / 'second.txt'
+        second.write_text('second')
+        new_time = first.stat().st_mtime + 5
+        os.utime(second, (new_time, new_time))
 
         file_stats = scandir(Path(tmpdir), 1000)
 
-        assert len(file_stats) == 0
+    assert len(file_stats) == 2
+    assert file_stats[second] == file_stats[first] + 5
 
-    def test_scandir_skip_large_files(self, tmpdir):
-        file = tmpdir.join('file.jpg')
-        file.write('large file')
 
+def test_scandir_skip_hidden_files():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file = Path(tmpdir) / '.hidden_file'
+        file.write_text('dark templar')
+        file_stats = scandir(Path(tmpdir), 1000)
+
+    assert len(file_stats) == 0
+
+
+def test_scandir_skip_large_files():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file = Path(tmpdir) / 'file.jpg'
+        file.write_text('large file')
         file_stats = scandir(Path(tmpdir), 1)
 
-        assert len(file_stats) == 0
+    assert len(file_stats) == 0
 
-    def test_scandir_returns_files_in_sub_folder(self, tmpdir):
-        sub_folder = tmpdir.mkdir('sub')
-        sub_file = sub_folder.join('sub-file.txt')
-        sub_file.write('somedata')
+
+def test_scandir_returns_files_in_sub_folder():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sub_folder = Path(tmpdir) / 'sub'
+        sub_folder.mkdir()
+        sub_file = sub_folder / 'sub-file.txt'
+        sub_file.write_text('somedata')
 
         file_stats = scandir(Path(tmpdir), 1000)
 
-        assert len(file_stats) == 1
+    assert len(file_stats) == 1
 
 
-class TestDiffFileStats:
-    def test_get_new_file_diff_stats(self, tmpdir):
-        first = tmpdir.join('first.txt')
-        first.write('first')
-
+def test_get_new_file_diff_stats():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        first = Path(tmpdir) / 'first.txt'
+        first.write_text('first')
         fs1 = scandir(tmpdir, 1000)
 
-        second = tmpdir.join('second.txt')
-        second.write('second')
-
+        second = Path(tmpdir) / 'second.txt'
+        second.write_text('second')
         fs2 = scandir(tmpdir, 1000)
 
         diff_stats = diff_file_stats(fs1, fs2)
 
-        assert first.strpath not in diff_stats
-        assert second.strpath in diff_stats
+    assert first not in diff_stats
+    assert second in diff_stats
 
-    def test_get_modified_file_diff_stats(self, tmpdir):
-        first = tmpdir.join('first.txt')
-        first.write('first')
-        second = tmpdir.join('second.txt')
-        second.write('second')
 
+def test_get_modified_file_diff_stats():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        first = Path(tmpdir) / 'first.txt'
+        first.write_text('first')
+        second = Path(tmpdir) / 'second.txt'
+        second.write_text('second')
         fs1 = scandir(tmpdir, 1000)
 
-        new_time = first.stat().mtime + 5
-        os.utime(second.strpath, (new_time, new_time))
-
+        new_time = first.stat().st_mtime + 5
+        os.utime(second, (new_time, new_time))
         fs2 = scandir(tmpdir, 1000)
 
         diff_stats = diff_file_stats(fs1, fs2)
 
-        assert first.strpath not in diff_stats
-        assert second.strpath in diff_stats
+    assert first not in diff_stats
+    assert second in diff_stats
 
-    def test_get_both_new_and_modified_files_stat(self, tmpdir):
-        first = tmpdir.join('first.txt')
-        first.write('first')
 
+def test_get_both_new_and_modified_files_stat():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        first = Path(tmpdir) / 'first.txt'
+        first.write_text('first')
         fs1 = scandir(tmpdir, 1000)
 
-        new_time = first.stat().mtime + 5
-        os.utime(first.strpath, (new_time, new_time))
-        second = tmpdir.join('second.txt')
-        second.write('second')
-
+        new_time = first.stat().st_mtime + 5
+        os.utime(first, (new_time, new_time))
+        second = Path(tmpdir) / 'second.txt'
+        second.write_text('second')
         fs2 = scandir(tmpdir, 1000)
 
         diff_stats = diff_file_stats(fs1, fs2)
 
-        assert first.strpath in diff_stats
-        assert second.strpath in diff_stats
+    assert first in diff_stats
+    assert second in diff_stats

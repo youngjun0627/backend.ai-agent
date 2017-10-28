@@ -16,7 +16,7 @@ s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
 
 async def upload_output_files_to_s3(initial_file_stats,
                                     final_file_stats,
-                                    entry_id):
+                                    work_dir, prefix):
     loop = asyncio.get_event_loop()
     diff_files = diff_file_stats(initial_file_stats, final_file_stats)
     if s3_access_key == 'dummy-access-key':
@@ -29,7 +29,8 @@ async def upload_output_files_to_s3(initial_file_stats,
                                        aws_secret_access_key=s3_secret_key,
                                        aws_access_key_id=s3_access_key)
         for fname in diff_files:
-            key = 'bucket/{}/{}'.format(entry_id, fname)
+            relpath = fname.resolve().relative_to(Path(work_dir).resolve())
+            key = 'bucket/{}/{}'.format(prefix, relpath)
             # TODO: put the file chunk-by-chunk.
             with open(fname, 'rb') as f:
                 content = f.read()
@@ -66,10 +67,10 @@ def scandir(root: Path, allowed_max_size: int):
             # Skip too large files!
             if stat.st_size > allowed_max_size:
                 continue
-            file_stats[entry.path] = stat.st_mtime
+            file_stats[Path(entry.path)] = stat.st_mtime
         elif entry.is_dir():
             try:
-                file_stats.update(scandir(entry.path, allowed_max_size))
+                file_stats.update(scandir(Path(entry.path), allowed_max_size))
             except PermissionError:
                 pass
     return file_stats
