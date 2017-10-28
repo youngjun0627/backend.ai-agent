@@ -5,7 +5,6 @@ import tempfile
 from unittest import mock
 
 import aiobotocore
-import asynctest
 import pytest
 
 from ai.backend.agent.files import (
