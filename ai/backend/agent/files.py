@@ -21,7 +21,7 @@ def relpath(path, base):
 
 async def upload_output_files_to_s3(initial_file_stats,
                                     final_file_stats,
-                                    work_dir, prefix):
+                                    base_dir, prefix):
     loop = asyncio.get_event_loop()
     output_files = []
     diff_files = diff_file_stats(initial_file_stats, final_file_stats)
@@ -30,7 +30,7 @@ async def upload_output_files_to_s3(initial_file_stats,
                     'access/secret keys.')
         return [
             {
-                'name': str(relpath(fname, work_dir)),
+                'name': str(relpath(fname, base_dir)),
                 'url': f'#dummy-upload',
             } for fname in diff_files
         ]
@@ -40,7 +40,7 @@ async def upload_output_files_to_s3(initial_file_stats,
                                        aws_secret_access_key=s3_secret_key,
                                        aws_access_key_id=s3_access_key)
         for fname in diff_files:
-            path = relpath(fname, work_dir)
+            path = relpath(fname, base_dir)
             key = f'{s3_bucket_path}/{prefix}/{path}'
             try:
                 # TODO: put the file chunk-by-chunk.

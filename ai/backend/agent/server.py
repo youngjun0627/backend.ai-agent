@@ -695,9 +695,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     initial_file_stats = \
                         self.container_registry[kernel_id]['initial_file_stats']
                     output_files = await upload_output_files_to_s3(
-                        initial_file_stats, final_file_stats, work_dir, kernel_id)
-                    output_files = [os.path.relpath(fn, output_dir)
-                                    for fn in output_files]
+                        initial_file_stats, final_file_stats, output_dir, kernel_id)
 
                 self.container_registry[kernel_id].pop('initial_file_stats', None)
 
