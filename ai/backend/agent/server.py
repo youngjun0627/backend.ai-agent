@@ -338,7 +338,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def destroy_kernel(self, kernel_id: str):
         log.debug(f'rpc::destroy_kernel({kernel_id})')
         try:
-            await self._destroy_kernel(kernel_id, 'user-requested')
+            return await self._destroy_kernel(kernel_id, 'user-requested')
         except:
             log.exception('unexpected error')
             self.sentry.captureException()
@@ -593,6 +593,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 pipe.expire(kernel_id, stat_cache_lifespan)
                 await pipe.execute()
             await container.kill()
+            return last_stat
             # the container will be deleted in the docker monitoring coroutine.
         except DockerError as e:
             if e.status == 500 and 'is not running' in e.message:
