@@ -832,7 +832,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             try:
                 await container.delete()
             except DockerError as e:
-                if e.status == 400 and 'already in progress' in e.message:
+                if e.status == 409 and 'already in progress' in e.message:
                     pass
                 elif e.status == 404:
                     pass
