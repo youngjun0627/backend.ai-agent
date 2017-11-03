@@ -325,7 +325,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     @aiozmq.rpc.method
     async def create_kernel(self, kernel_id: str, config: dict) -> dict:
-        config['lang'] = lang_aliases.get(config['lang'], config['lang'])
         log.debug(f"rpc::create_kernel({config['lang']})")
         try:
             return await self._create_kernel(kernel_id, config)
@@ -366,12 +365,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
 
     @aiozmq.rpc.method
-    async def restart_kernel(self, kernel_id: str, prev_config: dict):
+    async def restart_kernel(self, kernel_id: str, new_config: dict):
         log.debug(f'rpc::restart_kernel({kernel_id})')
         try:
             self.restarting_kernels[kernel_id] = asyncio.Event()
             await self._destroy_kernel(kernel_id, 'restarting')
-            await self._create_kernel(kernel_id, prev_config)
+            await self._create_kernel(kernel_id, new_config)
             if kernel_id in self.restarting_kernels:
                 del self.restarting_kernels[kernel_id]
             return {
@@ -435,16 +434,21 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         await self.send_event('kernel_creating', kernel_id)
 
-        lang = config['lang']
-        mounts = config.get('mounts')
-        limits = config.get('limits')
+        lang: str = config['lang']
+        mounts: list = config['mounts']
+        limits: dict = config['limits']
+
+        assert 'cpu_slot' in limits
+        assert 'gpu_slot' in limits
+        assert 'mem_slot' in limits
 
         image_name = f'lablup/kernel-{lang}'
-        ret = await self.docker.images.get(image_name)
-        image_labels = ret['ContainerConfig']['Labels']
-        # TODO: apply limits
+        image_props = await self.docker.images.get(image_name)
+        image_labels = image_props['ContainerConfig']['Labels']
+
+        # Read labels and configs
         version        = int(image_labels.get('io.sorna.version', '1'))
-        mem_limit      = image_labels.get('io.sorna.maxmem', '128m')
+        mem_limit      = f"{limits['mem_slot'] * 256}m"
         exec_timeout   = int(image_labels.get('io.sorna.timeout', '10'))
         envs_corecount = image_labels.get('io.sorna.envs.corecount', '')
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
@@ -471,7 +475,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         cpu_set = config.get('cpu_set')
         if cpu_set is None:
-            requested_cores = int(image_labels.get('io.sorna.maxcores', '1'))
+            requested_cores = limits['cpu_slot']
             num_cores = min(self.container_cpu_map.num_cores, requested_cores)
             numa_node, cpu_set = self.container_cpu_map.alloc(num_cores)
         else:
@@ -497,16 +501,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # TODO: implement vfolders and translate them into mounts
 
-        nvidia_enabled = (ret['ContainerConfig']['Labels']
-                          .get('io.sorna.nvidia.enabled', 'no'))
-        if 'yes' == nvidia_enabled:
+        if limits['gpu_slot'] > 0:
+            # TODO: allocation of mulitple GPUs
+            # TODO: update gpu_set
+            nvidia_enabled = (image_props['ContainerConfig']['Labels']
+                              .get('io.sorna.nvidia.enabled', 'no'))
+            assert nvidia_enabled == 'yes'
             extra_binds, extra_devices = \
                 await prepare_nvidia(self.docker, numa_node)
             binds.extend(extra_binds)
             devices.extend(extra_devices)
-            # TODO: update gpu_set
 
-        config = {
+        container_config = {
             'Image': image_name,
             'Tty': True,
             'OpenStdin': True,
@@ -533,7 +539,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         }
         kernel_name = f'kernel.{lang}.{kernel_id}'
         container = await self.docker.containers.create(
-            config=config, name=kernel_name)
+            config=container_config, name=kernel_name)
         await container.start()
         repl_in_port  = (await container.port(2000))[0]['HostPort']
         repl_out_port = (await container.port(2001))[0]['HostPort']
