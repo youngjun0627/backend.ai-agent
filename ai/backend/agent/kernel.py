@@ -131,6 +131,7 @@ class KernelRunner:
             # only when really closable...
             self.output_stream.close()
         if self.read_task and not self.read_task.done():
+            self.read_task.cancel()
             await self.read_task
             self.read_task = None
 

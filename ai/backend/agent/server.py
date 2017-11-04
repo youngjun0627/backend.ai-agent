@@ -612,12 +612,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             return last_stat
             # the container will be deleted in the docker monitoring coroutine.
         except DockerError as e:
-            if e.status == 500 and 'is not running' in e.message:
+            if e.status == 409 and 'is not running' in e.message:
                 # already dead
-                log.warning(f'_destroy_kernel({kernel_id}) kill 500')
+                log.warning(f'_destroy_kernel({kernel_id}) already dead')
                 pass
             elif e.status == 404:
-                log.warning(f'_destroy_kernel({kernel_id}) kill 404, '
+                log.warning(f'_destroy_kernel({kernel_id}) kernel missing, '
                             'forgetting this kernel')
                 self.container_cpu_map.free(
                     self.container_registry[kernel_id]['cpu_set'])
@@ -720,12 +720,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         '(already dead?)')
             await self.clean_kernel_debug(kernel_id)
             return
-
+        await self.clean_runner(kernel_id)
         try:
             proc.kill()
             await proc.wait()
         except ProcessLookupError:
-            pass
+            log.warning(f'_destroy_kernel({kernel_id}) already dead!')
+        log.debug(f'_destroy_kernel({kernel_id}) exit code = {proc.returncode}')
+        del self.container_registry[kernel_id]
         await self.send_event('kernel_terminated',
                               kernel_id, 'user-terminated',
                               None)
