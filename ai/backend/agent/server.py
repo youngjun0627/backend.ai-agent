@@ -41,31 +41,6 @@ from .kernel import KernelRunner, KernelFeatures, ExpectedInput
 
 log = logging.getLogger('ai.backend.agent.server')
 
-supported_langs = {
-    'python2',
-    'python3',
-    'python3-torch',
-    'python3-torch-gpu',
-    'python3-tensorflow',
-    'python3-tensorflow-gpu',
-    'python3-caffe',
-    'python3-theano',
-    'r3',
-    'php5',
-    'php7',
-    'nodejs6',
-    'git',
-    'julia',
-    'lua5',
-    'haskell',
-    'octave4',
-    'cpp',
-    'c',
-    'java',
-    'go',
-    'rust',
-}
-lang_aliases = dict()
 max_upload_size = 100 * 1024 * 1024  # 100 MB
 stat_cache_lifespan = 30.0  # 30 secs
 
@@ -1054,8 +1029,6 @@ async def server_main(loop, pidx, _args):
 
 
 def main():
-    global lang_aliases
-
     parser = configargparse.ArgumentParser()
     parser.add('--namespace', type=str, default='local',
                help='The namespace of this Backend.AI cluster. (default: local)')
@@ -1144,45 +1117,6 @@ def main():
             api_key=args.datadog_api_key,
             app_key=args.datadog_app_key,
         )
-
-    # Load language aliases config.
-    lang_aliases = {lang: lang for lang in supported_langs}
-    lang_aliases.update({
-        'python': 'python3',
-        'python26': 'python2',
-        'python27': 'python2',
-        'python34': 'python3',
-        'python35': 'python3',
-        'python36': 'python3',
-        'python3-deeplearning':   'python3-tensorflow',
-        'tensorflow-python3':     'python3-tensorflow',
-        'tensorflow-python3-gpu': 'python3-tensorflow-gpu',
-        'caffe-python3':          'python3-caffe',
-        'theano-python3':         'python3-theano',
-        'r': 'r3',
-        'R': 'r3',
-        'Rscript': 'r3',
-        'php': 'php7',
-        'node': 'nodejs6',
-        'nodejs': 'nodejs6',
-        'js': 'nodejs6',
-        'javascript': 'nodejs6',
-        'lua': 'lua5',
-        'git-shell': 'git',
-        'shell': 'git',
-        'ocatve': 'octave4',
-        'cpp': 'cpp',
-        'c': 'c',
-        'java': 'java',
-        'go': 'go',
-        'rust': 'rust',
-    })
-    if args.kernel_aliases:  # for when we want to add extra
-        with open(args.kernel_aliases, 'r') as f:
-            for line in f:
-                alias, target = line.strip().split()
-                assert target in supported_langs
-                lang_aliases[alias] = target
 
     log.info(f'Backend.AI Agent {VERSION}')
     log.info(f'runtime: {utils.env_info()}')
