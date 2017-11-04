@@ -230,7 +230,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             return
         log.debug(f'interrupting & cleaning up runner for {kernel_id}')
         item = self.container_registry[kernel_id]
-        for t in item['runner_tasks']:
+        tasks = item['runner_tasks'].copy()
+        for t in tasks:
             if not t.done():
                 t.cancel()
                 await t
@@ -327,7 +328,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def create_kernel(self, kernel_id: str, config: dict) -> dict:
         log.debug(f"rpc::create_kernel({config['lang']})")
         try:
-            return await self._create_kernel(kernel_id, config)
+            if self.config.debug_kernel:
+                return await self._create_kernel_debug(kernel_id, config)
+            else:
+                return await self._create_kernel(kernel_id, config)
         except:
             log.exception('unexpected error')
             self.sentry.captureException()
@@ -337,7 +341,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def destroy_kernel(self, kernel_id: str):
         log.debug(f'rpc::destroy_kernel({kernel_id})')
         try:
-            return await self._destroy_kernel(kernel_id, 'user-requested')
+            if self.config.debug_kernel:
+                return await self._destroy_kernel_debug(kernel_id, 'user-requested')
+            else:
+                return await self._destroy_kernel(kernel_id, 'user-requested')
         except:
             log.exception('unexpected error')
             self.sentry.captureException()
@@ -369,8 +376,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug(f'rpc::restart_kernel({kernel_id})')
         try:
             self.restarting_kernels[kernel_id] = asyncio.Event()
-            await self._destroy_kernel(kernel_id, 'restarting')
-            await self._create_kernel(kernel_id, new_config)
+            if self.config.debug_kernel:
+                await self._destroy_kernel_debug(kernel_id, 'restarting')
+                await self._create_kernel_debug(kernel_id, new_config)
+            else:
+                await self._destroy_kernel(kernel_id, 'restarting')
+                await self._create_kernel(kernel_id, new_config)
             if kernel_id in self.restarting_kernels:
                 del self.restarting_kernels[kernel_id]
             return {
@@ -504,8 +515,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if limits['gpu_slot'] > 0:
             # TODO: allocation of mulitple GPUs
             # TODO: update gpu_set
-            nvidia_enabled = (image_props['ContainerConfig']['Labels']
-                              .get('io.sorna.nvidia.enabled', 'no'))
+            nvidia_enabled = image_labels.get('io.sorna.nvidia.enabled', 'no')
             assert nvidia_enabled == 'yes'
             extra_binds, extra_devices = \
                 await prepare_nvidia(self.docker, numa_node)
@@ -617,6 +627,108 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 log.exception(f'_destroy_kernel({kernel_id}) kill error')
         except:
             log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
+
+    async def _create_kernel_debug(self, kernel_id, config):
+        '''
+        A debugging version of kernel creator.
+        It launches a local Python process which runs a native kernel runner
+        instance without dockerization.
+
+        Currently it supports only a single instance of kernel as the kernel
+        runner uses a fixed set of TCP ports.
+
+        TODO: abstract out as a driver
+        '''
+
+        await self.send_event('kernel_creating', kernel_id)
+
+        lang: str = config['lang']       # ignored
+        mounts: list = config['mounts']  # unused
+        limits: dict = config['limits']  # unused
+
+        work_dir = self.config.scratch_root / kernel_id
+
+        if kernel_id in self.restarting_kernels:
+            # Wait until the previous container is actually deleted.
+            try:
+                with timeout(10):
+                    await self.restarting_kernels[kernel_id].wait()
+            except asyncio.TimeoutError:
+                log.warning('timeout detected while restarting '
+                            f'kernel {kernel_id}!')
+                del self.restarting_kernels[kernel_id]
+                asyncio.ensure_future(self.clean_kernel(kernel_id))
+                raise
+        else:
+            os.makedirs(work_dir)
+
+        version = 2
+        numa_node = 0
+        cpu_set = set([0])
+        gpu_set = set()
+        exec_timeout = 0
+
+        proc = await asyncio.create_subprocess_exec(*[
+            'python3', '-m', 'ai.backend.kernel', '--debug', 'python'
+        ])
+        container_id = f'debug-proc-{proc.pid}'
+        repl_in_port  = 2000
+        repl_out_port = 2001
+        stdin_port  = 2002
+        stdout_port = 2003
+        kernel_ip = '127.0.0.1'
+
+        self.container_registry[kernel_id] = {
+            'lang': lang,
+            'version': version,
+            'container_id': container_id,
+            'container_ip': kernel_ip,
+            'repl_in_port': repl_in_port,
+            'repl_out_port': repl_out_port,
+            'stdin_port': stdin_port,
+            'stdout_port': stdout_port,
+            'numa_node': numa_node,
+            'cpu_set': cpu_set,
+            'gpu_set': gpu_set,
+            'exec_timeout': exec_timeout,
+            'last_used': time.monotonic(),
+            'limits': limits,
+            'mounts': mounts,
+            'runner_tasks': set(),
+            '_proc': proc,
+        }
+        log.debug(f'kernel repl-in address: {kernel_ip}:{repl_in_port}')
+        log.debug(f'kernel repl-out address: {kernel_ip}:{repl_out_port}')
+        log.debug(f'kernel stdin address:  {kernel_ip}:{stdin_port}')
+        log.debug(f'kernel stdout address: {kernel_ip}:{stdout_port}')
+        return {
+            'id': kernel_id,
+            'repl_in_port': int(repl_in_port),
+            'repl_out_port': int(repl_out_port),
+            'stdin_port': int(stdin_port),
+            'stdout_port': int(stdout_port),
+            'container_id': container_id,
+            'cpu_set': list(cpu_set),
+            'gpu_set': list(gpu_set),
+        }
+
+    async def _destroy_kernel_debug(self, kernel_id, reason):
+        try:
+            proc = self.container_registry[kernel_id]['_proc']
+        except KeyError:
+            log.warning(f'_destroy_kernel({kernel_id}) kernel missing '
+                        '(already dead?)')
+            await self.clean_kernel_debug(kernel_id)
+            return
+
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        await self.send_event('kernel_terminated',
+                              kernel_id, 'user-terminated',
+                              None)
 
     async def _ensure_runner(self, kernel_id):
         # TODO: clean up
@@ -770,6 +882,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.exception('instance_heartbeat failure')
 
     async def update_stats(self, interval):
+        if self.config.debug_kernel:
+            log.debug('skipping stats collection in debug-kernel mode')
+            return
         running_kernels = [k for k in self.container_registry.keys()]
         running_containers = [self.container_registry[k]['container_id']
                               for k in running_kernels]
@@ -863,6 +978,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if kernel_id in self.blocking_cleans:
                 self.blocking_cleans[kernel_id].set()
 
+    async def clean_kernel_debug(self, kernel_id):
+        if kernel_id in self.restarting_kernels:
+            self.restarting_kernels[kernel_id].set()
+        else:
+            work_dir = self.config.scratch_root / kernel_id
+            try:
+                shutil.rmtree(work_dir)
+            except FileNotFoundError:
+                pass
+
     async def clean_old_kernels(self, interval):
         now = time.monotonic()
         keys = tuple(self.container_registry.keys())
@@ -872,8 +997,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 last_used = self.container_registry[kern_id]['last_used']
                 if now - last_used > self.config.idle_timeout:
                     log.info(f'destroying kernel {kern_id} as clean-up')
-                    task = asyncio.ensure_future(
-                        self._destroy_kernel(kern_id, 'idle-timeout'))
+                    if self.config.debug_kernel:
+                        task = asyncio.ensure_future(
+                            self._destroy_kernel_debug(kern_id, 'idle-timeout'))
+                    else:
+                        task = asyncio.ensure_future(
+                            self._destroy_kernel(kern_id, 'idle-timeout'))
                     tasks.append(task)
             except KeyError:
                 # The kernel may be destroyed by other means?
@@ -945,6 +1074,9 @@ def main():
     parser.add('--debug', action='store_true', default=False,
                env_var='DEBUG',
                help='Enable more verbose logging.')
+    parser.add('--debug-kernel', action='store_true', default=False,
+               env_var='DEBUG_KERNEL',
+               help='Run a dummy native-process kernel for integration debugging.')
     parser.add('--kernel-aliases', type=str, default=None,
                help='The filename for additional kernel aliases')
     parser.add('--scratch-root', type=Path,
