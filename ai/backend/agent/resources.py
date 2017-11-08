@@ -137,7 +137,7 @@ def detect_slots():
     num_cores = len(libnuma.get_available_cores())
     num_gpus = gpu_count()
     return (
-        mem_bytes // (2**20) // 256,
-        num_cores * 2,
-        num_gpus * 2,
+        mem_bytes >> 20,  # MiB
+        num_cores,        # core count
+        num_gpus,         # device count
     )
