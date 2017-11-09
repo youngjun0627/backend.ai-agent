@@ -461,7 +461,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         cpu_set = config.get('cpu_set')
         if cpu_set is None:
-            requested_cores = limits['cpu_slot']
+            requested_cores = int(limits['cpu_slot'])
             num_cores = min(self.container_cpu_map.num_cores, requested_cores)
             numa_node, cpu_set = self.container_cpu_map.alloc(num_cores)
         else:
@@ -487,7 +487,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # TODO: implement vfolders and translate them into mounts
 
-        if limits['gpu_slot'] > 0:
+        if limits['gpu_slot'] > 0.0:
             # TODO: allocation of mulitple GPUs
             # TODO: update gpu_set
             nvidia_enabled = image_labels.get('io.sorna.nvidia.enabled', 'no')
