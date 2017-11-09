@@ -82,7 +82,7 @@ class KernelRunner:
         self.kernel_id = kernel_id
         self.mode = None
         self.phase: ExecutionPhase
-        self.expects: ExepctedInput = ExpectedInput.USER_CODE
+        self.expects: ExpectedInput = ExpectedInput.USER_CODE
         self.kernel_ip = kernel_ip
         self.repl_in_port  = repl_in_port
         self.repl_out_port = repl_out_port
