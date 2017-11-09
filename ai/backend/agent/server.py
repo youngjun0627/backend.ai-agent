@@ -522,7 +522,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'PublishAllPorts': True,
             },
         }
-        kernel_name = f'kernel.{lang}.{kernel_id}'
+        base_name, _, tag = lang.partition(':')
+        kernel_name = f'kernel.{base_name}.{kernel_id}'
         container = await self.docker.containers.create(
             config=container_config, name=kernel_name)
         await container.start()
