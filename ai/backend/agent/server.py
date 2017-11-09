@@ -45,25 +45,35 @@ max_upload_size = 100 * 1024 * 1024  # 100 MB
 stat_cache_lifespan = 30.0  # 30 secs
 
 VolumeInfo = namedtuple('VolumeInfo', 'name container_path mode')
-_extra_volumes = {
-    'python3-tensorflow': [
-        VolumeInfo('deeplearning-samples', '/home/work/samples', 'ro'),
-    ],
-    'python3-tensorflow-gpu': [
-        VolumeInfo('deeplearning-samples', '/home/work/samples', 'ro'),
-    ],
+
+deeplearning_image_keys = {
+    'tensorflow', 'caffe',
+    'keras', 'torch',
+    'mxnet', 'theano',
 }
+
+deeplearning_sample_volume = VolumeInfo(
+    'deeplearning-samples', '/home/work/samples', 'ro'),
 
 
 async def get_extra_volumes(docker, lang):
     avail_volumes = (await docker.volumes.list())['Volumes']
     if not avail_volumes:
         return []
-    volume_names = set(v['Name'] for v in avail_volumes)
-    volume_list = _extra_volumes.get(lang, [])
+    avail_volume_names = set(v['Name'] for v in avail_volumes)
+
+    # deeplearning specialization
+    # TODO: extract as config
+    volume_list = []
+    for k in deeplearning_image_keys:
+        if k in lang:
+            volume_list.append(deeplearning_sample_volume)
+            break
+
+    # Mount only actually existing volumes
     mount_list = []
     for vol in volume_list:
-        if vol.name in volume_names:
+        if vol.name in avail_volume_names:
             mount_list.append(vol)
         else:
             log.warning(f'could not attach volume {vol.name} to '
