@@ -1,0 +1,280 @@
+Changes
+=======
+
+1.0.1 (2017-11-08)
+------------------
+
+- Prevent duplicate Docker event generation
+
+- Various bug fixes and improvements (#44, #45, #46, #47)
+
+1.0.0 (2017-10-17)
+------------------
+
+- This release is replaced with v1.0.1 due to many bugs.
+
+**CHANGES**
+
+- Rename the package to "Backend.AI" and the import path to ``ai.backend.agent``
+
+- Rewrite interaction with the manager
+
+- Read configuration from etcd shared with the manager
+
+- Add FIFO-style scheduling of overlapped execution requests
+
+- Implement I/O and network statistic collection using sysfs
+
+0.9.14 (2017-08-29)
+-------------------
+
+**FIX**
+
+- Fix and improve version reference mechanisms.
+
+- Fix missing import error vanished during hostfix cherrypick
+
+0.9.12 (2017-08-29)
+-------------------
+
+**IMPROVEMENTS**
+
+- It now applies the same UID to the spawned containers if they have the "uid-match"
+  feature label flag. (backported from develop)
+
+0.9.11 (2017-07-19)
+-------------------
+
+**FIX**
+
+- Add missing "sorna-common" dependency and update other requirements.
+
+0.9.10 (2017-07-18)
+-------------------
+
+**FIX**
+
+- Fix the wrong version range of an optional depedency package "datadog"
+
+0.9.9 (2017-07-18)
+------------------
+
+**IMPROVEMENTS**
+
+- Improve packaging so that setup.py has the source list of dependencies
+  whereas requirements.txt has additional/local versions from exotic
+  sources.
+
+- Support exception/event logging with Sentry and runtime statistics with Datadog.
+
+0.9.8 (2017-06-30)
+------------------
+
+**FIX**
+
+- Fix interactive user inputs in the batch-mode execution.
+
+0.9.7 (2017-06-29)
+------------------
+
+**NEW**
+
+- Add support for the batch-mode API with compiled languages such as
+  C/C++/Java/Rust.
+
+- Add support for the file upload API for use with the batch-mode API.
+  (up to 20 files per request and 1 MiB per each file)
+
+**CHANGES**
+
+- Only files stored in "/home/work.output" directories of kernel containers
+  are auto-uploaded to S3 as downloadable files, as now we rely on our
+  dedicated multi-media output interfaces to show plots and other graphics.
+  Previously, all non-hidden files in "/home/work" were uploaded.
+
+0.9.6 (2017-04-12)
+------------------
+
+- Fix a regression in console output streaming.
+
+0.9.5 (2017-04-07)
+------------------
+
+- Add PyTorch support.
+
+- Upgrade aiohttp to v2 and relevant dependencies as well.
+
+0.9.4 (2017-03-19)
+------------------
+
+- Update missing long_description.
+
+0.9.3 (2017-03-19)
+------------------
+
+- Improve packaging: auto-converted README.md as long description and unified
+  requirements.txt and setup.py dependencies.
+
+0.9.2 (2017-03-14)
+------------------
+
+- Fix sorna-common requirement version.
+
+0.9.1 (2017-03-14)
+------------------
+
+**CHANGES**
+
+- Separate console output formats for API v1 and v2.
+
+- Deprecate unused matching option for execution API.
+
+- Remove control messages in API responses.
+
+0.9.0 (2017-02-27)
+------------------
+
+**NEW**
+
+- PUSH/PULL-based kernel interaction protocol to support streaming outputs.
+  This enables interactive input functions and streaming outputs for long-running codes,
+  and also makes kernel execution more resilient to network failures.
+  (ZeroMQ's REQ/REP sockets break the system if any messages get dropped)
+
+0.8.2 (2017-01-16)
+------------------
+
+**FIXES**
+
+- Fix a typo that generates errors during GPU kernel initialization.
+
+- Fix regression of '--agent-ip-override' cli option.
+
+0.8.1 (2017-01-10)
+------------------
+
+- Minor internal polishing release.
+
+0.8.0 (2017-01-10)
+------------------
+
+**CHANGES**
+
+- Bump version to 0.8 to match with sorna-manager and sorna-client.
+
+**FIXES**
+
+- Fix events lost by HTTP connection timeouts when using ``docker.events.run()`` from
+  aiodocker.  (It is due to default 5-minute timeout set by aiohttp)
+
+- Correct task cancellation
+
+0.7.5 (2016-12-01)
+------------------
+
+**CHANGES**
+
+- Add new aliases for "git" kernel: "git-shell" and "shell"
+
+0.7.4 (2016-12-01)
+------------------
+
+**CHANGES**
+
+- Now it uses `aiodocker`_ instead of `docker-py`_ to
+  prevent timeouts with many concurrent requests.
+
+  NOTE: You need to run ``pip install -r requirements.txt`` to install the
+        non-pip (GitHub) version of aiodocker correctly, before running
+        ``pip install sorna-agent``.
+
+**FIXES**
+
+- Fix corner-case exceptions in statistics/heartbeats.
+
+.. _aiodocker: https://github.com/achimnol/aiodocker
+
+.. _dockerpy: https://github.com/docker/docker-py
+
+0.7.3 (2016-11-30)
+------------------
+
+**CHANGES**
+
+- Increase docker API timeouts.
+
+**FIXES**
+
+- Fix heartbeats stop working after kernel/agent timeouts.
+
+- Fix exception logging in the main server loop.
+
+0.7.2 (2016-11-28)
+------------------
+
+**FIXES**
+
+- Hotfix for missing dependency: coloredlogs
+
+0.7.1 (2016-11-27)
+------------------
+
+**NEW**
+
+- ``--agent-ip-override`` CLI option to override the IP address of agent
+  reported to the manager.
+
+0.7.0 (2016-11-25)
+------------------
+
+**NEW**
+
+- Add support for kernel restarts.
+  Restarting preserves kernel metadata and its ID, but removes and recreates
+  the working volume and the container itself.
+
+- Add ``--debug`` option to the CLI command.
+
+0.6.0 (2016-11-14)
+------------------
+
+**NEW**
+
+- Add support for GPU-enabled kernels (using `nvidia-docker plugin`_).
+  The kernel images must be built upon nvidia-docker's base Ubuntu images and
+  have the label "io.sorna.nvidia.enabled" set ``yes``.
+
+**CHANGES**
+
+- Change the agent to add "lablup/" prefix when creating containers from
+  kernel image names, to ease setup and running using the public docker
+  repository.  (e.g., "lablup/kernel-python3" instead of "kernel-python3")
+
+- Change the prefix of kernel image labels from "com.lablup.sorna." to
+  "io.sorna." for simplicity.
+
+- Increase the default idle timeout to 30 minutes for offline tutorial/workshops.
+
+- Limit the CPU cores available in kernel containers.
+  It uses an optional "io.sorna.maxcores" label (default is 1 when not
+  specified) to determine the requested number of CPU cores in kernels, with a
+  hard limit of 4.
+
+  NOTE: You will still see the full count of CPU cores of the underlying
+  system when running ``os.cpu_count()``, ``multiprocessing.cpu_count()`` or
+  ``os.sysconf("SC_NPROCESSORS_ONLN")`` because the limit is enforced by the CPU
+  affinity mask.  To get the correct result, try
+  ``len(os.sched_getaffinity(os.getpid()))``.
+
+.. _nvidia-docker plugin: https://github.com/NVIDIA/nvidia-docker
+
+
+0.5.0 (2016-11-01)
+------------------
+
+**NEW**
+
+- First public release.
+
+
+<!-- vim: set et: -->
