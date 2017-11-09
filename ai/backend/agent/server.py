@@ -896,6 +896,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def monitor(self):
         subscriber = self.docker.events.subscribe()
+        last_footprint = None
         while True:
             try:
                 evdata = await subscriber.get()
@@ -904,9 +905,21 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if evdata is None:
                 # fetch_docker_events() will automatically reconnect.
                 continue
+
+            # FIXME: Sometimes(?) duplicate event data is received.
+            # Just ignore the duplicate ones.
+            new_footprint = (
+                evdata['Actor']['ID'],
+                evdata['Actor']['Attributes']['name'],
+                evdata['Action'],
+            )
+            if new_footprint == last_footprint:
+                continue
+            last_footprint = new_footprint
+
             if evdata['Action'] == 'die':
                 # When containers die, we immediately clean up them.
-                container_id = evdata['id']
+                container_id = evdata['Actor']['ID']
                 container_name = evdata['Actor']['Attributes']['name']
                 kernel_id = get_kernel_id_from_container(container_name)
                 if kernel_id is None:
