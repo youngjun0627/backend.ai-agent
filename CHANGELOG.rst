@@ -1,6 +1,11 @@
 Changes
 =======
 
+1.0.3 (2017-11-11)
+------------------
+
+- Fix a bug in duplicate-check of our Docker event stream monitoring coroutine
+
 1.0.2 (2017-11-10)
 ------------------
 
