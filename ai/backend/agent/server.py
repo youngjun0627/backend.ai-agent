@@ -53,7 +53,8 @@ deeplearning_image_keys = {
 }
 
 deeplearning_sample_volume = VolumeInfo(
-    'deeplearning-samples', '/home/work/samples', 'ro'),
+    'deeplearning-samples', '/home/work/samples', 'ro',
+)
 
 
 async def get_extra_volumes(docker, lang):
