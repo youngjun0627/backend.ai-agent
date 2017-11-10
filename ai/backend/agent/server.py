@@ -923,9 +923,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             # FIXME: Sometimes(?) duplicate event data is received.
             # Just ignore the duplicate ones.
             new_footprint = (
-                evdata['Actor']['ID'],
-                evdata['Actor']['Attributes']['name'],
+                evdata['Type'],
                 evdata['Action'],
+                evdata['Actor']['ID'],
             )
             if new_footprint == last_footprint:
                 continue
