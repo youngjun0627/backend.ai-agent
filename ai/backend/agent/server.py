@@ -589,11 +589,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             # last moment stats must be collected before killing the container.
             last_stat = (await collect_stats([container]))[0]
-            async with self.redis_stat_pool.get() as rs:
-                pipe = rs.pipeline()
-                pipe.hmset_dict(kernel_id, last_stat)
-                pipe.expire(kernel_id, stat_cache_lifespan)
-                await pipe.execute()
+            if last_stat is not None:
+                async with self.redis_stat_pool.get() as rs:
+                    pipe = rs.pipeline()
+                    pipe.hmset_dict(kernel_id, last_stat)
+                    pipe.expire(kernel_id, stat_cache_lifespan)
+                    await pipe.execute()
             await container.kill()
             return last_stat
             # the container will be deleted in the docker monitoring coroutine.
@@ -884,6 +885,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         async with self.redis_stat_pool.get() as rs:
             pipe = rs.pipeline()
             for idx, stat in enumerate(stats):
+                if stat is None:
+                    continue
                 kernel_id = running_kernels[idx]
                 pipe.hmset_dict(kernel_id, stat)
                 pipe.expire(kernel_id, stat_cache_lifespan)
