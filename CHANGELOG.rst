@@ -1,6 +1,15 @@
 Changes
 =======
 
+1.0.2 (2017-11-10)
+------------------
+
+- Fix automatic mounting of deeplearning-samples Docker volume for ML kernels
+
+- Stabilize statistics collection
+
+- Fix typos
+
 1.0.1 (2017-11-08)
 ------------------
 
