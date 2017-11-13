@@ -5,7 +5,7 @@ import os, os.path
 from pathlib import Path
 import shutil
 import time
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError

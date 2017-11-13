@@ -1,6 +1,13 @@
 Changes
 =======
 
+1.0.4 (2017-11-14)
+------------------
+
+- Fix synchronization issues when restarting kernels
+
+- Improve "debug-kernel" mode to use the given kernel name
+
 1.0.3 (2017-11-11)
 ------------------
 
