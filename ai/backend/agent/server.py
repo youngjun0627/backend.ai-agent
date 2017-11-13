@@ -630,24 +630,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         await self.send_event('kernel_creating', kernel_id)
 
-        lang: str = config['lang']       # ignored
+        lang: str = config['lang']
         mounts: list = config['mounts']  # unused
         limits: dict = config['limits']  # unused
 
+        base_name, sep, tag = lang.partition(':')
         work_dir = self.config.scratch_root / kernel_id
 
-        if kernel_id in self.restarting_kernels:
-            # Wait until the previous container is actually deleted.
-            try:
-                with timeout(10):
-                    await self.restarting_kernels[kernel_id].wait()
-            except asyncio.TimeoutError:
-                log.warning('timeout detected while restarting '
-                            f'kernel {kernel_id}!')
-                del self.restarting_kernels[kernel_id]
-                asyncio.ensure_future(self.clean_kernel(kernel_id))
-                raise
-        else:
+        # Some heuristic to guess the correct runner module.
+        if 'python' in base_name:
+            base_name = 'python'
+        if 'git' in base_name or 'shell' in base_name:
+            base_name = 'git'
+
+        if not restarting:
             os.makedirs(work_dir)
 
         version = 2
@@ -657,7 +653,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         exec_timeout = 0
 
         proc = await asyncio.create_subprocess_exec(*[
-            'python3', '-m', 'ai.backend.kernel', '--debug', 'python'
+            'python3', '-m', 'ai.backend.kernel', '--debug', base_name,
         ])
         container_id = f'debug-proc-{proc.pid}'
         repl_in_port  = 2000
