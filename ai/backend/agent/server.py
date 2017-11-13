@@ -54,6 +54,7 @@ class VolumeInfo(NamedTuple):
 class RestartTracker(NamedTuple):
     request_lock: asyncio.Lock
     destroy_event: asyncio.Event
+    done_event: asyncio.Event
 
 
 deeplearning_image_keys = {
@@ -381,7 +382,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             tracker = self.restarting_kernels.get(kernel_id)
             if tracker is None:
-                tracker = RestartTracker(asyncio.Lock(), asyncio.Event())
+                tracker = RestartTracker(
+                    asyncio.Lock(),
+                    asyncio.Event(),
+                    asyncio.Event())
             async with tracker.request_lock:
                 self.restarting_kernels[kernel_id] = tracker
                 await _destroy_kernel(kernel_id, 'restarting')
@@ -401,6 +405,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         kernel_id, new_config,
                         restarting=True)
                     del self.restarting_kernels[kernel_id]
+            tracker.done_event.set()
             kernel_info = self.container_registry[kernel_id]
             return {
                 'container_id': kernel_info['container_id'],
@@ -765,6 +770,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # (to distinguish from user-uploaded files)
         output_dir = work_dir / '.output'
 
+        restart_tracker = self.restarting_kernels.get(kernel_id)
+        if restart_tracker:
+            await restart_tracker.done_event.wait()
+
         try:
             self.container_registry[kernel_id]['last_used'] = time.monotonic()
         except KeyError:
@@ -973,6 +982,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             container = self.docker.containers.container(container_id)
             await self.clean_runner(kernel_id)
             try:
+                # TODO: store container logs for debugging/logging
                 await container.delete()
             except DockerError as e:
                 if e.status == 409 and 'already in progress' in e.message:
