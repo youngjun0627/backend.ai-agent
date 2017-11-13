@@ -5,6 +5,7 @@ import os, os.path
 from pathlib import Path
 import shutil
 import time
+from typing import NamedTuple, Optional
 
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
@@ -13,7 +14,6 @@ import aiotools
 import aiozmq, aiozmq.rpc
 from async_timeout import timeout
 import configargparse
-from namedlist import namedtuple
 import uvloop
 import zmq
 try:
@@ -44,7 +44,17 @@ log = logging.getLogger('ai.backend.agent.server')
 max_upload_size = 100 * 1024 * 1024  # 100 MB
 stat_cache_lifespan = 30.0  # 30 secs
 
-VolumeInfo = namedtuple('VolumeInfo', 'name container_path mode')
+
+class VolumeInfo(NamedTuple):
+    name: str             # volume name
+    container_path: str   # in-container path as str
+    mode: str             # 'rw', 'ro', 'rwm'
+
+
+class RestartTracker(NamedTuple):
+    request_lock: asyncio.Lock
+    destroy_event: asyncio.Event
+
 
 deeplearning_image_keys = {
     'tensorflow', 'caffe',
@@ -360,24 +370,46 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     @aiozmq.rpc.method
     async def restart_kernel(self, kernel_id: str, new_config: dict):
         log.debug(f'rpc::restart_kernel({kernel_id})')
+        if self.config.debug_kernel:
+            _create_kernel = self._create_kernel_debug
+            _destroy_kernel = self._destroy_kernel_debug
+            _clean_kernel = self.clean_kernel_debug
+        else:
+            _create_kernel = self._create_kernel
+            _destroy_kernel = self._destroy_kernel
+            _clean_kernel = self.clean_kernel
         try:
-            self.restarting_kernels[kernel_id] = asyncio.Event()
-            if self.config.debug_kernel:
-                await self._destroy_kernel_debug(kernel_id, 'restarting')
-                await self._create_kernel_debug(kernel_id, new_config)
-            else:
-                await self._destroy_kernel(kernel_id, 'restarting')
-                await self._create_kernel(kernel_id, new_config)
-            if kernel_id in self.restarting_kernels:
-                del self.restarting_kernels[kernel_id]
+            tracker = self.restarting_kernels.get(kernel_id)
+            if tracker is None:
+                tracker = RestartTracker(asyncio.Lock(), asyncio.Event())
+            async with tracker.request_lock:
+                self.restarting_kernels[kernel_id] = tracker
+                await _destroy_kernel(kernel_id, 'restarting')
+                # clean_kernel() will set tracker.destroy_event
+                try:
+                    with timeout(10):
+                        await tracker.destroy_event.wait()
+                except asyncio.TimeoutError:
+                    log.warning('timeout detected while restarting '
+                                f'kernel {kernel_id}!')
+                    del self.restarting_kernels[kernel_id]
+                    asyncio.ensure_future(_clean_kernel(kernel_id))
+                    raise
+                else:
+                    tracker.destroy_event.clear()
+                    await _create_kernel(
+                        kernel_id, new_config,
+                        restarting=True)
+                    del self.restarting_kernels[kernel_id]
+            kernel_info = self.container_registry[kernel_id]
             return {
-                'container_id': self.container_registry[kernel_id]['container_id'],
-                'cpu_set': list(self.container_registry[kernel_id]['cpu_set']),
-                'gpu_set': list(self.container_registry[kernel_id]['gpu_set']),
-                'repl_in_port': self.container_registry[kernel_id]['repl_in_port'],
-                'repl_out_port': self.container_registry[kernel_id]['repl_out_port'],
-                'stdin_port': self.container_registry[kernel_id]['stdin_port'],
-                'stdout_port': self.container_registry[kernel_id]['stdout_port'],
+                'container_id': kernel_info['container_id'],
+                'cpu_set': list(kernel_info['cpu_set']),
+                'gpu_set': list(kernel_info['gpu_set']),
+                'repl_in_port': kernel_info['repl_in_port'],
+                'repl_out_port': kernel_info['repl_out_port'],
+                'stdin_port': kernel_info['stdin_port'],
+                'stdout_port': kernel_info['stdout_port'],
             }
         except:
             log.exception('unexpected error')
@@ -427,7 +459,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             self.sentry.captureException()
             raise
 
-    async def _create_kernel(self, kernel_id, config):
+    async def _create_kernel(self, kernel_id, config, restarting=False):
 
         await self.send_event('kernel_creating', kernel_id)
 
@@ -456,18 +488,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # TODO: implement
         vfolders = []  # noqa
 
-        if kernel_id in self.restarting_kernels:
-            # Wait until the previous container is actually deleted.
-            try:
-                with timeout(10):
-                    await self.restarting_kernels[kernel_id].wait()
-            except asyncio.TimeoutError:
-                log.warning('timeout detected while restarting '
-                            f'kernel {kernel_id}!')
-                del self.restarting_kernels[kernel_id]
-                asyncio.ensure_future(self.clean_kernel(kernel_id))
-                raise
-        else:
+        if not restarting:
             os.makedirs(work_dir)
 
         cpu_set = config.get('cpu_set')
@@ -616,7 +637,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
 
-    async def _create_kernel_debug(self, kernel_id, config):
+    async def _create_kernel_debug(self, kernel_id, config, restarting=False):
         '''
         A debugging version of kernel creator.
         It launches a local Python process which runs a native kernel runner
@@ -963,7 +984,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except KeyError:
             pass
         if kernel_id in self.restarting_kernels:
-            self.restarting_kernels[kernel_id].set()
+            self.restarting_kernels[kernel_id].destroy_event.set()
         else:
             work_dir = self.config.scratch_root / kernel_id
             try:
@@ -981,7 +1002,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def clean_kernel_debug(self, kernel_id):
         if kernel_id in self.restarting_kernels:
-            self.restarting_kernels[kernel_id].set()
+            self.restarting_kernels[kernel_id].destroy_event.set()
         else:
             work_dir = self.config.scratch_root / kernel_id
             try:
