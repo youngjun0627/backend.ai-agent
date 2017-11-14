@@ -471,6 +471,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         lang: str = config['lang']
         mounts: list = config['mounts']
         limits: dict = config['limits']
+        environ: dict = config.get('environ', {})
 
         assert 'cpu_slot' in limits
         assert 'gpu_slot' in limits
@@ -506,9 +507,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             numa_node = libnuma.node_of_cpu(next(iter(cpu_set)))
 
         cpu_set_str = ','.join(map(str, sorted(cpu_set)))
-        envs = {k: str(num_cores) for k in envs_corecount}
+        environ.update({k: str(num_cores) for k in envs_corecount})
         if KernelFeatures.UID_MATCH in kernel_features:
-            envs['LOCAL_USER_ID'] = os.getuid()
+            environ['LOCAL_USER_ID'] = os.getuid()
         log.debug(f'container config: mem_limit={mem_limit}, '
                   f'exec_timeout={exec_timeout}, '
                   f'cores={cpu_set!r}@{numa_node}')
@@ -547,7 +548,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 '2002/tcp': {},
                 '2003/tcp': {},
             },
-            'Env': [f'{k}={v}' for k, v in envs.items()],
+            'Env': [f'{k}={v}' for k, v in environ.items()],
             'HostConfig': {
                 'MemorySwap': 0,
                 'Memory': utils.readable_size_to_bytes(mem_limit),
