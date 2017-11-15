@@ -469,8 +469,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.send_event('kernel_creating', kernel_id)
 
         lang: str = config['lang']
-        mounts: list = config['mounts']
         limits: dict = config['limits']
+        mounts: list = config['mounts']
         environ: dict = config.get('environ', {})
 
         assert 'cpu_slot' in limits
