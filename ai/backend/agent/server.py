@@ -490,12 +490,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         kernel_features = set(image_labels.get('io.sorna.features', '').split())
 
         work_dir = self.config.scratch_root / kernel_id
+        config_dir = self.config.scratch_root / kernel_id / '.config'
 
         # TODO: implement
         vfolders = []  # noqa
 
+        log.warning('check environ key-values')
         if not restarting:
             os.makedirs(work_dir)
+            os.makedirs(config_dir)
+            # Store custom environment variables for kernel runner.
+            if environ:
+                with open(config_dir / 'environ.txt', 'w') as f:
+                    for k, v in environ.items():
+                        print(f'{k}={v}', file=f)
 
         cpu_set = config.get('cpu_set')
         if cpu_set is None:
@@ -523,7 +531,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         devices = []
         gpu_set = config.get('gpu_set', [])
 
-        # TODO: implement vfolders and translate them into mounts
+        # Mount vfolders
+        for folder_name, folder_host, folder_id in mounts:
+            volumes.append(f'/home/work/{folder_name}')
+            binds.append(f'/mnt/{folder_host}/{folder_id}:'
+                         f'/home/work/{folder_name}:rw')
 
         if limits['gpu_slot'] > 0.0:
             # TODO: allocation of mulitple GPUs
@@ -564,6 +576,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         kernel_name = f'kernel.{base_name}.{kernel_id}'
         container = await self.docker.containers.create(
             config=container_config, name=kernel_name)
+
         await container.start()
         repl_in_port  = (await container.port(2000))[0]['HostPort']
         repl_out_port = (await container.port(2001))[0]['HostPort']
@@ -660,9 +673,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         lang: str = config['lang']
         mounts: list = config['mounts']  # unused
         limits: dict = config['limits']  # unused
+        environ: dict = config.get('environ', {})
 
         base_name, sep, tag = lang.partition(':')
         work_dir = self.config.scratch_root / kernel_id
+        config_dir = self.config.scratch_root / kernel_id / '.config'
 
         # Some heuristic to guess the correct runner module.
         if 'python' in base_name:
@@ -672,6 +687,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         if not restarting:
             os.makedirs(work_dir)
+            os.makedirs(config_dir)
+            # Store custom environment variables for kernel runner.
+            if environ:
+                with open(config_dir / 'environ.txt', 'w') as f:
+                    for k, v in config.get('environ', {}).items():
+                        print(f'{k}={v}', file=f)
+
+        # Mount vfolders
+        for folder_name, folder_host, folder_id in mounts:
+            os.symlink(f'/mnt/{folder_host}/{folder_id}',
+                       work_dir / folder_name, True)
 
         version = 2
         numa_node = 0
