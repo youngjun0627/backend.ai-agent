@@ -1,6 +1,11 @@
 Changes
 =======
 
+1.0.5 (2017-11-17)
+------------------
+
+- Implement virtual folder mounting (assuming /mnt is already configured)
+
 1.0.4 (2017-11-14)
 ------------------
 
