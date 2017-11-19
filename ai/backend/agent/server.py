@@ -145,7 +145,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
         manager_id = await self.etcd.get('nodes/manager')
         if manager_id is None:
-            log.warning('watching etcd to wait for the manager being availabile')
+            log.warning('watching etcd to wait for the manager being available')
             async for ev in self.etcd.watch('nodes/manager'):
                 if ev.event == 'put':
                     manager_id = ev.value

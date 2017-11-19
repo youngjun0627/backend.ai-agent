@@ -41,7 +41,6 @@ jobs:
         - mkdir -p /tmp/etcd
         - docker run -d -p 2379:2379 -p 2380:2380
            -v /tmp/etcd:/etcd-data
-           --name backendai-etcd
            quay.io/coreos/etcd:v3.2.8
            /usr/local/bin/etcd
            --name backendai-etcd
