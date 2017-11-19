@@ -212,7 +212,7 @@ async def test_upload_file(mocker, mock_agent):
     agent = mock_agent
     agent._accept_file = asynctest.CoroutineMock()
 
-     await agent.upload_file(
+    await agent.upload_file(
         kernel_id='fakeid',
         filename='fakefilename',
         filedata=b'print(1)',

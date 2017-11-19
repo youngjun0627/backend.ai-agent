@@ -55,7 +55,7 @@ def mock_container():
                     reason="sysfs is only available in Linux")
 def test_collect_stats_sysfs(mocker, mock_container):
     mock_read_sysfs = mocker.patch('ai.backend.agent.stats.read_sysfs')
-    mock_read_sysfs.side_effect = [1e5, 1024]
+    mock_read_sysfs.side_effect = [1e5, 1024, 16]
 
     stat = _collect_stats_sysfs(mock_container)
 
