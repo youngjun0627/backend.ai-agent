@@ -6,11 +6,11 @@ from unittest import mock
 
 import asynctest
 import pytest
-import simplejson as json
-from aiodocker.docker import Docker
+# import simplejson as json
+# from aiodocker.docker import Docker
 
-import ai.backend.agent.server as server_mod
-from ai.backend.agent.resources import CPUAllocMap
+# import ai.backend.agent.server as server_mod
+# from ai.backend.agent.resources import CPUAllocMap
 from ai.backend.agent.server import (
     get_extra_volumes,
     AgentRPCServer,
@@ -139,8 +139,7 @@ def test_ping(mock_agent):
 async def test_create_kernel(mock_agent):
     agent = mock_agent
     agent._create_kernel = asynctest.CoroutineMock(return_value='fake-return')
-    r = await agent.create_kernel(
-            'fake-kernel-id', {'lang': 'python3'})
+    r = await agent.create_kernel('fake-kernel-id', {'lang': 'python3'})
     agent._create_kernel.assert_called_once_with('fake-kernel-id',
                                                  {'lang': 'python3'})
     assert r == 'fake-return'
@@ -213,7 +212,7 @@ async def test_upload_file(mocker, mock_agent):
     agent = mock_agent
     agent._accept_file = asynctest.CoroutineMock()
 
-    result = await agent.upload_file(
+     await agent.upload_file(
         kernel_id='fakeid',
         filename='fakefilename',
         filedata=b'print(1)',
@@ -345,11 +344,6 @@ async def test__create_kernel_with_existing_kernel_id(mock_agent,
 async def test__create_kernel_debug_with_minimal_confs(mock_agent, tmpdir):
     agent = mock_agent
     agent.debug_kernel = True
-    mock_image_info = {
-        'ContainerConfig': {
-            'Labels': {}
-        }
-    }
     agent.config.exec_timeout = 10
     agent.config.volume_root = tmpdir
 
@@ -444,10 +438,8 @@ async def test__destroy_kernel_debug(mocker, mock_agent):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('up_files', [True, False])
 async def test__execute_code(mocker, mock_agent, tmpdir, up_files):
-    entry_id = 'fake-entry-id'
     kernel_id = 'fake-kernel-id'
     run_id = 'fake-run-id'
-    code_id = 'fake-code-id'
     code = 'print(0)'
 
     tmpdir.mkdir(kernel_id)
@@ -487,7 +479,7 @@ async def test__execute_code(mocker, mock_agent, tmpdir, up_files):
     mock_runner = asynctest.CoroutineMock()
     mock_runner.attach_output_queue = asynctest.CoroutineMock()
     mock_runner.get_next_result = asynctest.CoroutineMock(
-            return_value=result_data)
+        return_value=result_data)
     agent._ensure_runner = asynctest.CoroutineMock(return_value=mock_runner)
 
     result = await agent._execute(2, kernel_id, run_id, 'query', code, {})
