@@ -362,7 +362,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                               text: str, opts: dict):
         log.debug(f'rpc::get_completions({kernel_id})')
         try:
-            await self._get_completions(kernel_id, mode, text, opts)
+            await self._get_completions(kernel_id, text, opts)
         except:
             log.exception('unexpected error')
             self.sentry.captureException()
