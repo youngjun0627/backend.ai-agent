@@ -384,7 +384,6 @@ class KernelRunner:
                 #       by printing received messages here
                 if len(msg_data) > self.max_record_size:
                     msg_data = msg_data[:self.max_record_size]
-                log.warning(f'{msg_type!r} {msg_data!r}')
                 try:
                     if msg_type == b'completion':
                         # As completion is processed asynchronously
