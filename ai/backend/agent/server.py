@@ -358,7 +358,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
 
     @aiozmq.rpc.method
-    async def get_completions(self, kernel_id: str, mode: str,
+    async def get_completions(self, kernel_id: str,
                               text: str, opts: dict):
         log.debug(f'rpc::get_completions({kernel_id})')
         try:
