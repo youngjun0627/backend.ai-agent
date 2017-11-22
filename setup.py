@@ -12,7 +12,7 @@ requires = [
     'aiodocker',
     'aiozmq>=0.7',
     'aiohttp~=2.2.0',
-    'aioredis>=0.2.8',
+    'aioredis~=1.0.0',
     'aiobotocore>=0.3.0',
     'aiotools>=0.4.5',
     'namedlist',

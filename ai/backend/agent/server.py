@@ -247,9 +247,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.scan_running_containers()
         await self.check_images()
 
-        self.redis_stat_pool = await aioredis.create_pool(
+        self.redis_stat_pool = await aioredis.create_redis_pool(
             self.config.redis_addr.as_sockaddr(),
-            create_connection_timeout=3.0,
+            timeout=3.0,
             encoding='utf8',
             db=0)  # REDIS_STAT_DB in backend.ai-manager
 
@@ -631,11 +631,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             # last moment stats must be collected before killing the container.
             last_stat = (await collect_stats([container]))[0]
             if last_stat is not None:
-                async with self.redis_stat_pool.get() as rs:
-                    pipe = rs.pipeline()
-                    pipe.hmset_dict(kernel_id, last_stat)
-                    pipe.expire(kernel_id, stat_cache_lifespan)
-                    await pipe.execute()
+                pipe = self.redis_stat_pool.pipeline()
+                pipe.hmset_dict(kernel_id, last_stat)
+                pipe.expire(kernel_id, stat_cache_lifespan)
+                await pipe.execute()
             await container.kill()
             return last_stat
             # the container will be deleted in the docker monitoring coroutine.
@@ -936,15 +935,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                                             running_containers))
         except asyncio.CancelledError:
             return
-        async with self.redis_stat_pool.get() as rs:
-            pipe = rs.pipeline()
-            for idx, stat in enumerate(stats):
-                if stat is None:
-                    continue
-                kernel_id = running_kernels[idx]
-                pipe.hmset_dict(kernel_id, stat)
-                pipe.expire(kernel_id, stat_cache_lifespan)
-            await pipe.execute()
+        pipe = self.redis_stat_pool.pipeline()
+        for idx, stat in enumerate(stats):
+            if stat is None:
+                continue
+            kernel_id = running_kernels[idx]
+            pipe.hmset_dict(kernel_id, stat)
+            pipe.expire(kernel_id, stat_cache_lifespan)
+        await pipe.execute()
 
     async def fetch_docker_events(self):
         while True:
