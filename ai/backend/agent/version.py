@@ -1,7 +1,4 @@
-from typing import Tuple
-
-VERSION_INFO: Tuple[int, int, int] = (1, 0, 5)
-VERSION: str = '{}.{}.{}'.format(*VERSION_INFO)
+VERSION: str = '1.0.6'
 
 
 if __name__ == '__main__':

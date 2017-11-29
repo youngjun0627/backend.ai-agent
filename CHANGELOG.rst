@@ -1,6 +1,19 @@
 Changes
 =======
 
+1.0.7 (to be released)
+----------------------
+
+1.0.6 (2017-11-29)
+------------------
+
+- Update aioredis to v1.0.0 release.
+
+- Remove "mode" argument from completion RPC calls.
+
+- Fix a bug when terminating overlapped execute streams, which has caused
+  indefinite hangs in the client side due to missing "finished" notification.
+
 1.0.5 (2017-11-17)
 ------------------
 
