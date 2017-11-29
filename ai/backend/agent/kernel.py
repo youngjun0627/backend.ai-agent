@@ -362,7 +362,7 @@ class KernelRunner:
         self.current_run_id = None
         if self.pending_queues:
             # Make the next waiting API request handler to proceed.
-            activated, q = self.pending_queues.popitem(last=False)
+            _, (activated, q) = self.pending_queues.popitem(last=False)
             self.output_queue = q
             activated.set()
         else:
