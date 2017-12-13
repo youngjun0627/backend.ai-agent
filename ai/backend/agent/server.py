@@ -306,7 +306,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.monitor_handle_task
         try:
             await self.docker.events.stop()
-        except:
+        except Exception:
             pass
         await self.docker.close()
 
@@ -329,7 +329,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 return await self._create_kernel_debug(kernel_id, config)
             else:
                 return await self._create_kernel(kernel_id, config)
-        except:
+        except Exception:
             log.exception('unexpected error')
             self.sentry.captureException()
             raise
@@ -342,7 +342,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 return await self._destroy_kernel_debug(kernel_id, 'user-requested')
             else:
                 return await self._destroy_kernel(kernel_id, 'user-requested')
-        except:
+        except Exception:
             log.exception('unexpected error')
             self.sentry.captureException()
             raise
@@ -352,7 +352,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug(f'rpc::interrupt_kernel({kernel_id})')
         try:
             await self._interrupt_kernel(kernel_id)
-        except:
+        except Exception:
             log.exception('unexpected error')
             self.sentry.captureException()
             raise
@@ -363,7 +363,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug(f'rpc::get_completions({kernel_id})')
         try:
             await self._get_completions(kernel_id, text, opts)
-        except:
+        except Exception:
             log.exception('unexpected error')
             self.sentry.captureException()
             raise
@@ -416,7 +416,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'stdin_port': kernel_info['stdin_port'],
                 'stdout_port': kernel_info['stdout_port'],
             }
-        except:
+        except Exception:
             log.exception('unexpected error')
             self.sentry.captureException()
             raise
@@ -429,7 +429,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             result = await self._execute(api_version, kernel_id,
                                          run_id, mode, code, opts)
             return result
-        except:
+        except Exception:
             log.exception('unexpected error')
             self.sentry.captureException()
             raise
@@ -439,7 +439,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug(f'rpc::upload_file({kernel_id}, {filename})')
         try:
             await self._accept_file(kernel_id, filename, filedata)
-        except:
+        except Exception:
             log.exception('unexpected error')
             self.sentry.captureException()
             raise
@@ -455,11 +455,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     task = asyncio.ensure_future(
                         self._destroy_kernel(kernel_id, 'agent-reset'))
                     tasks.append(task)
-                except:
+                except Exception:
                     self.sentry.captureException()
                     log.exception(f'reset: destroying {kernel_id}')
             await asyncio.gather(*tasks)
-        except:
+        except Exception:
             log.exception('unexpected error')
             self.sentry.captureException()
             raise
@@ -652,8 +652,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 pass
             else:
                 log.exception(f'_destroy_kernel({kernel_id}) kill error')
-        except:
+                self.sentry.captureException()
+        except Exception:
             log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
+            self.sentry.captureException()
 
     async def _create_kernel_debug(self, kernel_id, config, restarting=False):
         '''
@@ -920,8 +922,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.send_event('instance_heartbeat', agent_info)
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_heartbeat')
-        except:
+        except Exception:
             log.exception('instance_heartbeat failure')
+            self.sentry.captureException()
 
     async def update_stats(self, interval):
         if self.config.debug_kernel:
@@ -955,8 +958,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 continue
             except asyncio.CancelledError:
                 break
-            except:
+            except Exception:
                 log.exception('unexpected error')
+                self.sentry.captureException()
                 break
 
     async def monitor(self):
