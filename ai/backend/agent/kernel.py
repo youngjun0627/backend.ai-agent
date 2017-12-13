@@ -35,17 +35,6 @@ class ClientFeatures(StringSetFlag):
     CONTINUATION = 'continuation'
 
 
-class ExecutionPhase(enum.Enum):
-    BUILD = 1
-    RUN = 2
-
-
-class ExpectedInput(enum.Enum):
-    USER_CODE = 0
-    USER_INPUT = 1
-    CONTINUATION = 2
-
-
 class InputRequestPending(Exception):
     def __init__(self, opts):
         super().__init__()
@@ -80,9 +69,6 @@ class KernelRunner:
         self.started_at = None
         self.finished_at = None
         self.kernel_id = kernel_id
-        self.mode = None
-        self.phase: ExecutionPhase
-        self.expects: ExpectedInput = ExpectedInput.USER_CODE
         self.kernel_ip = kernel_ip
         self.repl_in_port  = repl_in_port
         self.repl_out_port = repl_out_port
@@ -275,10 +261,8 @@ class KernelRunner:
             }
             type(self).aggregate_console(result, records, api_ver)
             self.resume_output_queue()
-            self.expects = ExpectedInput.CONTINUATION
             return result
         except BuildFinished as e:
-            self.phase = ExecutionPhase.RUN
             result = {
                 'status': 'build-finished',
             }
@@ -292,7 +276,6 @@ class KernelRunner:
             }
             type(self).aggregate_console(result, records, api_ver)
             self.next_output_queue()
-            self.expects = ExpectedInput.USER_CODE
             return result
         except ExecTimeout:
             result = {
@@ -302,7 +285,6 @@ class KernelRunner:
                         f'{self.kernel_id}')
             type(self).aggregate_console(result, records, api_ver)
             self.next_output_queue()
-            self.expects = ExpectedInput.USER_CODE
             return result
         except InputRequestPending as e:
             result = {
@@ -311,7 +293,6 @@ class KernelRunner:
             }
             type(self).aggregate_console(result, records, api_ver)
             self.resume_output_queue()
-            self.expects = ExpectedInput.USER_INPUT
             return result
         except asyncio.CancelledError:
             self.resume_output_queue()

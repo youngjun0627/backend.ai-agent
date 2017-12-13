@@ -37,7 +37,7 @@ from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
 from .stats import collect_stats
 from .resources import detect_slots, libnuma, CPUAllocMap
-from .kernel import KernelRunner, KernelFeatures, ExpectedInput
+from .kernel import KernelRunner, KernelFeatures
 
 log = logging.getLogger('ai.backend.agent.server')
 
@@ -816,18 +816,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
             await runner.attach_output_queue(run_id)
 
-            if runner.expects == ExpectedInput.USER_CODE:
+            if mode == 'batch' or mode == 'query':
                 self.container_registry[kernel_id]['initial_file_stats'] \
                     = scandir(output_dir, max_upload_size)
-                runner.mode = mode
-                if mode == 'batch':
-                    await runner.feed_batch_opts(opts)
-                else:
-                    await runner.feed_code(text)
-            elif runner.expects == ExpectedInput.USER_INPUT:
+            if mode == 'batch':
+                await runner.feed_batch_opts(opts)
+            elif mode == 'query':
+                await runner.feed_code(text)
+            elif mode == 'input':
                 await runner.feed_input(text)
-            elif runner.expects == ExpectedInput.CONTINUATION:
-                # don't need to provide additional inputs
+            elif mode == 'continue':
                 pass
             result = await runner.get_next_result(api_ver=api_version)
 
