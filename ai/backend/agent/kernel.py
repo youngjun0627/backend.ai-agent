@@ -121,7 +121,7 @@ class KernelRunner:
             await self.read_task
             self.read_task = None
 
-    async def feed_batch_opts(self, opts):
+    async def feed_batch(self, opts):
         self.input_stream.write([
             b'build',
             opts.get('build', '').encode('utf8'),
@@ -130,7 +130,6 @@ class KernelRunner:
             b'exec',
             opts.get('exec', '').encode('utf8'),
         ])
-        await self.input_stream.drain()
 
     async def feed_code(self, text):
         self.input_stream.write([b'code', text.encode('utf8')])
@@ -297,7 +296,7 @@ class KernelRunner:
         except asyncio.CancelledError:
             self.resume_output_queue()
             raise
-        except:
+        except Exception:
             log.exception('unexpected error')
             raise
 
@@ -341,7 +340,7 @@ class KernelRunner:
         assert self.current_run_id is not None
         del self.pending_queues[self.current_run_id]
         self.current_run_id = None
-        if self.pending_queues:
+        if len(self.pending_queues) > 0:
             # Make the next waiting API request handler to proceed.
             _, (activated, q) = self.pending_queues.popitem(last=False)
             self.output_queue = q

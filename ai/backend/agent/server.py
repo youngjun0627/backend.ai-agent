@@ -820,7 +820,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 self.container_registry[kernel_id]['initial_file_stats'] \
                     = scandir(output_dir, max_upload_size)
             if mode == 'batch':
-                await runner.feed_batch_opts(opts)
+                await runner.feed_batch(opts)
             elif mode == 'query':
                 await runner.feed_code(text)
             elif mode == 'input':
@@ -848,7 +848,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             final_file_stats = scandir(output_dir, max_upload_size)
             if utils.nmget(result, 'options.upload_output_files', True):
                 # TODO: separate as a new task
-                # TODO: replace entry ID ('0') with some different ID
                 initial_file_stats = \
                     self.container_registry[kernel_id]['initial_file_stats']
                 output_files = await upload_output_files_to_s3(
