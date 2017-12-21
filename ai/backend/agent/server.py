@@ -369,6 +369,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
 
     @aiozmq.rpc.method
+    async def get_logs(self, kernel_id: str):
+        log.debug(f'rpc::get_logs({kernel_id})')
+        try:
+            return await self._get_logs(kernel_id)
+        except Exception:
+            log.exception('unexpected error')
+            self.sentry.captureException()
+            raise
+
+    @aiozmq.rpc.method
     async def restart_kernel(self, kernel_id: str, new_config: dict):
         log.debug(f'rpc::restart_kernel({kernel_id})')
         if self.config.debug_kernel:
@@ -873,6 +883,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         runner = await self._ensure_runner(kernel_id)
         result = await runner.feed_and_get_completion(text, opts)
         return {'status': 'finished', 'completions': result}
+
+    async def _get_logs(self, kernel_id):
+        container_id = self.container_registry[kernel_id]['container_id']
+        container = await self.docker.containers.get(container_id)
+        logs = await container.log(stdout=True, stderr=True)
+        return {'logs': ''.join(logs)}
 
     async def _interrupt_kernel(self, kernel_id):
         runner = await self._ensure_runner(kernel_id)
