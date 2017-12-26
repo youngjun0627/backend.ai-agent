@@ -14,6 +14,7 @@ import aiotools
 import aiozmq, aiozmq.rpc
 from async_timeout import timeout
 import configargparse
+import snappy
 import uvloop
 import zmq
 try:
@@ -121,6 +122,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.config.redis_addr = None
 
         self.slots = detect_slots()
+        self.images = set()
 
         self.server = None
         self.event_sock = None
@@ -197,6 +199,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await self.send_event('kernel_terminated', kernel_id,
                                       'self-terminated', None)
 
+    async def scan_images(self):
+        all_images = await self.docker.images.list()
+        self.images.clear()
+        for image in all_images:
+            if image['RepoTags'] is None:
+                continue
+            for tag in image['RepoTags']:
+                if tag.startswith('lablup/kernel-'):
+                    self.images.add((tag, image['Id']))
+
     async def update_status(self, status):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
 
@@ -244,6 +256,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         await self.detect_manager()
         await self.update_status('starting')
+        await self.scan_images()
         await self.scan_running_containers()
         await self.check_images()
 
@@ -910,12 +923,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def heartbeat(self, interval):
         '''
-        Record my status information to the manager database (Redis).
-        This information automatically expires after 2x interval, so that failure
-        of executing this method automatically removes the instance from the
-        manager database.
+        Send my status information and available kernel images.
         '''
-
         agent_info = {
             'ip': self.config.agent_ip,
             'region': self.config.region,
@@ -923,6 +932,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'mem_slots': self.slots[0],
             'cpu_slots': self.slots[1],
             'gpu_slots': self.slots[2],
+            'images': snappy.compress(msgpack.packb(list(self.images))),
         }
         try:
             await self.send_event('instance_heartbeat', agent_info)

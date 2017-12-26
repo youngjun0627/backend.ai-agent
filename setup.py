@@ -17,6 +17,7 @@ requires = [
     'aiotools>=0.4.5',
     'namedlist',
     'psutil',
+    'python-snappy~=0.5.1',
     'requests',
     'requests_unixsocket',
     'simplejson',
