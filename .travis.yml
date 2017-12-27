@@ -55,6 +55,7 @@ jobs:
            --initial-cluster-state new
            --auto-compaction-retention 1
       script:
+        - set -o pipefail
         - python -m flake8 ai/backend tests
         - python -m pytest -m "not integration" --cov=ai/backend
       after_success:

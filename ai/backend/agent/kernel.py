@@ -1,7 +1,6 @@
 import asyncio
 import codecs
 from collections import OrderedDict
-import enum
 import io
 import logging
 import time
