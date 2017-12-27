@@ -12,43 +12,9 @@ import pytest
 # import ai.backend.agent.server as server_mod
 # from ai.backend.agent.resources import CPUAllocMap
 from ai.backend.agent.server import (
-    get_extra_volumes,
-    AgentRPCServer,
+    get_extra_volumes, get_kernel_id_from_container, AgentRPCServer
 )
 from ai.backend.common.argparse import host_port_pair
-
-
-@pytest.fixture
-def mock_volumes_list():
-    return {
-        'Volumes': [
-            {
-                'Driver': 'local',
-                'Labels': None,
-                'Mountpoint': '/fake/mount/point/1',
-                'Name': 'fakename1',
-                'Options': {},
-                'Scope': 'local'
-            },
-            {
-                'Driver': 'local',
-                'Labels': None,
-                'Mountpoint': '/fake/mount/point/2',
-                'Name': 'fakename2',
-                'Options': {},
-                'Scope': 'local'
-            },
-            {
-                'Driver': 'local',
-                'Labels': None,
-                'Mountpoint': '/fake/mount/point/3',
-                'Name': 'deeplearning-samples',
-                'Options': {},
-                'Scope': 'local'
-            },
-        ],
-        'Warnings': None
-    }
 
 
 @pytest.fixture
@@ -99,35 +65,31 @@ async def mock_agent(monkeypatch, mocker, tmpdir):
 
 
 @pytest.mark.asyncio
-async def test_get_extra_volumes(mock_volumes_list):
-    mock_docker = mock.Mock()
-    mock_docker.volumes.list = asynctest.CoroutineMock(
-        return_value=mock_volumes_list)
+async def test_get_extra_volumes(docker):
+    # No extra volumes
+    mnt_list = await get_extra_volumes(docker, 'python:latest')
+    assert len(mnt_list) == 0
 
-    mnt_list = await get_extra_volumes(mock_docker, 'python3')
-    assert mnt_list == []
+    # Create fake deeplearning sample volume and check it will be returned
+    vol = None
+    try:
+        config = { 'Name': 'deeplearning-samples' }
+        vol = await docker.volumes.create(config)
+        mnt_list = await get_extra_volumes(docker, 'python-tensorflow:latest')
+    finally:
+        if vol:
+            await vol.delete()
 
-    mnt_list = await get_extra_volumes(mock_docker, 'python3-tensorflow')
     assert len(mnt_list) == 1
-    assert 'deeplearning-samples' in mnt_list[0]
-
-    mnt_list = await get_extra_volumes(mock_docker, 'python3-tensorflow-gpu')
-    assert len(mnt_list) == 1
-    assert 'deeplearning-samples' in mnt_list[0]
+    assert mnt_list[0].name == 'deeplearning-samples'
 
 
-# @pytest.mark.asyncio
-# async def test_init(mock_agent):
-#     print('1')
-#     agent = mock_agent
-#     print('2')
-#     assert agent.loop is asyncio.get_event_loop()
-#     print('3')
-#     assert isinstance(agent.docker, Docker)
-#     print('4')
-#     assert agent.container_registry == {}
-#     print('5')
-#     assert isinstance(agent.container_cpu_map, CPUAllocMap)
+@pytest.mark.asyncio
+async def test_get_kernel_id_from_container(docker, container):
+    container_list = await docker.containers.list()
+    kid = get_kernel_id_from_container(container_list[0])
+
+    assert kid == container_list[0]['Names'][0].split('.')[-1]
 
 
 def test_ping(mock_agent):
