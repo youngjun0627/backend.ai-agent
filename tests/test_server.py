@@ -1,6 +1,8 @@
 import argparse
 import asyncio
+from ipaddress import ip_address
 import os
+import uuid
 
 from unittest import mock
 
@@ -14,7 +16,8 @@ import pytest
 from ai.backend.agent.server import (
     get_extra_volumes, get_kernel_id_from_container, AgentRPCServer
 )
-from ai.backend.common.argparse import host_port_pair
+from ai.backend.common import identity
+from ai.backend.common.argparse import HostPortPair, host_port_pair
 
 
 @pytest.fixture
@@ -64,6 +67,42 @@ async def mock_agent(monkeypatch, mocker, tmpdir):
     print('mock_agent shutdown2')
 
 
+@pytest.fixture
+def agent(request, tmpdir, event_loop):
+    config = argparse.Namespace()
+    config.namespace = 'local'
+    config.agent_ip = '127.0.0.1'
+    config.agent_port = '6001'  # default 6001
+    config.etcd_addr = HostPortPair(ip_address('127.0.0.1'), 2379)
+    config.idle_timeout = 600
+    config.debug = True
+    config.debug_kernel = False
+    config.kernel_aliases = None
+    config.scratch_root = tmpdir
+
+    agent = None
+
+    async def serve():
+        nonlocal agent
+        config.instance_id = await identity.get_instance_id()
+        config.inst_type = await identity.get_instance_type()
+        config.region = await identity.get_instance_region()
+        print(f'serving test agent: {config.instance_id} ({config.inst_type}),'
+              f' ip: {config.agent_ip}')
+        agent = AgentRPCServer(config, loop=event_loop)
+        await agent.init()
+    event_loop.run_until_complete(serve())
+
+    yield agent
+
+    async def terminate():
+        nonlocal agent
+        print('shutting down test agent...')
+        if agent:
+            await agent.shutdown()
+    event_loop.run_until_complete(terminate())
+
+
 @pytest.mark.asyncio
 async def test_get_extra_volumes(docker):
     # No extra volumes
@@ -92,19 +131,52 @@ async def test_get_kernel_id_from_container(docker, container):
     assert kid == container_list[0]['Names'][0].split('.')[-1]
 
 
-def test_ping(mock_agent):
-    msg = mock_agent.ping('ping~')
-    assert msg == 'ping~'
+# @pytest.mark.integration
+# class TestAgentRPCServerInterface:
+#     @pytest.mark.asyncio
+#     async def test_detect_manager(self, agent):
+#         agent.config.event_addr = None
+#         await agent.detect_manager()
+
+#         assert agent.config.event_addr
+
+#     @pytest.mark.asyncio
+#     async def test_scan_running_containers(self, agent):
+#         await agent.scan_running_containers()
+#         assert 0
 
 
-@pytest.mark.asyncio
-async def test_create_kernel(mock_agent):
-    agent = mock_agent
-    agent._create_kernel = asynctest.CoroutineMock(return_value='fake-return')
-    r = await agent.create_kernel('fake-kernel-id', {'lang': 'python3'})
-    agent._create_kernel.assert_called_once_with('fake-kernel-id',
-                                                 {'lang': 'python3'})
-    assert r == 'fake-return'
+@pytest.mark.integration
+class TestAgentRPCServerMethods:
+    def test_ping(self, agent):
+        ret = agent.ping('ping~')
+        assert ret == 'ping~'
+
+    @pytest.mark.asyncio
+    async def test_create_kernel(self, agent, docker):
+        kernel_id = str(uuid.uuid4())
+        config = {
+            'lang': 'lua:latest',
+            'limits': { 'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1 },
+            'mounts': [],
+        }
+
+        kernel_info = container_info = None
+        try:
+            kernel_info = await agent.create_kernel(kernel_id, config)
+            container_info = agent.container_registry[kernel_id]
+        finally:
+            container = docker.containers.container(kernel_info['container_id'])
+            await container.delete(force=True)
+
+        assert kernel_info
+        assert container_info
+        assert kernel_info['id'] == kernel_id
+        assert kernel_info['cpu_set'] == [0]
+        assert container_info['lang'] == config['lang']
+        assert container_info['container_id'] == kernel_info['container_id']
+        assert container_info['limits'] == config['limits']
+        assert container_info['mounts'] == config['mounts']
 
 
 @pytest.mark.asyncio
