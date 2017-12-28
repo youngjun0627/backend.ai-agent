@@ -131,23 +131,34 @@ async def test_get_kernel_id_from_container(docker, container):
     assert kid == container_list[0]['Names'][0].split('.')[-1]
 
 
-# @pytest.mark.integration
-# class TestAgentRPCServerInterface:
-#     @pytest.mark.asyncio
-#     async def test_detect_manager(self, agent):
-#         agent.config.event_addr = None
-#         await agent.detect_manager()
-
-#         assert agent.config.event_addr
-
-#     @pytest.mark.asyncio
-#     async def test_scan_running_containers(self, agent):
-#         await agent.scan_running_containers()
-#         assert 0
-
-
 @pytest.mark.integration
 class TestAgentRPCServerMethods:
+    @pytest.fixture
+    def kernel_info(self, agent, docker, event_loop):
+        kernel_id = str(uuid.uuid4())
+        config = {
+            'lang': 'lua:latest',
+            'limits': { 'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1 },
+            'mounts': [],
+        }
+
+        kernel_info = None
+
+        async def spawn():
+            nonlocal kernel_info
+            kernel_info = await agent.create_kernel(kernel_id, config)
+        event_loop.run_until_complete(spawn())
+
+        yield kernel_info
+
+        async def finalize():
+            nonlocal kernel_info
+            container = docker.containers.container(kernel_info['container_id'])
+            cinfo = await container.show() if container else None
+            if cinfo and cinfo['State']['Status'] != 'removing':
+                await container.delete(force=True)
+        event_loop.run_until_complete(finalize())
+
     def test_ping(self, agent):
         ret = agent.ping('ping~')
         assert ret == 'ping~'
@@ -172,20 +183,26 @@ class TestAgentRPCServerMethods:
         assert kernel_info
         assert container_info
         assert kernel_info['id'] == kernel_id
-        assert kernel_info['cpu_set'] == [0]
+        assert len(kernel_info['cpu_set']) == 1
         assert container_info['lang'] == config['lang']
         assert container_info['container_id'] == kernel_info['container_id']
         assert container_info['limits'] == config['limits']
         assert container_info['mounts'] == config['mounts']
 
+    @pytest.mark.asyncio
+    async def test_destroy_kernel(self, agent, kernel_info):
+        stat = await agent.destroy_kernel(kernel_info['id'])
 
-@pytest.mark.asyncio
-async def test_destroy_kernel(mock_agent):
-    agent = mock_agent
-    agent._destroy_kernel = asynctest.CoroutineMock()
-    await agent.destroy_kernel('fakeid')
-    agent._destroy_kernel.assert_called_once_with('fakeid',
-                                                  'user-requested')
+        assert stat
+        assert 'cpu_used' in stat
+        assert 'mem_max_bytes' in stat
+        assert 'mem_cur_bytes' in stat
+        assert 'net_rx_bytes' in stat
+        assert 'net_tx_bytes' in stat
+        assert 'io_read_bytes' in stat
+        assert 'io_write_bytes' in stat
+        assert 'io_max_scratch_size' in stat
+        assert 'io_cur_scratch_size' in stat
 
 
 @pytest.mark.asyncio
