@@ -176,7 +176,7 @@ class TestAgentRPCServerMethods:
         kernel_id = str(uuid.uuid4())
         config = {
             'lang': 'lua:latest',
-            'limits': { 'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1 },
+            'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
             'mounts': [],
         }
 
@@ -218,14 +218,13 @@ class TestAgentRPCServerMethods:
         container_id = kernel_info['container_id']
         new_config = {
             'lang': 'lua:latest',
-            'limits': { 'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1 },
+            'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
             'mounts': [],
         }
 
         ret = await agent.restart_kernel(kernel_id, new_config)
 
         assert container_id != ret['container_id']
-
 
     @pytest.mark.asyncio
     async def test_execute(self, agent, kernel_info):
