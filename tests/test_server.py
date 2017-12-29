@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 from ipaddress import ip_address
 import os
 import uuid
@@ -230,13 +231,21 @@ class TestAgentRPCServerMethods:
     async def test_execute(self, agent, kernel_info):
         # Test with lua:latest image only
         api_ver = 2
-        kernel_id = kernel_info['id']
-        run_id = 'test-run-id'
+        kid = kernel_info['id']
+        runid = 'test-run-id'
         mode = 'query'
         code = 'print(17)'
-        ret = await agent.execute(api_ver, kernel_id, run_id, mode, code, {})
 
-        assert ret['status'] == 'finished'
+        while True:
+            ret = await agent.execute(api_ver, kid, runid, mode, code, {})
+            if ret['status'] == 'finished':
+                break
+            elif ret['status'] == 'continued':
+                mode = 'continue',
+                code = ''
+            else:
+                raise Exception('Invalid execution status')
+
         assert ret['console'][0][0] == 'stdout'
         assert ret['console'][0][1] == '17\n'
 

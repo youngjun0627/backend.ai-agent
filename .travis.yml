@@ -1,7 +1,10 @@
 language: python
 cache: pip
+addons:
+  postgresql: "9.6"
 services:
   - docker
+  - postgresql
   - redis-server
 
 # stage decl.
@@ -20,6 +23,10 @@ env:
     - BACKEND_ETCD_ADDR=localhost:2379
     - BACKEND_NAMESPACE=local
     - BACKEND_REDIS_ADDR=localhost:6379
+    - BACKEND_DB_ADDR=localhost:5432
+    - BACKEND_DB_USER=postgres
+    - BACKEND_DB_PASSWORD=develove
+    - BACKEND_DB_NAME=testing
 
 # TODO: the test suite should be updated
 matrix:
@@ -36,11 +43,25 @@ jobs:
         - sudo apt-get install libsnappy-dev
         - pip install -U pip setuptools
         - if [[ $TRAVIS_BRANCH == "develop" ]]; then BRANCH="develop"; else BRANCH="master"; fi
-        - sed -i'' -e "s/{BRANCH}/$TRAVIS_BRANCH/g" requirements-ci.txt
+        - sed -i'' -e "s/{BRANCH}/$BRANCH/g" requirements-ci.txt
         - pip install -U -r requirements-ci.txt
+        # install backend.ai-manager from github
+        - cd ${HOME}/build/lablup 
+        - git clone https://github.com/lablup/backend.ai-manager.git 
+        - cd backend.ai-manager 
+        - pip install -U -e . 
+        # fill postgresql db with test data
+        - psql -c 'CREATE DATABASE testing;' -U postgres
+        - cp alembic.ini.sample alembic.ini
+        - sed -i'' -e 's!^sqlalchemy.url = .*$!sqlalchemy.url = postgresql://postgres@localhost:5432/testing!' alembic.ini
+        - python -m ai.backend.manager.cli schema oneshot head
+        - python -m ai.backend.manager.cli fixture populate example_keypair
+        - cd ../backend.ai-agent 
       before_script:
+        # load etcd server
         - mkdir -p /tmp/etcd
-        - docker run -d -p 2379:2379 -p 2380:2380
+        - mkdir -p /tmp/etcd/vroot
+        - docker run -d -p 2379:2379 -p 2380:2380 --name backendai-etcd
            -v /tmp/etcd:/etcd-data
            quay.io/coreos/etcd:v3.2.8
            /usr/local/bin/etcd
@@ -54,9 +75,24 @@ jobs:
            --initial-cluster-token backendai-etcd-token
            --initial-cluster-state new
            --auto-compaction-retention 1
+        - docker exec -it backendai-etcd ash -c
+           'ETCDCTL_API=3 etcdctl put /sorna/local/volumes/_vfroot /tmp/etcd/vroot'
+        # load backend.ai-manager server
+        - python -m ai.backend.gateway.server
+           --etcd-addr ${BACKEND_ETCD_ADDR}
+           --namespace local
+           --redis-addr ${BACKEND_REDIS_ADDR}
+           --db-addr ${BACKEND_DB_ADDR}
+           --db-name ${BACKEND_DB_NAME}
+           --db-user ${BACKEND_DB_USER}
+           --db-password ${BACKEND_DB_PASSWORD}
+           --docker-registry docker.example.com:5000
+           --service-ip 127.0.0.1
+           --service-port 5001
+           --events-port 5002 &
       script:
         - python -m flake8 ai/backend tests
-        - python -m pytest -m "not integration" --cov=ai/backend
+        - python -m pytest --cov=ai/backend
       after_success:
         - codecov
 

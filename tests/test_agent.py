@@ -11,6 +11,8 @@ import pytest
 
 from ai.backend.agent.server import AgentRPCServer
 
+pytestmark = pytest.mark.skip(reason='deprecated test cases')
+
 
 @pytest.fixture
 def loop(event_loop):
@@ -88,27 +90,6 @@ def agent(loop, docker, config, events):
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestAgent:
-    async def test_ping(self, agent):
-        ret = agent.ping('hello')
-        assert ret == 'hello'
-
-    async def test_create_and_destroy_kernel(self, agent):
-        kernel_id, stdin_port, stdout_port = await agent.create_kernel(
-            'python3', {})
-        assert kernel_id in agent.container_registry
-        assert 'last_stat' not in agent.container_registry[kernel_id]
-
-        await agent.destroy_kernel(kernel_id)
-        assert 'last_stat' in agent.container_registry[kernel_id]
-
-    # async def test_restart_kernel(self, agent):
-    #     kernel_id, _, _ = await agent.create_kernel('python3', {})
-    #
-    #     # await agent.clean_kernel(kernel_id)
-    #     await agent.restart_kernel(kernel_id)
-    #
-    #     assert 0
-
     async def test_reset(self, agent):
         kernel_id1, _, _ = await agent.create_kernel('python3', {})
         kernel_id2, _, _ = await agent.create_kernel('python3', {})
@@ -120,23 +101,6 @@ class TestAgent:
 
         assert 'last_stat' in agent.container_registry[kernel_id1]
         assert 'last_stat' in agent.container_registry[kernel_id2]
-
-    async def test_execute_code_python3(self, agent, mocker):
-        mock_match_result = mocker.patch('ai.backend.agent.server.match_result')
-        mock_match_result.return_value = 'match result'
-
-        kernel_id, _, _ = await agent.create_kernel('python3', {})
-
-        entry_id = str(uuid.uuid4())
-        code_id = str(uuid.uuid4())
-        code = 'print("!@#$")'
-        result = await agent.execute_code(entry_id, kernel_id, code_id, code,
-                                          {'mock': 'match'})
-
-        assert result['stdout'] == '!@#$\n'
-        assert result['match_result'] == 'match result'
-        result.pop('match_result')
-        mock_match_result.assert_called_once_with(result, {'mock': 'match'})
 
     async def test_execution_raises_timeout(self, agent):
         agent.config.exec_timeout = 1
