@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+from datetime import datetime
 from ipaddress import ip_address
 import os
 import uuid
@@ -8,11 +9,7 @@ from unittest import mock
 
 import asynctest
 import pytest
-# import simplejson as json
-# from aiodocker.docker import Docker
 
-# import ai.backend.agent.server as server_mod
-# from ai.backend.agent.resources import CPUAllocMap
 from ai.backend.agent.server import (
     get_extra_volumes, get_kernel_id_from_container, AgentRPCServer
 )
@@ -227,6 +224,55 @@ class TestAgentRPCServerMethods:
         assert container_id != ret['container_id']
 
     @pytest.mark.asyncio
+    async def test_restart_kernel_cancel_code_execution(
+            self, agent, kernel_info, event_loop):
+        async def execute_code():
+            nonlocal kernel_info
+            api_ver = 2
+            kid = kernel_info['id']
+            runid = 'test-run-id'
+            mode = 'query'
+            code = ('local clock = os.clock\n'
+                    'function sleep(n)\n'
+                    '  local t0 = clock()\n'
+                    '  while clock() - t0 <= n do end\n'
+                    'end\n'
+                    'sleep(10)\nprint("code executed")')
+            while True:
+                ret = await agent.execute(api_ver, kid, runid, mode, code, {})
+                if ret is None:
+                    break;
+                elif ret['status'] == 'finished':
+                    break
+                elif ret['status'] == 'continued':
+                    mode = 'continue',
+                    code = ''
+                else:
+                    raise Exception('Invalid execution status')
+            return ret
+
+        async def restart_kernel():
+            nonlocal kernel_info
+            kernel_id = kernel_info['id']
+            container_id = kernel_info['container_id']
+            new_config = {
+                'lang': 'lua:latest',
+                'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
+                'mounts': [],
+            }
+            ret = await agent.restart_kernel(kernel_id, new_config)
+
+        t1 = asyncio.ensure_future(execute_code(), loop=event_loop)
+        start = datetime.now()
+        await asyncio.sleep(1)
+        t2 = asyncio.ensure_future(restart_kernel(), loop=event_loop)
+        results = await asyncio.gather(t1, t2)
+        end = datetime.now()
+
+        assert results[0] is None  # no execution result
+        assert (end - start).total_seconds() < 10
+
+    @pytest.mark.asyncio
     async def test_execute(self, agent, kernel_info):
         # Test with lua:latest image only
         api_ver = 2
@@ -247,23 +293,6 @@ class TestAgentRPCServerMethods:
 
         assert ret['console'][0][0] == 'stdout'
         assert ret['console'][0][1] == '17\n'
-
-
-@pytest.mark.asyncio
-async def test_interrupt_kernel(mock_agent):
-    agent = mock_agent
-    agent._interrupt_kernel = asynctest.CoroutineMock()
-    await agent.interrupt_kernel('fakeid')
-    agent._interrupt_kernel.assert_called_once_with('fakeid')
-
-
-@pytest.mark.asyncio
-async def test_get_completions(mock_agent):
-    agent = mock_agent
-    agent._get_completions = asynctest.CoroutineMock()
-    await agent.get_completions('fakeid', 'fakemode', 'text', {})
-    agent._get_completions.assert_called_once_with('fakeid', 'fakemode',
-                                                   'text', {})
 
 
 @pytest.mark.asyncio
