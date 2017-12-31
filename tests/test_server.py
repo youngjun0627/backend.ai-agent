@@ -3,10 +3,12 @@ import asyncio
 from datetime import datetime
 from ipaddress import ip_address
 import os
+from pathlib import Path
+import time
 import uuid
-
 from unittest import mock
 
+import aiodocker
 import asynctest
 import pytest
 
@@ -15,53 +17,6 @@ from ai.backend.agent.server import (
 )
 from ai.backend.common import identity
 from ai.backend.common.argparse import HostPortPair, host_port_pair
-
-
-@pytest.fixture
-async def mock_agent(monkeypatch, mocker, tmpdir):
-    config = argparse.Namespace()
-    config.etcd_addr = host_port_pair(
-        os.environ.get('BACKEND_ETCD_ADDR', 'localhost:2379'))
-    config.namespace = os.environ.get('BACKEND_NAMESPACE', 'local')
-    config.instance_id = 'i-testing'
-    config.instance_ip = '127.0.0.1'
-    config.datadog_api_key = None
-    config.datadog_app_key = None
-    config.raven_uri = None
-    config.agent_ip = 'localhost'
-    config.agent_port = '6001'
-    config.region = 'local'
-    config.scratch_root = tmpdir
-    config.debug_kernel = False
-
-    # monkeypatch.setattr(server_mod.AsyncEtcd, 'set',
-    #                     asynctest.CoroutineMock(), raising=False)
-    # monkeypatch.setattr(server_mod.AsyncEtcd, 'get',
-    #                     asynctest.CoroutineMock(), raising=False)
-    # from ai.backend.common.etcd import AsyncEtcd
-    # mocker.patch.object(AsyncEtcd, 'get', asynctest.CoroutineMock())
-    # TODO
-    # monkeypatch.setattr(server_mod.AgentEventPublisher, 'publish',
-    #                     asynctest.CoroutineMock(), raising=False)
-
-    # Build fake etcd database
-    # from ai.backend.common.etcd import AsyncEtcd
-    # etcd = AsyncEtcd(config.etcd_addr, config.namespace)
-    # await etcd.put('nodes/manager', 'fake-manager-id')
-    # await etcd.put('nodes/manager/event_addr', 'localhost:5002')
-    # await etcd.put('nodes/redis',
-    #                os.environ.get('BACKEND_REDIS_ADDR', 'localhost:6379'))
-
-    agent = AgentRPCServer(config)
-    print('mock_agent init1')
-    # await agent.init()
-    print('mock_agent init2')
-
-    yield agent
-
-    print('mock_agent shutdown1')
-    # await agent.shutdown()
-    print('mock_agent shutdown2')
 
 
 @pytest.fixture
@@ -75,7 +30,7 @@ def agent(request, tmpdir, event_loop):
     config.debug = True
     config.debug_kernel = False
     config.kernel_aliases = None
-    config.scratch_root = tmpdir
+    config.scratch_root = Path(tmpdir)
 
     agent = None
 
@@ -158,8 +113,11 @@ class TestAgentRPCServerMethods:
             else:
                 # If fallback to initial container_id if kernel is deleted.
                 container_id = kernel_info['container_id']
-            container = docker.containers.container(container_id)
-            cinfo = await container.show() if container else None
+            try:
+                container = docker.containers.container(container_id)
+                cinfo = await container.show() if container else None
+            except aiodocker.exceptions.DockerError:
+                cinfo = None
             if cinfo and cinfo['State']['Status'] != 'removing':
                 await container.delete(force=True)
         event_loop.run_until_complete(finalize())
@@ -294,146 +252,59 @@ class TestAgentRPCServerMethods:
         assert ret['console'][0][0] == 'stdout'
         assert ret['console'][0][1] == '17\n'
 
+    @pytest.mark.asyncio
+    async def test_upload_file(self, agent, kernel_info):
+        fname = 'test.txt'
+        await agent.upload_file(kernel_info['id'], fname, b'test content')
+        uploaded_to = agent.config.scratch_root / kernel_info['id'] / fname
+        assert uploaded_to.exists()
 
-@pytest.mark.asyncio
-async def test_upload_file(mocker, mock_agent):
-    agent = mock_agent
-    agent._accept_file = asynctest.CoroutineMock()
-
-    await agent.upload_file(
-        kernel_id='fakeid',
-        filename='fakefilename',
-        filedata=b'print(1)',
-    )
-
-    agent._accept_file.assert_called_once_with('fakeid', 'fakefilename',
-                                               b'print(1)')
-
-
-@pytest.mark.asyncio
-async def test_reset(mock_agent):
-    agent = mock_agent
-    agent.container_registry = {'1': {}, '2': {}}
-    agent._destroy_kernel = asynctest.CoroutineMock()
-
-    await agent.reset()
-
-    assert 2 == agent._destroy_kernel.call_count
-    agent._destroy_kernel.assert_any_call('1', 'agent-reset')
-    agent._destroy_kernel.assert_any_call('2', 'agent-reset')
-
-
-@pytest.mark.asyncio
-async def test_heartbeat(mock_agent):
-    agent = mock_agent
-    agent.send_event = asynctest.CoroutineMock()
-    await agent.heartbeat(5)
-    assert agent.send_event.called == 1
-
-
-@pytest.mark.asyncio
-async def test_fetch_docker_events(mock_agent):
-    agent = mock_agent
-    agent.docker.events.run = asynctest.CoroutineMock(side_effect=[0, 1])
-    await agent.fetch_docker_events()
-    assert 3 == agent.docker.events.run.call_count  # 0, 1, raise err
-
-
-@pytest.mark.asyncio
-async def test_monitor_clean_kernel_upon_action_die(mock_agent):
-    agent = mock_agent
-    agent.docker = asynctest.CoroutineMock()
-    mock_subscriber = agent.docker.events.subscribe.return_value = \
-            asynctest.CoroutineMock()
-    mock_subscriber.get = asynctest.CoroutineMock()
-    mock_subscriber.get.side_effect = [{
-        'Type': 'fake-type',
-        'Action': 'die',
-        'Actor': {
-            'ID': 'fake-id',
-            'Attributes': {
-                'name': 'kernel.fake-container-name.fake-kernel-id',
-            }
+    @pytest.mark.asyncio
+    async def test_reset(self, agent, docker):
+        kernel_ids = []
+        container_ids = []
+        config = {
+            'lang': 'lua:latest',
+            'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
+            'mounts': [],
         }
-    }, asyncio.CancelledError]
-    agent.clean_kernel = asynctest.CoroutineMock()
 
-    await agent.monitor()
+        try:
+            # Create two kernels
+            for i in range(2):
+                kid = str(uuid.uuid4())
+                kernel_ids.append(kid)
+                info = await agent.create_kernel(kid, config)
+                container_ids.append(info['container_id'])
 
-    agent.clean_kernel.assert_called_once_with('fake-kernel-id')
+            # 2 containers are created
+            assert docker.containers.container(container_ids[0])
+            assert docker.containers.container(container_ids[1])
 
+            await agent.reset()
 
-@pytest.mark.asyncio
-async def test_clean_kernel(mock_agent, tmpdir):
-    agent = mock_agent
-    agent.container_registry = {
-        'kernel-id-1': {
-            'container_id': 'fake-container-id-1',
-            'cpu_set': '',
-        },
-    }
-    mock_container = mock.Mock()
-    mock_container.delete = asynctest.CoroutineMock()
-    agent.docker = asynctest.CoroutineMock()
-    agent.docker.containers.container.return_value = mock_container
-    agent.config.volume_root = tmpdir
-    agent.container_cpu_map.free = mock.Mock()
-    agent.clean_runner = asynctest.CoroutineMock()
-
-    await agent.clean_kernel('kernel-id-1')
-
-    mock_container.delete.assert_called_once_with()
-    agent.container_cpu_map.free.assert_called_once_with(mock.ANY)
-    assert 'kernel-id-1' not in agent.container_registry
-
-
-@pytest.mark.asyncio
-async def test_clean_old_kernels(mock_agent):
-    agent = mock_agent
-    agent.container_registry = {
-        'kernel-id-1': {
-            'last_used': 0,
-        },
-    }
-    agent.config.idle_timeout = 1
-    agent._destroy_kernel = asynctest.CoroutineMock()
-
-    await agent.clean_old_kernels('kernel-id-1')
-
-    agent._destroy_kernel.assert_called_once_with(
-        'kernel-id-1', 'idle-timeout')
-
-
-@pytest.mark.asyncio
-async def test_do_not_clean_new_kernels(mock_agent):
-    agent = mock_agent
-    agent.container_registry = {
-        'kernel-id-1': {
-            'last_used': 0,
-        },
-    }
-    agent.config.idle_timeout = 999999
-    agent._destroy_kernel = asynctest.CoroutineMock()
-
-    await agent.clean_old_kernels('kernel-id-1')
-
-    agent._destroy_kernel.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_clean_all_kernels(mock_agent):
-    agent = mock_agent
-    agent.container_registry = {
-        'kernel-id-1': {
-            'last_used': 0,
-        },
-    }
-    agent._destroy_kernel = asynctest.CoroutineMock()
-
-    await agent.clean_all_kernels()
-
-    agent._destroy_kernel.assert_called_once_with(
-        'kernel-id-1', 'agent-termination')
+            # Containers are destroyed
+            with pytest.raises(aiodocker.exceptions.DockerError):
+                c1 = docker.containers.container(container_ids[0])
+                c1info = await c1.show()
+                if c1info['State']['Status'] == 'removing':
+                    raise aiodocker.exceptions.DockerError(
+                            404, {'message': 'success'})
+            with pytest.raises(aiodocker.exceptions.DockerError):
+                c2 = docker.containers.container(container_ids[1])
+                c2info = await c2.show()
+                if c2info['State']['Status'] == 'removing':
+                    raise aiodocker.exceptions.DockerError(
+                            404, {'message': 'success'})
+        finally:
+            for cid in container_ids:
+                try:
+                    container = docker.containers.container(cid)
+                    cinfo = await container.show() if container else None
+                except aiodocker.exceptions.DockerError:
+                    cinfo = None
+                if cinfo and cinfo['State']['Status'] != 'removing':
+                    await container.delete(force=True)
 
 
 def test_main(mocker, tmpdir):

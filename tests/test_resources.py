@@ -40,7 +40,6 @@ class TestLibNuma:
         resources._numa_supported = original_numa_supported
 
     def test_get_available_cores_without_docker(self, monkeypatch):
-
         def mock_sched_getaffinity(pid):
             raise AttributeError
 
