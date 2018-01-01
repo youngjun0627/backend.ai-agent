@@ -1,6 +1,5 @@
 import asyncio
 from pathlib import Path
-import time
 from unittest import mock
 import uuid
 
@@ -90,60 +89,6 @@ def agent(loop, docker, config, events):
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestAgent:
-    async def test_reset(self, agent):
-        kernel_id1, _, _ = await agent.create_kernel('python3', {})
-        kernel_id2, _, _ = await agent.create_kernel('python3', {})
-
-        assert 'last_stat' not in agent.container_registry[kernel_id1]
-        assert 'last_stat' not in agent.container_registry[kernel_id2]
-
-        await agent.reset()
-
-        assert 'last_stat' in agent.container_registry[kernel_id1]
-        assert 'last_stat' in agent.container_registry[kernel_id2]
-
-    async def test_execution_raises_timeout(self, agent):
-        agent.config.exec_timeout = 1
-        kernel_id, _, _ = await agent.create_kernel('python3', {})
-
-        exec_timeout = agent.container_registry[kernel_id]['exec_timeout']
-
-        entry_id = str(uuid.uuid4())
-        code_id = str(uuid.uuid4())
-        code = f'import time; time.sleep({exec_timeout + 1})'
-        with pytest.raises(asyncio.TimeoutError):
-            await agent.execute_code(entry_id, kernel_id, code_id, code, {})
-
-    async def test_file_output(self, agent, tmpdir, mocker):
-        kernel_id, _, _ = await agent.create_kernel('python3', {})
-
-        work_dir = tmpdir / kernel_id
-        assert work_dir.exists()
-
-        untouched_path = work_dir.join('untouched')
-        untouched_path.write('x')
-
-        code = """
-from pathlib import Path
-print(Path.cwd())
-with open('test.txt', 'w', encoding='utf8') as f:
-    print('hello world 한글 테스트', file=f)
-"""
-        entry_id = str(uuid.uuid4())
-        code_id = str(uuid.uuid4())
-        result = await agent.execute_code(entry_id, kernel_id, code_id, code,
-                                          {})
-
-        test_path = work_dir / 'test.txt'
-        assert '/home/work' == result['stdout'].splitlines()[0].strip()
-        assert test_path.exists()
-        assert 'test.txt' in result['files']
-        assert 'untouched' not in result['files']
-        with open(test_path, 'r', encoding='utf8') as f:
-            data = f.read()
-            assert 'hello world' in data
-            assert '한글 테스트' in data
-
     async def test_too_large_file_not_uploaded(self, agent, tmpdir, mocker):
         from ai.backend.agent import server
         original_max_upload_size = server.max_upload_size
@@ -253,55 +198,8 @@ c = 0
 while True:
     j[c] = b'a'
     c += 1
-j'''
+'''
         with pytest.raises(asyncio.TimeoutError):
             entry_id = str(uuid.uuid4())
             code_id = str(uuid.uuid4())
             await agent.execute_code(entry_id, kernel_id, code_id, code, {})
-
-    async def test_clean_kernel(self, agent, tmpdir):
-        kernel_id1, _, _ = await agent.create_kernel('python3', {})
-        kernel_id2, _, _ = await agent.create_kernel('python3', {})
-
-        await agent.destroy_kernel(kernel_id1)
-        await agent.destroy_kernel(kernel_id2)
-
-        assert len(agent.container_registry) == 2
-        assert kernel_id1 in str(tmpdir.listdir())
-        assert kernel_id2 in str(tmpdir.listdir())
-
-        await agent.clean_kernel(kernel_id2)
-
-        assert len(agent.container_registry) == 1
-        assert kernel_id1 in agent.container_registry
-        assert kernel_id2 not in agent.container_registry
-        assert kernel_id1 in str(tmpdir.listdir())
-        assert kernel_id2 not in str(tmpdir.listdir())
-
-    async def test_clean_old_kernels(self, agent):
-        kernel_id1, _, _ = await agent.create_kernel('python3', {})
-        kernel_id2, _, _ = await agent.create_kernel('python3', {})
-
-        now = time.monotonic()
-        timeout = agent.config.idle_timeout
-
-        # kernel 2 is old
-        agent.container_registry[kernel_id1]['last_used'] = now
-        agent.container_registry[kernel_id2]['last_used'] = now - timeout - 10
-
-        assert 'last_stat' not in agent.container_registry[kernel_id1]
-        assert 'last_stat' not in agent.container_registry[kernel_id2]
-
-        await agent.clean_old_kernels()
-
-        assert 'last_stat' not in agent.container_registry[kernel_id1]
-        assert 'last_stat' in agent.container_registry[kernel_id2]
-
-    async def test_clean_all_kernels(self, agent):
-        kernel_id1, _, _ = await agent.create_kernel('python3', {})
-        kernel_id2, _, _ = await agent.create_kernel('python3', {})
-
-        await agent.clean_all_kernels()
-
-        assert 'last_stat' in agent.container_registry[kernel_id1]
-        assert 'last_stat' in agent.container_registry[kernel_id2]

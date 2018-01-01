@@ -92,7 +92,7 @@ def test_scandir():
         file_stats = scandir(Path(tmpdir), 1000)
 
     assert len(file_stats) == 2
-    assert file_stats[second] == file_stats[first] + 5
+    assert int(file_stats[second]) == int(file_stats[first]) + 5
 
 
 def test_scandir_skip_hidden_files():

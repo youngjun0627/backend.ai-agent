@@ -2,21 +2,17 @@ import argparse
 import asyncio
 from datetime import datetime
 from ipaddress import ip_address
-import os
 from pathlib import Path
-import time
 import uuid
-from unittest import mock
 
 import aiodocker
-import asynctest
 import pytest
 
 from ai.backend.agent.server import (
     get_extra_volumes, get_kernel_id_from_container, AgentRPCServer
 )
 from ai.backend.common import identity
-from ai.backend.common.argparse import HostPortPair, host_port_pair
+from ai.backend.common.argparse import HostPortPair
 
 
 @pytest.fixture
@@ -234,7 +230,7 @@ class TestAgentRPCServerMethods:
             while True:
                 ret = await agent.execute(api_ver, kid, runid, mode, code, {})
                 if ret is None:
-                    break;
+                    break
                 elif ret['status'] == 'finished':
                     break
                 elif ret['status'] == 'continued':
@@ -247,13 +243,12 @@ class TestAgentRPCServerMethods:
         async def restart_kernel():
             nonlocal kernel_info
             kernel_id = kernel_info['id']
-            container_id = kernel_info['container_id']
             new_config = {
                 'lang': 'lua:latest',
                 'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
                 'mounts': [],
             }
-            ret = await agent.restart_kernel(kernel_id, new_config)
+            await agent.restart_kernel(kernel_id, new_config)
 
         t1 = asyncio.ensure_future(execute_code(), loop=event_loop)
         start = datetime.now()
@@ -324,13 +319,13 @@ class TestAgentRPCServerMethods:
                 c1info = await c1.show()
                 if c1info['State']['Status'] == 'removing':
                     raise aiodocker.exceptions.DockerError(
-                            404, {'message': 'success'})
+                        404, {'message': 'success'})
             with pytest.raises(aiodocker.exceptions.DockerError):
                 c2 = docker.containers.container(container_ids[1])
                 c2info = await c2.show()
                 if c2info['State']['Status'] == 'removing':
                     raise aiodocker.exceptions.DockerError(
-                            404, {'message': 'success'})
+                        404, {'message': 'success'})
         finally:
             for cid in container_ids:
                 try:
