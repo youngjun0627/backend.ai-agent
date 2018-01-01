@@ -127,6 +127,13 @@ class TestAgentRPCServerMethods:
         assert ret == 'ping~'
 
     @pytest.mark.asyncio
+    async def test_scan_running_containers(self, agent, kernel_info, docker):
+        agent.container_registry.clear()
+        assert kernel_info['id'] not in agent.container_registry
+        await agent.scan_running_containers()
+        assert agent.container_registry[kernel_info['id']]
+
+    @pytest.mark.asyncio
     async def test_create_kernel(self, agent, docker):
         kernel_id = str(uuid.uuid4())
         config = {
@@ -166,6 +173,34 @@ class TestAgentRPCServerMethods:
         assert 'io_write_bytes' in stat
         assert 'io_max_scratch_size' in stat
         assert 'io_cur_scratch_size' in stat
+
+    @pytest.mark.asyncio
+    async def test_create_and_destroy_kernel_debug(self, agent):
+        agent.config.debug_kernel = True
+        kernel_id = str(uuid.uuid4())
+        config = {
+            'lang': 'lua:latest',
+            'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
+            'mounts': [],
+        }
+
+        kernel_info = await agent.create_kernel(kernel_id, config)
+        container_info = agent.container_registry[kernel_id]
+
+        assert kernel_info
+        assert container_info
+        assert kernel_info['id'] == kernel_id
+        assert len(kernel_info['cpu_set']) == 1
+        assert container_info['lang'] == config['lang']
+        assert container_info['container_id'] == kernel_info['container_id']
+        assert container_info['limits'] == config['limits']
+        assert container_info['mounts'] == config['mounts']
+
+        proc = container_info['_proc']
+        assert proc.returncode is None
+
+        await agent.destroy_kernel(kernel_info['id'])
+        assert proc.returncode is not None
 
     @pytest.mark.asyncio
     async def test_restart_kernel(self, agent, kernel_info):

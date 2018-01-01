@@ -706,6 +706,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Some heuristic to guess the correct runner module.
         if 'python' in base_name:
             base_name = 'python'
+        if 'lua' in base_name:
+            base_name = 'lua'
         if 'git' in base_name or 'shell' in base_name:
             base_name = 'git'
 
