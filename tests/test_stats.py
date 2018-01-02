@@ -3,6 +3,7 @@ import pytest
 from ai.backend.agent import stats
 
 
+@pytest.mark.skip(reason='way to test exact numbers container used')
 @pytest.mark.asyncio
 async def test_collect_stats(container):
     ret = await stats.collect_stats([container])
