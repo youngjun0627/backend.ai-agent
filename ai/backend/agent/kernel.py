@@ -4,6 +4,7 @@ from collections import OrderedDict
 import io
 import logging
 import time
+import secrets
 
 from async_timeout import timeout
 import aiozmq
@@ -255,6 +256,7 @@ class KernelRunner:
                         raise ExecTimeout
         except asyncio.TimeoutError:
             result = {
+                'runId': self.current_run_id,
                 'status': 'continued',
             }
             type(self).aggregate_console(result, records, api_ver)
@@ -262,6 +264,7 @@ class KernelRunner:
             return result
         except BuildFinished as e:
             result = {
+                'runId': self.current_run_id,
                 'status': 'build-finished',
             }
             type(self).aggregate_console(result, records, api_ver)
@@ -269,6 +272,7 @@ class KernelRunner:
             return result
         except UserCodeFinished as e:
             result = {
+                'runId': self.current_run_id,
                 'status': 'finished',
                 'options': e.opts,
             }
@@ -277,6 +281,7 @@ class KernelRunner:
             return result
         except ExecTimeout:
             result = {
+                'runId': self.current_run_id,
                 'status': 'exec-timeout',
             }
             log.warning('Execution timeout detected on kernel '
@@ -286,6 +291,7 @@ class KernelRunner:
             return result
         except InputRequestPending as e:
             result = {
+                'runId': self.current_run_id,
                 'status': 'waiting-input',
                 'options': e.opts,
             }
@@ -301,6 +307,9 @@ class KernelRunner:
 
     async def attach_output_queue(self, run_id):
         # Context: per API request
+        if run_id is None:
+            run_id = secrets.token_hex(16)
+        assert run_id is not None
         if run_id not in self.pending_queues:
             q = asyncio.Queue(maxsize=4096)
             activated = asyncio.Event()

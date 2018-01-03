@@ -15,6 +15,7 @@ import aiozmq, aiozmq.rpc
 from async_timeout import timeout
 import configargparse
 import snappy
+import trafaret as t
 import uvloop
 import zmq
 try:
@@ -445,8 +446,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
 
     @aiozmq.rpc.method
-    async def execute(self, api_version: int, kernel_id: str,
-                      run_id: str, mode: str, code: str, opts: dict) -> dict:
+    async def execute(self, api_version: int,
+                      kernel_id: str,
+                      run_id: t.String | t.Null,
+                      mode: str,
+                      code: str,
+                      opts: dict) -> dict:
         log.debug(f'rpc::execute({kernel_id}, ...)')
         try:
             result = await self._execute(api_version, kernel_id,
@@ -887,6 +892,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 self._destroy_kernel(kernel_id, 'exec-timeout'))
 
         return {
+            'runId': result['runId'],
             'status': result['status'],
             'console': result['console'],
             'completions': utils.nmget(result, 'completions', None),

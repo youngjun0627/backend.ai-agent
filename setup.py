@@ -21,6 +21,7 @@ requires = [
     'requests',
     'requests_unixsocket',
     'simplejson',
+    'trafaret>=1.0',
     'uvloop>=0.8',
     'psutil>=5.2.2',
     'backend.ai-common~=1.0.3',
