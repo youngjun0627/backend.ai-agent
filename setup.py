@@ -20,7 +20,6 @@ requires = [
     'python-snappy~=0.5.1',
     'requests',
     'requests_unixsocket',
-    'simplejson',
     'trafaret>=1.0',
     'uvloop>=0.8',
     'psutil>=5.2.2',

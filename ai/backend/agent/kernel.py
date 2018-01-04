@@ -2,6 +2,7 @@ import asyncio
 import codecs
 from collections import OrderedDict
 import io
+import json
 import logging
 import time
 import secrets
@@ -9,7 +10,6 @@ import secrets
 from async_timeout import timeout
 import aiozmq
 from namedlist import namedlist
-import simplejson as json
 import zmq
 
 from ai.backend.common.utils import StringSetFlag
