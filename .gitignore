@@ -63,7 +63,10 @@ target/
 
 # Vim
 .*.swp
+
+# virtualenv
 venv*/
+.python-version
 
 # Development files
 scratches/
