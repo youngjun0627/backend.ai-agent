@@ -523,15 +523,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # TODO: implement
         vfolders = []  # noqa
 
-        log.warning('check environ key-values')
         if not restarting:
             os.makedirs(work_dir)
             os.makedirs(config_dir)
             # Store custom environment variables for kernel runner.
             if environ:
-                with open(config_dir / 'environ.txt', 'w') as f:
-                    for k, v in environ.items():
-                        print(f'{k}={v}', file=f)
+                try:
+                    with open(config_dir / 'environ.txt', 'w') as f:
+                        for k, v in environ.items():
+                            print(f'{k}={v}', file=f)
+                except IOError:
+                    pass
 
         cpu_set = config.get('cpu_set')
         if cpu_set is None:
@@ -721,9 +723,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             os.makedirs(config_dir)
             # Store custom environment variables for kernel runner.
             if environ:
-                with open(config_dir / 'environ.txt', 'w') as f:
-                    for k, v in config.get('environ', {}).items():
-                        print(f'{k}={v}', file=f)
+                try:
+                    with open(config_dir / 'environ.txt', 'w') as f:
+                        for k, v in config.get('environ', {}).items():
+                            print(f'{k}={v}', file=f)
+                except IOError:
+                    pass
 
         # Mount vfolders
         for folder_name, folder_host, folder_id in mounts:
@@ -738,7 +743,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         proc = await asyncio.create_subprocess_exec(*[
             'python3', '-m', 'ai.backend.kernel', '--debug', base_name,
-        ])
+        ], cwd=str(work_dir))
         container_id = f'debug-proc-{proc.pid}'
         repl_in_port  = 2000
         repl_out_port = 2001
@@ -1068,6 +1073,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             self.restarting_kernels[kernel_id].destroy_event.set()
         else:
             work_dir = self.config.scratch_root / kernel_id
+            # TODO: unlink mounted vfolders
             try:
                 shutil.rmtree(work_dir)
             except FileNotFoundError:
