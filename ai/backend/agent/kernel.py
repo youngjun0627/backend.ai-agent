@@ -9,6 +9,7 @@ import secrets
 
 from async_timeout import timeout
 import aiozmq
+import msgpack
 from namedlist import namedlist
 import zmq
 
@@ -373,7 +374,10 @@ class KernelRunner:
                 if len(msg_data) > self.max_record_size:
                     msg_data = msg_data[:self.max_record_size]
                 try:
-                    if msg_type == b'completion':
+                    if msg_type == b'status':
+                        data = msgpack.unpackb(msg_data, encoding='utf8')
+                        # TODO: not implemented yet
+                    elif msg_type == b'completion':
                         # As completion is processed asynchronously
                         # to the main code execution, we directly
                         # put the result into a separate queue.
