@@ -743,7 +743,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         proc = await asyncio.create_subprocess_exec(*[
             'python3', '-m', 'ai.backend.kernel', '--debug', base_name,
-        ], cwd=str(work_dir))
+        ], close_fds=True, cwd=str(work_dir))
         container_id = f'debug-proc-{proc.pid}'
         repl_in_port  = 2000
         repl_out_port = 2001
