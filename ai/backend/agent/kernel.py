@@ -375,7 +375,7 @@ class KernelRunner:
                     msg_data = msg_data[:self.max_record_size]
                 try:
                     if msg_type == b'status':
-                        data = msgpack.unpackb(msg_data, encoding='utf8')
+                        msgpack.unpackb(msg_data, encoding='utf8')
                         # TODO: not implemented yet
                     elif msg_type == b'completion':
                         # As completion is processed asynchronously

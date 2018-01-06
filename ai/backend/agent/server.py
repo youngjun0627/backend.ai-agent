@@ -241,7 +241,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug(f'interrupting & cleaning up runner for {kernel_id}')
         item = self.container_registry[kernel_id]
         tasks = item['runner_tasks'].copy()
-        for t in tasks:
+        for t in tasks:  # noqa: F402
             if not t.done():
                 t.cancel()
                 await t
