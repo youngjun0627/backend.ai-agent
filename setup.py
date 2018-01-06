@@ -1,7 +1,13 @@
 from setuptools import setup
 from pathlib import Path
+import re
 
-from ai.backend.agent.version import VERSION
+
+def get_src_version():
+    p = (Path(__file__).parent / 'ai' / 'backend' / 'agent' / '__init__.py')
+    src = p.read_text()
+    m = re.search(r"^__version__\s*=\s*'([^']+)'", src, re.M)
+    return m.group(1)
 
 
 requires = [
@@ -50,7 +56,7 @@ monitor_requires = [
 
 setup(
     name='backend.ai-agent',
-    version=VERSION,
+    version=get_src_version(),
     description='Backend.AI Agent',
     long_description=Path('README.rst').read_text(),
     url='https://github.com/lablup/backend.ai-agent',

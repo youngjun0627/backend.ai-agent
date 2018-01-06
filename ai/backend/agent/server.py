@@ -34,7 +34,7 @@ from ai.backend.common.argparse import (
     ipaddr, port_no, HostPortPair,
     host_port_pair, positive_int)
 from ai.backend.common.monitor import DummyStatsd, DummySentry
-from .version import VERSION
+from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
 from .stats import collect_stats
