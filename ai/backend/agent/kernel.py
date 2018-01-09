@@ -36,23 +36,26 @@ class ClientFeatures(StringSetFlag):
     CONTINUATION = 'continuation'
 
 
-class InputRequestPending(Exception):
-    def __init__(self, opts):
+class RunEvent(Exception):
+
+    def __init__(self, data=None):
         super().__init__()
-        self.opts = opts
+        self.data = data
 
 
-class BuildFinished(Exception):
+class InputRequestPending(RunEvent):
     pass
 
 
-class UserCodeFinished(Exception):
-    def __init__(self, opts):
-        super().__init__()
-        self.opts = opts
+class BuildFinished(RunEvent):
+    pass
 
 
-class ExecTimeout(Exception):
+class RunFinished(RunEvent):
+    pass
+
+
+class ExecTimeout(RunEvent):
     pass
 
 
@@ -195,7 +198,6 @@ class KernelRunner:
         elif api_ver == 2:
 
             console_items = []
-            completions = []
             last_stdout = io.StringIO()
             last_stderr = io.StringIO()
 
@@ -210,9 +212,7 @@ class KernelRunner:
                     last_stderr.seek(0)
                     last_stderr.truncate(0)
 
-                if rec.msg_type == 'completion':
-                    completions.extend(json.loads(rec.data))
-                elif rec.msg_type == 'stdout':
+                if rec.msg_type == 'stdout':
                     last_stdout.write(rec.data)
                 elif rec.msg_type == 'stderr':
                     last_stderr.write(rec.data)
@@ -228,7 +228,6 @@ class KernelRunner:
                 console_items.append(('stderr', last_stderr.getvalue()))
 
             result['console'] = console_items
-            result['completions'] = completions
             last_stdout.close()
             last_stderr.close()
 
@@ -246,19 +245,22 @@ class KernelRunner:
                         records.append(rec)
                     self.output_queue.task_done()
                     if rec.msg_type == 'finished':
-                        o = json.loads(rec.data) if rec.data else {}
-                        raise UserCodeFinished(o)
+                        data = json.loads(rec.data) if rec.data else {}
+                        raise RunFinished(data)
                     elif rec.msg_type == 'build-finished':
-                        raise BuildFinished
+                        data = json.loads(rec.data) if rec.data else {}
+                        raise BuildFinished(data)
                     elif rec.msg_type == 'waiting-input':
-                        o = json.loads(rec.data) if rec.data else {}
-                        raise InputRequestPending(o)
+                        opts = json.loads(rec.data) if rec.data else {}
+                        raise InputRequestPending(opts)
                     elif rec.msg_type == 'exec-timeout':
                         raise ExecTimeout
         except asyncio.TimeoutError:
             result = {
                 'runId': self.current_run_id,
                 'status': 'continued',
+                'exitCode': None,
+                'options': None,
             }
             type(self).aggregate_console(result, records, api_ver)
             self.resume_output_queue()
@@ -267,15 +269,18 @@ class KernelRunner:
             result = {
                 'runId': self.current_run_id,
                 'status': 'build-finished',
+                'exitCode': e.data.get('exitCode'),
+                'options': None,
             }
             type(self).aggregate_console(result, records, api_ver)
             self.resume_output_queue()
             return result
-        except UserCodeFinished as e:
+        except RunFinished as e:
             result = {
                 'runId': self.current_run_id,
                 'status': 'finished',
-                'options': e.opts,
+                'exitCode': e.data.get('exitCode'),
+                'options': None,
             }
             type(self).aggregate_console(result, records, api_ver)
             self.next_output_queue()
@@ -284,6 +289,8 @@ class KernelRunner:
             result = {
                 'runId': self.current_run_id,
                 'status': 'exec-timeout',
+                'exitCode': None,
+                'options': None,
             }
             log.warning('Execution timeout detected on kernel '
                         f'{self.kernel_id}')
@@ -294,7 +301,8 @@ class KernelRunner:
             result = {
                 'runId': self.current_run_id,
                 'status': 'waiting-input',
-                'options': e.opts,
+                'exitCode': None,
+                'options': e.data,
             }
             type(self).aggregate_console(result, records, api_ver)
             self.resume_output_queue()

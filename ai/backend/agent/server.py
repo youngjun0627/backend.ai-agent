@@ -772,11 +772,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 self._destroy_kernel(kernel_id, 'exec-timeout'))
 
         return {
-            'runId': result['runId'],
-            'status': result['status'],
-            'console': result['console'],
-            'completions': utils.nmget(result, 'completions', None),
-            'options': utils.nmget(result, 'options', None),
+            **result,
             'files': output_files,
         }
 
