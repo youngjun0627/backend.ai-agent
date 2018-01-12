@@ -207,8 +207,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if image['RepoTags'] is None:
                 continue
             for tag in image['RepoTags']:
-                if tag.startswith('lablup/kernel-'):
-                    self.images.add((tag, image['Id']))
+                prefix = 'lablup/kernel-'
+                if tag.startswith(prefix):
+                    self.images.add((tag[len(prefix):], image['Id']))
 
     async def update_status(self, status):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
