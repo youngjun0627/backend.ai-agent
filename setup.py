@@ -20,7 +20,7 @@ requires = [
     'aiohttp~=2.2.0',
     'aioredis~=1.0.0',
     'aiobotocore>=0.3.0',
-    'aiotools>=0.5.1',
+    'aiotools>=0.5.2',
     'namedlist',
     'psutil',
     'python-snappy~=0.5.1',
@@ -65,7 +65,7 @@ setup(
     license='LGPLv3',
     classifiers=[
         'Development Status :: 4 - Beta',
-        'License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)',
+        'License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)',  # noqa
         'Intended Audience :: Developers',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
