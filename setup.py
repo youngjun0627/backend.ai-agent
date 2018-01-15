@@ -29,7 +29,7 @@ requires = [
     'trafaret>=1.0',
     'uvloop>=0.8',
     'psutil>=5.2.2',
-    'backend.ai-common~=1.0.3',
+    'backend.ai-common~=1.1.2',
 ]
 build_requires = [
     'wheel',

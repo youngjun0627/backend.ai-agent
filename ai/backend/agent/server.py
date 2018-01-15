@@ -33,7 +33,7 @@ from ai.backend.common import utils, identity, msgpack
 from ai.backend.common.argparse import (
     ipaddr, port_no, HostPortPair,
     host_port_pair, positive_int)
-from ai.backend.common.logging import Logger, log_args
+from ai.backend.common.logging import Logger
 from ai.backend.common.monitor import DummyStatsd, DummySentry
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
@@ -1036,7 +1036,7 @@ def main():
     if raven_available:
         parser.add('--raven-uri', env_var='RAVEN_URI', type=str, default=None,
                    help='The sentry.io event report URL with DSN.')
-    log_args(parser)
+    Logger.update_log_args(parser)
     args = parser.parse_args()
 
     if args.agent_ip:
