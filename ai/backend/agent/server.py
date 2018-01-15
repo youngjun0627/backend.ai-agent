@@ -33,6 +33,7 @@ from ai.backend.common import utils, identity, msgpack
 from ai.backend.common.argparse import (
     ipaddr, port_no, HostPortPair,
     host_port_pair, positive_int)
+from ai.backend.common.logging import Logger, log_args
 from ai.backend.common.monitor import DummyStatsd, DummySentry
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
@@ -1014,9 +1015,6 @@ def main():
     parser.add('--idle-timeout', type=positive_int, default=600,
                help='The maximum period of time allowed for kernels to wait '
                     'further requests.')
-    parser.add('--debug', action='store_true', default=False,
-               env_var='DEBUG',
-               help='Enable more verbose logging.')
     parser.add('--debug-kernel', type=Path, default=None,
                env_var='DEBUG_KERNEL',
                help='If set to a path to backend.ai-kernel-runner clone, '
@@ -1038,43 +1036,8 @@ def main():
     if raven_available:
         parser.add('--raven-uri', env_var='RAVEN_URI', type=str, default=None,
                    help='The sentry.io event report URL with DSN.')
+    log_args(parser)
     args = parser.parse_args()
-
-    logging.config.dictConfig({
-        'version': 1,
-        'disable_existing_loggers': False,
-        'formatters': {
-            'colored': {
-                '()': 'coloredlogs.ColoredFormatter',
-                'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
-                'field_styles': {'levelname': {'color': 'black', 'bold': True},
-                                 'name': {'color': 'black', 'bold': True},
-                                 'asctime': {'color': 'black'}},
-                'level_styles': {'info': {'color': 'cyan'},
-                                 'debug': {'color': 'green'},
-                                 'warning': {'color': 'yellow'},
-                                 'error': {'color': 'red'},
-                                 'critical': {'color': 'red', 'bold': True}},
-            },
-        },
-        'handlers': {
-            'console': {
-                'class': 'logging.StreamHandler',
-                'level': 'DEBUG',
-                'formatter': 'colored',
-                'stream': 'ext://sys.stderr',
-            },
-            'null': {
-                'class': 'logging.NullHandler',
-            },
-        },
-        'loggers': {
-            '': {
-                'handlers': ['console'],
-                'level': 'DEBUG' if args.debug else 'INFO',
-            },
-        },
-    })
 
     if args.agent_ip:
         args.agent_ip = str(args.agent_ip)
@@ -1092,17 +1055,23 @@ def main():
         assert args.debug_kernel.match('ai/backend/kernel'), \
                'debug-kernel path must end with "ai/backend/kernel".'
 
-    log.info(f'Backend.AI Agent {VERSION}')
-    log.info(f'runtime: {utils.env_info()}')
+    logger = Logger(args)
+    logger.add_pkg('aiodocker')
+    logger.add_pkg('aiotools')
+    logger.add_pkg('ai.backend')
 
-    log_config = logging.getLogger('ai.backend.agent.config')
-    if args.debug:
-        log_config.debug('debug mode enabled.')
+    with logger:
+        log.info(f'Backend.AI Agent {VERSION}')
+        log.info(f'runtime: {utils.env_info()}')
 
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    aiotools.start_server(server_main, num_workers=1,
-                          use_threading=True, args=(args, ))
-    log.info('exit.')
+        log_config = logging.getLogger('ai.backend.agent.config')
+        if args.debug:
+            log_config.debug('debug mode enabled.')
+
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+        aiotools.start_server(server_main, num_workers=1,
+                              use_threading=True, args=(args, ))
+        log.info('exit.')
 
 
 if __name__ == '__main__':
