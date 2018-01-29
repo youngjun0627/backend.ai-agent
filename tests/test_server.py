@@ -24,6 +24,7 @@ def agent(request, tmpdir, event_loop):
     config.etcd_addr = HostPortPair(ip_address('127.0.0.1'), 2379)
     config.idle_timeout = 600
     config.debug = True
+    config.debug_kernel = None
     config.kernel_aliases = None
     config.scratch_root = Path(tmpdir)
 
