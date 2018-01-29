@@ -23,6 +23,9 @@ Changes
 
 - Remove the image name prefix when reporting available images. (#51)
 
+- Improve debug-kernel mode to mount host-side kernel runner source into the kernel
+  containers so that they use the latest, editable source clone of the kernel runner.
+
 1.1.0 (2018-01-06)
 ------------------
 
