@@ -1,8 +1,42 @@
 Changes
 =======
 
-1.0.7 (to be released)
+1.3.0 (to be released)
 ----------------------
+
+1.2.0 (2018-01-30)
+------------------
+
+**NOTICE**
+
+- From this release, the manager and agent versions will go together, which indicates
+  the compatibility of them, even when either one has relatively little improvements.
+
+**CHANGES**
+
+- Include the exit code of the last executed in-kernel process when returning
+  ``build-finished`` or ``finished`` results in the batch mode.
+
+- Improve logging to support rotating file-based logs.
+
+- Upgrade aiotools to v0.5.2 release.
+
+- Remove the image name prefix when reporting available images. (#51)
+
+1.1.0 (2018-01-06)
+------------------
+
+- Automatically assign the run ID if set None when starting a run.
+
+- Pass environment variables in the start-config to the kernels via
+  ``/home/work/.config/environ.txt`` file mounted inside kernels.
+
+- Include the list of kernel images available to the agent when sending
+  heartbeats. (#51)
+
+- Remove simplejson from dependencies in favor of the standard library.
+  The stdlib has been updated to support all required features and use
+  an internal C-based module for performance.
 
 1.0.6 (2017-11-29)
 ------------------
