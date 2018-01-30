@@ -17,7 +17,7 @@ requires = [
     'pyzmq>=16.0',
     'aiodocker',
     'aiozmq>=0.7',
-    'aiohttp~=2.2.0',
+    'aiohttp~=2.3.0',
     'aioredis~=1.0.0',
     'aiobotocore>=0.3.0',
     'aiotools>=0.5.2',
@@ -27,7 +27,7 @@ requires = [
     'requests',
     'requests_unixsocket',
     'trafaret>=1.0',
-    'uvloop>=0.8',
+    'uvloop~=0.8.0',
     'psutil>=5.2.2',
     'backend.ai-common~=1.1.2',
 ]
