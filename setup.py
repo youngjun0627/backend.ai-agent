@@ -20,7 +20,7 @@ requires = [
     'aiohttp~=2.3.0',
     'aioredis~=1.0.0',
     'aiobotocore>=0.3.0',
-    'aiotools>=0.5.2',
+    'aiotools>=0.5.4',
     'namedlist',
     'psutil',
     'python-snappy~=0.5.1',
