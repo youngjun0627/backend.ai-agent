@@ -68,12 +68,12 @@ ResultRecord = namedlist('ResultRecord', [
 class KernelRunner:
 
     def __init__(self, kernel_id,
-                 kernel_ip, repl_in_port, repl_out_port,
+                 kernel_host, repl_in_port, repl_out_port,
                  exec_timeout, client_features=None):
         self.started_at = None
         self.finished_at = None
         self.kernel_id = kernel_id
-        self.kernel_ip = kernel_ip
+        self.kernel_host = kernel_host
         self.repl_in_port  = repl_in_port
         self.repl_out_port = repl_out_port
         self.input_stream = None
@@ -93,11 +93,11 @@ class KernelRunner:
         self.started_at = time.monotonic()
 
         self.input_stream = await aiozmq.create_zmq_stream(
-            zmq.PUSH, connect=f'tcp://{self.kernel_ip}:{self.repl_in_port}')
+            zmq.PUSH, connect=f'tcp://{self.kernel_host}:{self.repl_in_port}')
         self.input_stream.transport.setsockopt(zmq.LINGER, 50)
 
         self.output_stream = await aiozmq.create_zmq_stream(
-            zmq.PULL, connect=f'tcp://{self.kernel_ip}:{self.repl_out_port}')
+            zmq.PULL, connect=f'tcp://{self.kernel_host}:{self.repl_out_port}')
         self.output_stream.transport.setsockopt(zmq.LINGER, 50)
 
         self.read_task = asyncio.ensure_future(self.read_output())

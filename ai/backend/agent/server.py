@@ -31,7 +31,7 @@ except ImportError:
 
 from ai.backend.common import utils, identity, msgpack
 from ai.backend.common.argparse import (
-    ipaddr, port_no, HostPortPair,
+    port_no, HostPortPair,
     host_port_pair, positive_int)
 from ai.backend.common.logging import Logger
 from ai.backend.common.monitor import DummyStatsd, DummySentry
@@ -177,11 +177,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 cpu_set = set(
                     map(int, (details['HostConfig']['CpusetCpus']).split(',')))
                 self.container_cpu_map.update(cpu_set)
+                if self.config.kernel_host_override:
+                    kernel_host = self.config.kernel_host_override
+                else:
+                    kernel_host = '127.0.0.1'
                 self.container_registry[kernel_id] = {
                     'lang': container['Image'],
                     'version': int(labels['io.sorna.version']),
                     'container_id': container._id,
-                    'container_ip': '127.0.0.1',
+                    'kernel_host': kernel_host,
                     'repl_in_port': ports[2000],
                     'repl_out_port': ports[2001],
                     'stdin_port': ports[2002],
@@ -290,7 +294,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Ready.
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}/ip',
-                            self.config.agent_ip)
+                            self.config.agent_host)
         await self.update_status('running')
 
         # Notify the gateway.
@@ -607,13 +611,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         repl_out_port = (await container.port(2001))[0]['HostPort']
         stdin_port  = (await container.port(2002))[0]['HostPort']
         stdout_port = (await container.port(2003))[0]['HostPort']
-        kernel_ip = '127.0.0.1'
+        if self.config.kernel_host_override:
+            kernel_host = self.config.kernel_host_override
+        else:
+            kernel_host = '127.0.0.1'
 
         self.container_registry[kernel_id] = {
             'lang': lang,
             'version': version,
             'container_id': container._id,
-            'container_ip': kernel_ip,
+            'kernel_host': kernel_host,
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,
@@ -627,10 +634,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'mounts': mounts,
             'runner_tasks': set(),
         }
-        log.debug(f'kernel repl-in address: {kernel_ip}:{repl_in_port}')
-        log.debug(f'kernel repl-out address: {kernel_ip}:{repl_out_port}')
-        log.debug(f'kernel stdin address:  {kernel_ip}:{stdin_port}')
-        log.debug(f'kernel stdout address: {kernel_ip}:{stdout_port}')
+        log.debug(f'kernel repl-in address: {kernel_host}:{repl_in_port}')
+        log.debug(f'kernel repl-out address: {kernel_host}:{repl_out_port}')
+        log.debug(f'kernel stdin address:  {kernel_host}:{stdin_port}')
+        log.debug(f'kernel stdout address: {kernel_host}:{stdout_port}')
         return {
             'id': kernel_id,
             'repl_in_port': int(repl_in_port),
@@ -693,7 +700,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             client_features = {'input', 'continuation'}
             runner = KernelRunner(
                 kernel_id,
-                self.container_registry[kernel_id]['container_ip'],
+                self.container_registry[kernel_id]['kernel_host'],
                 self.container_registry[kernel_id]['repl_in_port'],
                 self.container_registry[kernel_id]['repl_out_port'],
                 self.container_registry[kernel_id]['exec_timeout'],
@@ -812,9 +819,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         Send my status information and available kernel images.
         '''
         agent_info = {
-            'ip': self.config.agent_ip,
+            'ip': self.config.agent_host,
             'region': self.config.region,
-            'addr': f'tcp://{self.config.agent_ip}:{self.config.agent_port}',
+            'addr': f'tcp://{self.config.agent_host}:{self.config.agent_port}',
             'mem_slots': self.slots[0],
             'cpu_slots': self.slots[1],
             'gpu_slots': self.slots[2],
@@ -980,10 +987,11 @@ async def server_main(loop, pidx, _args):
     args = _args[0]
     args.instance_id = await identity.get_instance_id()
     args.inst_type = await identity.get_instance_type()
-    if not args.agent_ip:
-        args.agent_ip = await identity.get_instance_ip()
+    if not args.agent_host:
+        args.agent_host = await identity.get_instance_ip()
     args.region = await identity.get_instance_region()
-    log.info(f'myself: {args.instance_id} ({args.inst_type}), ip: {args.agent_ip}')
+    log.info(f'myself: {args.instance_id} '
+             f'({args.inst_type}), host: {args.agent_host}')
 
     # Start RPC server.
     agent = AgentRPCServer(args, loop=loop)
@@ -1001,15 +1009,20 @@ def main():
     parser = configargparse.ArgumentParser()
     parser.add('--namespace', type=str, default='local',
                help='The namespace of this Backend.AI cluster. (default: local)')
-    parser.add('--agent-ip-override', type=ipaddr, default=None, dest='agent_ip',
-               env_var='BACKEND_AGENT_IP',
+    parser.add('--agent-host-override', type=str, default=None,
+               dest='agent_host',
+               env_var='BACKEND_AGENT_HOST_OVERRIDE',
                help='Manually set the IP address of this agent to report to the '
                     'manager.')
+    parser.add('--kernel-host-override', type=str, default=None,
+               env_var='BACKEND_KERNEL_HOST_OVERRIDE',
+               help='Manually set the IP address of kernels spawned by this agent '
+                    'to report to the manager.')
     parser.add('--agent-port', type=port_no, default=6001,
                env_var='BACKEND_AGENT_PORT',
                help='The port number to listen on.')
     parser.add('--etcd-addr', type=host_port_pair,
-               env_var='ETCD_ADDR',
+               env_var='BACKEND_ETCD_ADDR',
                default=HostPortPair(ip_address('127.0.0.1'), 2379),
                help='The host:port pair of the etcd cluster or its proxy.')
     parser.add('--idle-timeout', type=positive_int, default=600,
@@ -1038,9 +1051,6 @@ def main():
                    help='The sentry.io event report URL with DSN.')
     Logger.update_log_args(parser)
     args = parser.parse_args()
-
-    if args.agent_ip:
-        args.agent_ip = str(args.agent_ip)
 
     assert args.scratch_root.exists()
     assert args.scratch_root.is_dir()
