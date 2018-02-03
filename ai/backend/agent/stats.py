@@ -13,6 +13,7 @@ import aiohttp
 from aiodocker.exceptions import DockerError
 
 from ai.backend.common.utils import nmget
+from ai.backend.common.identity import is_containerized
 
 log = logging.getLogger('ai.backend.agent.stats')
 
@@ -124,7 +125,7 @@ async def _collect_stats_api(container):
 
 
 async def collect_stats(containers):
-    if sys.platform == 'linux':
+    if sys.platform == 'linux' and not is_containerized():
         results = tuple(_collect_stats_sysfs(c) for c in containers)
     else:
         tasks = []
