@@ -17,7 +17,7 @@ requires = [
     'pyzmq>=16.0',
     'aiodocker',
     'aiozmq>=0.7',
-    'aiohttp~=2.3.0',
+    'aiohttp~=3.0.0',
     'aioredis~=1.0.0',
     'aiobotocore>=0.3.0',
     'aiotools>=0.5.4',
