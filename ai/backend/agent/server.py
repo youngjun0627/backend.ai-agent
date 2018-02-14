@@ -640,6 +640,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug(f'kernel stdout address: {kernel_host}:{stdout_port}')
         return {
             'id': kernel_id,
+            'kernel_host': kernel_host,
             'repl_in_port': int(repl_in_port),
             'repl_out_port': int(repl_out_port),
             'stdin_port': int(stdin_port),
