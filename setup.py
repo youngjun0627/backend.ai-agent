@@ -11,7 +11,7 @@ def read_src_version():
 
 
 requires = [
-    'ConfigArgParse',
+    'ConfigArgParse==0.12',
     'coloredlogs>=5.2',
     'async_timeout>=1.1',
     'pyzmq>=16.0',
