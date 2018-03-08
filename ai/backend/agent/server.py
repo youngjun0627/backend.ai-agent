@@ -215,6 +215,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 prefix = 'lablup/kernel-'
                 if tag.startswith(prefix):
                     self.images.add((tag[len(prefix):], image['Id']))
+                    log.debug(f"found kernel image: {tag} {image['Id']}")
 
     async def update_status(self, status):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
@@ -337,6 +338,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.send_event('instance_terminated', 'shutdown')
         self.event_sock.close()
 
+    @aiotools.actxmgr
+    async def handle_rpc_exception(self):
+        try:
+            yield
+        except AssertionError:
+            raise
+        except Exception:
+            log.exception('unexpected error')
+            self.sentry.captureException()
+            raise
+
     @aiozmq.rpc.method
     def ping(self, msg: str) -> str:
         return msg
@@ -344,58 +356,38 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     @aiozmq.rpc.method
     async def create_kernel(self, kernel_id: str, config: dict) -> dict:
         log.debug(f"rpc::create_kernel({config['lang']})")
-        try:
+        async with self.handle_rpc_exception():
             return await self._create_kernel(kernel_id, config)
-        except Exception:
-            log.exception('unexpected error')
-            self.sentry.captureException()
-            raise
 
     @aiozmq.rpc.method
     async def destroy_kernel(self, kernel_id: str):
         log.debug(f'rpc::destroy_kernel({kernel_id})')
-        try:
+        async with self.handle_rpc_exception():
             return await self._destroy_kernel(kernel_id, 'user-requested')
-        except Exception:
-            log.exception('unexpected error')
-            self.sentry.captureException()
-            raise
 
     @aiozmq.rpc.method
     async def interrupt_kernel(self, kernel_id: str):
         log.debug(f'rpc::interrupt_kernel({kernel_id})')
-        try:
+        async with self.handle_rpc_exception():
             await self._interrupt_kernel(kernel_id)
-        except Exception:
-            log.exception('unexpected error')
-            self.sentry.captureException()
-            raise
 
     @aiozmq.rpc.method
     async def get_completions(self, kernel_id: str,
                               text: str, opts: dict):
         log.debug(f'rpc::get_completions({kernel_id})')
-        try:
+        async with self.handle_rpc_exception():
             await self._get_completions(kernel_id, text, opts)
-        except Exception:
-            log.exception('unexpected error')
-            self.sentry.captureException()
-            raise
 
     @aiozmq.rpc.method
     async def get_logs(self, kernel_id: str):
         log.debug(f'rpc::get_logs({kernel_id})')
-        try:
+        async with self.handle_rpc_exception():
             return await self._get_logs(kernel_id)
-        except Exception:
-            log.exception('unexpected error')
-            self.sentry.captureException()
-            raise
 
     @aiozmq.rpc.method
     async def restart_kernel(self, kernel_id: str, new_config: dict):
         log.debug(f'rpc::restart_kernel({kernel_id})')
-        try:
+        async with self.handle_rpc_exception():
             tracker = self.restarting_kernels.get(kernel_id)
             if tracker is None:
                 tracker = RestartTracker(
@@ -432,10 +424,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'stdin_port': kernel_info['stdin_port'],
                 'stdout_port': kernel_info['stdout_port'],
             }
-        except Exception:
-            log.exception('unexpected error')
-            self.sentry.captureException()
-            raise
 
     @aiozmq.rpc.method
     async def execute(self, api_version: int,
@@ -445,31 +433,23 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                       code: str,
                       opts: dict) -> dict:
         log.debug(f'rpc::execute({kernel_id}, ...)')
-        try:
+        async with self.handle_rpc_exception():
             result = await self._execute(api_version, kernel_id,
                                          run_id, mode, code, opts)
             return result
-        except Exception:
-            log.exception('unexpected error')
-            self.sentry.captureException()
-            raise
 
     @aiozmq.rpc.method
     async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
         log.debug(f'rpc::upload_file({kernel_id}, {filename})')
-        try:
+        async with self.handle_rpc_exception():
             await self._accept_file(kernel_id, filename, filedata)
-        except Exception:
-            log.exception('unexpected error')
-            self.sentry.captureException()
-            raise
 
     @aiozmq.rpc.method
     async def reset(self):
         log.debug('rpc::reset()')
-        kernel_ids = tuple(self.container_registry.keys())
-        tasks = []
-        try:
+        async with self.handle_rpc_exception():
+            kernel_ids = tuple(self.container_registry.keys())
+            tasks = []
             for kernel_id in kernel_ids:
                 try:
                     task = asyncio.ensure_future(
@@ -479,10 +459,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     self.sentry.captureException()
                     log.exception(f'reset: destroying {kernel_id}')
             await asyncio.gather(*tasks)
-        except Exception:
-            log.exception('unexpected error')
-            self.sentry.captureException()
-            raise
 
     async def _create_kernel(self, kernel_id, config, restarting=False):
 
@@ -803,6 +779,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return {'status': 'finished'}
 
     async def _accept_file(self, kernel_id, filename, filedata):
+        loop = asyncio.get_event_loop()
         work_dir = self.config.scratch_root / kernel_id
         try:
             # create intermediate directories in the path
@@ -810,10 +787,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             rel_path = dest_path.parent.relative_to(work_dir)
         except ValueError:  # rel_path does not start with work_dir!
             raise AssertionError('malformed upload filename and path.')
-        rel_path.mkdir(parents=True, exist_ok=True)
-        # TODO: use aiofiles?
-        with open(dest_path, 'wb') as f:
-            f.write(filedata)
+
+        def _write_to_disk():
+            rel_path.mkdir(parents=True, exist_ok=True)
+            with open(dest_path, 'wb') as f:
+                f.write(filedata)
+
+        await loop.run_in_executor(None, _write_to_disk)
 
     async def heartbeat(self, interval):
         '''
