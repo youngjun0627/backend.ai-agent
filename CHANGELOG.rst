@@ -1,8 +1,11 @@
 Changes
 =======
 
-1.3.0 (to be released)
+1.4.0 (to be released)
 ----------------------
+
+1.3.0 (2018-03-08)
+------------------
 
 - Fix repeating docker event polling even when there is connection/client-side
   aiohttp errors.
@@ -11,9 +14,9 @@ Changes
 
 - Improve dockerization. (#55)
 
-1.2.0 (2018-01-30)
 - Improve inner beuty.
 
+1.2.0 (2018-01-30)
 ------------------
 
 **NOTICE**
