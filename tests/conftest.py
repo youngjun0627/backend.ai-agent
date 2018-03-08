@@ -21,6 +21,7 @@ def prepare_docker_images():
                 print(f'Pulling image "{img}" for testing...')
                 await docker.pull(img)
         await docker.close()
+
     event_loop.run_until_complete(pull())
 
 
@@ -31,6 +32,7 @@ def docker(event_loop, prepare_docker_images):
 
     async def finalize():
         await docker.close()
+
     event_loop.run_until_complete(finalize())
 
 
@@ -50,6 +52,7 @@ def container(event_loop, docker):
             name='kernel.test-container'
         )
         await container.start()
+
     event_loop.run_until_complete(spawn())
 
     yield container
@@ -58,4 +61,5 @@ def container(event_loop, docker):
         nonlocal container
         if container:
             await container.delete(force=True)
+
     event_loop.run_until_complete(finalize())

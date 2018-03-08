@@ -1,5 +1,9 @@
-language: python
-cache: pip
+language: generic
+before_cache:
+  - rm -f $HOME/.cache/pip/log/debug.log
+cache:
+  directories:
+    - $HOME/.cache/pip
 addons:
   postgresql: "9.6"
 services:
@@ -14,47 +18,45 @@ stages:
     if: tag IS present
 
 # build matrix for test stage
-python:
-  - "3.6"
 os:
   - linux
 env:
   global:
     - BACKEND_ETCD_ADDR=localhost:2379
-    - BACKEND_NAMESPACE=local
+    - BACKEND_NAMESPACE=testing
     - BACKEND_REDIS_ADDR=localhost:6379
     - BACKEND_DB_ADDR=localhost:5432
     - BACKEND_DB_USER=postgres
-    - BACKEND_DB_PASSWORD=develove
+    - BACKEND_DB_PASSWORD=
     - BACKEND_DB_NAME=testing
+
+addons:
+  apt:
+    packages:
+    - libsnappy-dev
 
 # stage def.
 jobs:
   include:
 
     - stage: test
+      before_install:
+        - PYTHON_VERSION=3.6 ./scripts/ci/overwrite-python.sh
       install:
-        - sudo apt-get install libsnappy-dev
-        - pip install -U pip setuptools
         - if [[ $TRAVIS_BRANCH == "develop" ]]; then BRANCH="develop"; else BRANCH="master"; fi
-        - sed -i'' -e "s/{BRANCH}/$BRANCH/g" requirements-ci.txt
-        - pip install -U -r requirements-ci.txt
+        # install backend.ai-agent
+        - |
+          python -m venv ~/virtualenv/agent
+          source ~/virtualenv/agent/bin/activate
+          pip install -U pip setuptools
+          sed -i'' -e "s/{BRANCH}/$BRANCH/g" requirements-ci.txt
+          pip install -U -r requirements-ci.txt
         # install backend.ai-manager from github
-        - cd ${HOME}/build/lablup 
-        - git clone https://github.com/lablup/backend.ai-manager.git 
-        - cd backend.ai-manager 
-        - pip install -U -e . 
-        # fill postgresql db with test data
-        - psql -c 'CREATE DATABASE testing;' -U postgres
-        - cp alembic.ini.sample alembic.ini
-        - sed -i'' -e 's!^sqlalchemy.url = .*$!sqlalchemy.url = postgresql://postgres@localhost:5432/testing!' alembic.ini
-        - python -m ai.backend.manager.cli schema oneshot head
-        - python -m ai.backend.manager.cli fixture populate example_keypair
-        - cd ../backend.ai-agent 
+        - ./scripts/ci/install-manager.sh
       before_script:
         # load etcd server
         - mkdir -p /tmp/etcd
-        - mkdir -p /tmp/etcd/vroot
+        - mkdir -p /tmp/vfolders
         - docker run -d -p 2379:2379 -p 2380:2380 --name backendai-etcd
            -v /tmp/etcd:/etcd-data
            quay.io/coreos/etcd:v3.2.8
@@ -69,40 +71,28 @@ jobs:
            --initial-cluster-token backendai-etcd-token
            --initial-cluster-state new
            --auto-compaction-retention 1
-        - docker exec -it backendai-etcd ash -c
-           'ETCDCTL_API=3 etcdctl put /sorna/local/volumes/_vfroot /tmp/etcd/vroot'
         # load backend.ai-manager server
-        - python -m ai.backend.gateway.server
-           --etcd-addr ${BACKEND_ETCD_ADDR}
-           --namespace local
-           --redis-addr ${BACKEND_REDIS_ADDR}
-           --db-addr ${BACKEND_DB_ADDR}
-           --db-name ${BACKEND_DB_NAME}
-           --db-user ${BACKEND_DB_USER}
-           --db-password ${BACKEND_DB_PASSWORD}
-           --docker-registry docker.example.com:5000
-           --service-ip 127.0.0.1
-           --service-port 5001
-           --events-port 5002 &
+        - ./scripts/ci/run-manager.sh
       script:
-        - python -m flake8 ai/backend tests
-        - python -m pytest --cov=ai/backend
+        - source ~/virtualenv/agent/bin/activate; python -m flake8 ai/backend tests
+        - source ~/virtualenv/agent/bin/activate; python -m pytest --cov=ai/backend
       after_success:
         - codecov
 
     - stage: deploy
-      python: "3.6"
       install: skip
       script: skip
       deploy:
         on:
           tags: true
-        provider: pypi
-        distributions: sdist bdist_wheel
-        skip_upload_docs: true
-        user: lablup
-        password:
-          secure: "dauLot/g37MaxO6EqS1pEwejvK9YBmdtmzj9q68B3V6Dj0X/4poC4kG4RM0yjVzTrsPX/cUdkrw1QxK7Dw/716X+4bdOofQl/GJoFyuJXe971nPgf/JIvKOTDyGL1Y4Ur8lqBNKaYu5G9IfJqbiYzmMJXcqat1C+dQmmVTd8sK5Jt1/gfAtnl7T/KQr6qehx2SZ7o7RwhMmuuXtVeq/kvxxzppKfMV8Ap5lejg5qzFlPm8mp5Nqe6WNM9BwiiuaXYtAoxb5LaKJg8cwl7kqaONuW30+C9KEwkkLdz18EM9hhw4C62FgpjPhOmKcMOWLu3WgPTD8ggkdUZ9iYq9EbSHJmBMKEUvdemxnocKCHAGnYAghW9Jh2d3Mcrx1PYZqlD3ZQuNTm4++BnlhBZfGDnf9//uD03ISe/RINTt+FhpLIx4MxUlrqcTvyzwodXQU27NnDArKPh1wgvk3qGUTtgHvSFrZt2wccGM89qLCe+LMWF2IV3bFataoDMmjDkQQF6YuB23ghL6UhEYKUIMcX63oMVhkmm7WSwhiWJe2MvAoa+3nrqQTTeQmINLlFLxbTewg5MCLwfRO5iu1IVjrSPTmB5yeWSE6UUNGmRHE43U11F/iP0cGNNymydbX3slRm6IAp2np3ZQ8sDhKJXlmv9M9/QHmlXT+b0+XaMXaP88g="
+        script:
+          - echo 'deploy'
+        #provider: pypi
+        #distributions: sdist bdist_wheel
+        #skip_upload_docs: true
+        #user: lablup
+        #password:
+        #  secure: "dauLot/g37MaxO6EqS1pEwejvK9YBmdtmzj9q68B3V6Dj0X/4poC4kG4RM0yjVzTrsPX/cUdkrw1QxK7Dw/716X+4bdOofQl/GJoFyuJXe971nPgf/JIvKOTDyGL1Y4Ur8lqBNKaYu5G9IfJqbiYzmMJXcqat1C+dQmmVTd8sK5Jt1/gfAtnl7T/KQr6qehx2SZ7o7RwhMmuuXtVeq/kvxxzppKfMV8Ap5lejg5qzFlPm8mp5Nqe6WNM9BwiiuaXYtAoxb5LaKJg8cwl7kqaONuW30+C9KEwkkLdz18EM9hhw4C62FgpjPhOmKcMOWLu3WgPTD8ggkdUZ9iYq9EbSHJmBMKEUvdemxnocKCHAGnYAghW9Jh2d3Mcrx1PYZqlD3ZQuNTm4++BnlhBZfGDnf9//uD03ISe/RINTt+FhpLIx4MxUlrqcTvyzwodXQU27NnDArKPh1wgvk3qGUTtgHvSFrZt2wccGM89qLCe+LMWF2IV3bFataoDMmjDkQQF6YuB23ghL6UhEYKUIMcX63oMVhkmm7WSwhiWJe2MvAoa+3nrqQTTeQmINLlFLxbTewg5MCLwfRO5iu1IVjrSPTmB5yeWSE6UUNGmRHE43U11F/iP0cGNNymydbX3slRm6IAp2np3ZQ8sDhKJXlmv9M9/QHmlXT+b0+XaMXaP88g="
 
 notifications:
   webhooks:
