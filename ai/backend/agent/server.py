@@ -9,6 +9,7 @@ from typing import NamedTuple
 
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
+import aiohttp
 import aioredis
 import aiotools
 import aiozmq, aiozmq.rpc
@@ -842,6 +843,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 # The API HTTP connection may terminate after some timeout
                 # (e.g., 5 minutes)
                 log.info('restarting docker.events.run()')
+                continue
+            except aiohttp.ClientError as e:
+                log.warning(f'restarting docker.events.run() due to {e!r}')
                 continue
             except asyncio.CancelledError:
                 break
