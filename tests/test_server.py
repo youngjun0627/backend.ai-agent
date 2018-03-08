@@ -1,7 +1,7 @@
 import argparse
 import asyncio
 from datetime import datetime
-from ipaddress import ip_address
+import os
 from pathlib import Path
 import uuid
 
@@ -12,16 +12,18 @@ from ai.backend.agent.server import (
     get_extra_volumes, get_kernel_id_from_container, AgentRPCServer
 )
 from ai.backend.common import identity
-from ai.backend.common.argparse import HostPortPair
+from ai.backend.common.argparse import host_port_pair
 
 
 @pytest.fixture
 def agent(request, tmpdir, event_loop):
     config = argparse.Namespace()
-    config.namespace = 'local'
-    config.agent_ip = '127.0.0.1'
+    config.namespace = os.environ.get('BACKEND_NAMESPACE', 'testing')
+    config.agent_host = '127.0.0.1'
     config.agent_port = '6001'  # default 6001
-    config.etcd_addr = HostPortPair(ip_address('127.0.0.1'), 2379)
+    config.kernel_host_override = '127.0.0.1'
+    etcd_addr = os.environ.get('BACKEND_ETCD_ADDR', '127.0.0.1:2379')
+    config.etcd_addr = host_port_pair(etcd_addr)
     config.idle_timeout = 600
     config.debug = True
     config.debug_kernel = None
@@ -36,9 +38,10 @@ def agent(request, tmpdir, event_loop):
         config.inst_type = await identity.get_instance_type()
         config.region = await identity.get_instance_region()
         print(f'serving test agent: {config.instance_id} ({config.inst_type}),'
-              f' ip: {config.agent_ip}')
+              f' ip: {config.agent_host}')
         agent = AgentRPCServer(config, loop=event_loop)
         await agent.init()
+
     event_loop.run_until_complete(serve())
 
     yield agent
@@ -48,6 +51,7 @@ def agent(request, tmpdir, event_loop):
         print('shutting down test agent...')
         if agent:
             await agent.shutdown()
+
     event_loop.run_until_complete(terminate())
 
 
