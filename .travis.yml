@@ -90,12 +90,11 @@ jobs:
       deploy:
         on:
           tags: true
-        provider: pypi
-        distributions: sdist bdist_wheel
-        skip_upload_docs: true
-        user: lablup
-        password:
-          secure: "dauLot/g37MaxO6EqS1pEwejvK9YBmdtmzj9q68B3V6Dj0X/4poC4kG4RM0yjVzTrsPX/cUdkrw1QxK7Dw/716X+4bdOofQl/GJoFyuJXe971nPgf/JIvKOTDyGL1Y4Ur8lqBNKaYu5G9IfJqbiYzmMJXcqat1C+dQmmVTd8sK5Jt1/gfAtnl7T/KQr6qehx2SZ7o7RwhMmuuXtVeq/kvxxzppKfMV8Ap5lejg5qzFlPm8mp5Nqe6WNM9BwiiuaXYtAoxb5LaKJg8cwl7kqaONuW30+C9KEwkkLdz18EM9hhw4C62FgpjPhOmKcMOWLu3WgPTD8ggkdUZ9iYq9EbSHJmBMKEUvdemxnocKCHAGnYAghW9Jh2d3Mcrx1PYZqlD3ZQuNTm4++BnlhBZfGDnf9//uD03ISe/RINTt+FhpLIx4MxUlrqcTvyzwodXQU27NnDArKPh1wgvk3qGUTtgHvSFrZt2wccGM89qLCe+LMWF2IV3bFataoDMmjDkQQF6YuB23ghL6UhEYKUIMcX63oMVhkmm7WSwhiWJe2MvAoa+3nrqQTTeQmINLlFLxbTewg5MCLwfRO5iu1IVjrSPTmB5yeWSE6UUNGmRHE43U11F/iP0cGNNymydbX3slRm6IAp2np3ZQ8sDhKJXlmv9M9/QHmlXT+b0+XaMXaP88g="
+        provider: script
+        script:
+          - pip install --user -U twine setuptools wheel
+          - python setup.py sdist bdist_wheel
+          - twine upload dist/*
 
 notifications:
   webhooks:
