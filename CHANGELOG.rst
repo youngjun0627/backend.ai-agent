@@ -14,7 +14,7 @@ Changes
 
 - Improve dockerization. (#55)
 
-- Improve inner beuty.
+- Improve inner beauty.
 
 1.2.0 (2018-01-30)
 ------------------
