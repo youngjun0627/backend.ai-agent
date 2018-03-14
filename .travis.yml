@@ -91,10 +91,7 @@ jobs:
         on:
           tags: true
         provider: script
-        script:
-          - pip install --user -U twine setuptools wheel
-          - python setup.py sdist bdist_wheel
-          - twine upload dist/*
+        script: ./scripts/ci/deploy.sh
 
 notifications:
   webhooks:
