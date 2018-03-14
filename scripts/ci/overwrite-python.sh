@@ -12,6 +12,4 @@ sudo docker cp "pybin:/usr/local/include/python${PYTHON_VERSION}m" /usr/local/in
 docker rm pybin
 sudo ldconfig
 rm -rf ~/virtualenv/python*
-python -m venv ~/virtualenv/python${PYTHON_VERSION}
-sudo ln -s ~/virtualenv/python${PYTHON_VERSION} ~/virtualenv/python3.6.3  # travis legacy
 python --version
