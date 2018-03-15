@@ -591,7 +591,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if self.config.kernel_host_override:
             kernel_host = self.config.kernel_host_override
         else:
-            kernel_host = '127.0.0.1'
+            kernel_host = self.config.agent_host
 
         self.container_registry[kernel_id] = {
             'lang': lang,
