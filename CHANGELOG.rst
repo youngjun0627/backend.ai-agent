@@ -4,6 +4,21 @@ Changes
 1.4.0 (to be released)
 ----------------------
 
+1.3.3 (2018-03-15)
+------------------
+
+- Fix wrong kernel_host sent back to the manager when not overridden.
+
+1.3.2 (2018-03-15)
+------------------
+
+- Technical release to fix backend.ai-common depedency version.
+
+1.3.1 (2018-03-14)
+------------------
+
+- Technical release to update CI configuration.
+
 1.3.0 (2018-03-08)
 ------------------
 
