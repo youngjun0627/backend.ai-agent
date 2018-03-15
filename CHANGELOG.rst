@@ -1,8 +1,13 @@
 Changes
 =======
 
-1.3.3 (to be released)
+1.3.4 (to be released)
 ----------------------
+
+1.3.3 (2018-03-15)
+------------------
+
+- Fix wrong kernel_host sent back to the manager when not overridden.
 
 1.3.2 (2018-03-15)
 ------------------
