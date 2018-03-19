@@ -4,7 +4,7 @@ Changes
 1.3.5 (to be released)
 ----------------------
 
-1.3.4 (2018-03-15)
+1.3.4 (2018-03-19)
 ------------------
 
 - Fix occasional KeyError when destroying kernels. (#56)
