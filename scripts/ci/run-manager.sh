@@ -7,7 +7,7 @@ cd ${HOME}/build/lablup/backend.ai-manager
 python -c 'import sys; print(sys.prefix)'
 python -m ai.backend.manager.cli schema oneshot head
 python -m ai.backend.manager.cli fixture populate example_keypair
-python -m ai.backend.manager.cli etcd put volumes/_vfroot /tmp/vfolders
+python -m ai.backend.manager.cli etcd put volumes/_mount /tmp/vfolders
 python -m ai.backend.gateway.server \
   --etcd-addr ${BACKEND_ETCD_ADDR} \
   --namespace ${BACKEND_NAMESPACE} \

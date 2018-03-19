@@ -161,6 +161,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.etcd.get('nodes/manager/event_addr'))
         log.info(f'configured redis_addr: {self.config.redis_addr}')
         log.info(f'configured event_addr: {self.config.event_addr}')
+        vfolder_mount = await self.etcd.get('volumes/_mount')
+        if vfolder_mount is None:
+            vfolder_mount = '/mnt'
+        self.config.vfolder_mount = Path(vfolder_mount)
 
     async def scan_running_containers(self):
         for container in (await self.docker.containers.list()):
@@ -253,7 +257,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if not t.done():
                 t.cancel()
                 await t
-        runner = item.get('runner')
+        runner = item.pop('runner', None)
         if runner is not None:
             await runner.close()
 
@@ -405,7 +409,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 except asyncio.TimeoutError:
                     log.warning('timeout detected while restarting '
                                 f'kernel {kernel_id}!')
-                    del self.restarting_kernels[kernel_id]
+                    self.restarting_kernels.pop(kernel_id, None)
                     asyncio.ensure_future(self._clean_kernel(kernel_id))
                     raise
                 else:
@@ -413,7 +417,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     await self._create_kernel(
                         kernel_id, new_config,
                         restarting=True)
-                    del self.restarting_kernels[kernel_id]
+                    self.restarting_kernels.pop(kernel_id, None)
             tracker.done_event.set()
             kernel_info = self.container_registry[kernel_id]
             return {
@@ -489,9 +493,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         work_dir = self.config.scratch_root / kernel_id
         config_dir = self.config.scratch_root / kernel_id / '.config'
 
-        # TODO: implement
-        vfolders = []  # noqa
-
         if not restarting:
             os.makedirs(work_dir)
             os.makedirs(config_dir)
@@ -532,9 +533,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Mount vfolders
         for folder_name, folder_host, folder_id in mounts:
+            host_path = self.config.vfolder_mount / folder_host / folder_id
             volumes.append(f'/home/work/{folder_name}')
-            binds.append(f'/mnt/{folder_host}/{folder_id}:'
-                         f'/home/work/{folder_name}:rw')
+            binds.append(f'/{host_path}:/home/work/{folder_name}:rw')
 
         # Mount the external kernel runner source code directly.
         if self.config.debug_kernel is not None:
@@ -658,7 +659,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                             'forgetting this kernel')
                 self.container_cpu_map.free(
                     self.container_registry[kernel_id]['cpu_set'])
-                del self.container_registry[kernel_id]
+                self.container_registry.pop(kernel_id, None)
                 pass
             else:
                 log.exception(f'_destroy_kernel({kernel_id}) kill error')
@@ -728,7 +729,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         except asyncio.CancelledError:
             await runner.close()
-            del self.container_registry[kernel_id]['runner']
+            self.container_registry[kernel_id].pop('runner', None)
             return
         finally:
             runner_tasks = utils.nmget(self.container_registry,
@@ -791,10 +792,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         def _write_to_disk():
             rel_path.mkdir(parents=True, exist_ok=True)
-            with open(dest_path, 'wb') as f:
-                f.write(filedata)
+            dest_path.write_bytes(filedata)
 
-        await loop.run_in_executor(None, _write_to_disk)
+        try:
+            await loop.run_in_executor(None, _write_to_disk)
+        except FileNotFoundError:
+            log.error(f'{kernel_id}: writing uploaded file failed: '
+                      f'{filename} -> {dest_path}')
 
     async def heartbeat(self, interval):
         '''
@@ -924,7 +928,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             try:
                 self.container_cpu_map.free(
                     self.container_registry[kernel_id]['cpu_set'])
-                del self.container_registry[kernel_id]
+                self.container_registry.pop(kernel_id, None)
             except KeyError:
                 pass
             if kernel_id in self.blocking_cleans:
@@ -963,7 +967,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             waiters = [self.blocking_cleans[kern_id].wait() for kern_id in kern_ids]
             await asyncio.gather(*waiters)
             for kern_id in kern_ids:
-                del self.blocking_cleans[kern_id]
+                self.blocking_cleans.pop(kern_id, None)
 
 
 @aiotools.actxmgr

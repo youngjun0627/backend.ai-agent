@@ -4,6 +4,21 @@ Changes
 1.4.0 (to be released)
 ----------------------
 
+1.3.5 (2018-03-20)
+------------------
+
+- Fix vfolder mounts to use the configuration specified in the etcd.
+  (No more fixed to "/mnt"!)
+
+1.3.4 (2018-03-19)
+------------------
+
+- Fix occasional KeyError when destroying kernels. (#56)
+
+- Deploy a debug log for occasional FileNotFoundError when uploading files
+  in the batch mode. (#57)
+
+>>>>>>> 1.3
 1.3.3 (2018-03-15)
 ------------------
 

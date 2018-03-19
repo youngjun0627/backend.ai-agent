@@ -355,7 +355,7 @@ class KernelRunner:
         Use this to conclude get_next_result() when we have finished a "run".
         '''
         assert self.current_run_id is not None
-        del self.pending_queues[self.current_run_id]
+        self.pending_queues.pop(self.current_run_id, None)
         self.current_run_id = None
         if len(self.pending_queues) > 0:
             # Make the next waiting API request handler to proceed.
