@@ -161,6 +161,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.etcd.get('nodes/manager/event_addr'))
         log.info(f'configured redis_addr: {self.config.redis_addr}')
         log.info(f'configured event_addr: {self.config.event_addr}')
+        vfolder_mount = await self.etcd.get('volumes/_mount')
+        if vfolder_mount is None:
+            vfolder_mount = '/mnt'
+        self.config.vfolder_mount = Path(vfolder_mount)
 
     async def scan_running_containers(self):
         for container in (await self.docker.containers.list()):
@@ -489,9 +493,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         work_dir = self.config.scratch_root / kernel_id
         config_dir = self.config.scratch_root / kernel_id / '.config'
 
-        # TODO: implement
-        vfolders = []  # noqa
-
         if not restarting:
             os.makedirs(work_dir)
             os.makedirs(config_dir)
@@ -532,9 +533,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Mount vfolders
         for folder_name, folder_host, folder_id in mounts:
+            host_path = self.config.vfolder_mount / folder_host / folder_id
             volumes.append(f'/home/work/{folder_name}')
-            binds.append(f'/mnt/{folder_host}/{folder_id}:'
-                         f'/home/work/{folder_name}:rw')
+            binds.append(f'/{host_path}:/home/work/{folder_name}:rw')
 
         # Mount the external kernel runner source code directly.
         if self.config.debug_kernel is not None:
