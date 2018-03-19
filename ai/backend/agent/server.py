@@ -796,7 +796,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             await loop.run_in_executor(None, _write_to_disk)
         except FileNotFoundError:
-            log.error(f'{kernel_id}: writing uploaded file failed: {filename} -> {dest_path}')
+            log.error(f'{kernel_id}: writing uploaded file failed: '
+                      f'{filename} -> {dest_path}')
 
     async def heartbeat(self, interval):
         '''
