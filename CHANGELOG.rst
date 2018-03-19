@@ -1,8 +1,16 @@
 Changes
 =======
 
-1.3.4 (to be released)
+1.3.5 (to be released)
 ----------------------
+
+1.3.4 (2018-03-15)
+------------------
+
+- Fix occasional KeyError when destroying kernels. (#56)
+
+- Deploy a debug log for occasional FileNotFoundError when uploading files
+  in the batch mode. (#57)
 
 1.3.3 (2018-03-15)
 ------------------
