@@ -3,27 +3,21 @@ Backend.AI Agent
 
 The Backend.AI Agent is a small daemon that reports the status of a worker
 computer (either a physical server or a virtualized cloud instance)
-to the manager and performs computation requests assigned by the manager.
+to the manager and routes computation requests assigned by the manager to its kernel
+sessions.
 
 Package Structure
 -----------------
 
-* ai.backend
+* ``ai.backend``
 
-  * agent: The agent daemon implementation
+  * ``agent``: The agent daemon implementation
 
 
 Installation
 ------------
 
-Backend.AI Agent requires Python 3.6 or higher.  We highly recommend to use
-`pyenv <https://github.com/yyuu/pyenv>`_ for an isolated setup of custom Python
-versions that might be different from default installations managed by your OS
-or Linux distros.
-
-.. code-block:: sh
-
-   pip install backend.ai-agent
+Please visit `the installation guides <https://github.com/lablup/backend.ai/wiki>`_.
 
 For development
 ~~~~~~~~~~~~~~~
