@@ -11,24 +11,22 @@ def read_src_version():
 
 
 requires = [
-    'ConfigArgParse==0.12',
-    'coloredlogs>=5.2',
-    'async_timeout>=2.0',
-    'pyzmq>=17.0',
     'aiodocker',
     'aiozmq>=0.7',
     'aiohttp~=3.1.0',
     'aioredis~=1.0.0',
     'aiobotocore>=0.3.0',
     'aiotools>=0.5.4',
-    'namedlist',
-    'psutil',
+    'async_timeout>=2.0',
+    'ConfigArgParse==0.12',
+    'dataclasses; python_version<"3.7"',
+    'psutil~=5.4.0',
     'python-snappy~=0.5.1',
+    'pyzmq>=17.0',
     'requests',
     'requests_unixsocket',
     'trafaret>=1.0',
     'uvloop~=0.8.0',
-    'psutil>=5.2.2',
     'backend.ai-common~=1.3.0',
 ]
 build_requires = [

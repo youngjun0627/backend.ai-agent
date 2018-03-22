@@ -1,6 +1,7 @@
 import asyncio
 import codecs
 from collections import OrderedDict
+from dataclasses import dataclass
 import io
 import json
 import logging
@@ -10,7 +11,6 @@ import secrets
 from async_timeout import timeout
 import aiozmq
 import msgpack
-from namedlist import namedlist
 import zmq
 
 from ai.backend.common.utils import StringSetFlag
@@ -59,10 +59,10 @@ class ExecTimeout(RunEvent):
     pass
 
 
-ResultRecord = namedlist('ResultRecord', [
-    ('msg_type', None),
-    ('data', None),
-])
+@dataclass
+class ResultRecord:
+    msg_type: str = None
+    data: str = None
 
 
 class KernelRunner:
