@@ -1,6 +1,11 @@
 Changes
 =======
 
+1.3.7 (2018-04-05)
+------------------
+
+- Hotfix for handling of dotted image names when they are terminated.
+
 1.3.6 (2018-04-05)
 ------------------
 
