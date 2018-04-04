@@ -103,7 +103,7 @@ def get_kernel_id_from_container(val):
     if not name.startswith('kernel.'):
         return None
     try:
-        return name.split('.', 2)[-1]
+        return name.rsplit('.', 2)[-1]
     except (IndexError, ValueError):
         return None
 
@@ -786,12 +786,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
-            rel_path = dest_path.parent.relative_to(work_dir)
-        except ValueError:  # rel_path does not start with work_dir!
+            parent_path = dest_path.parent
+        except ValueError:  # parent_path does not start with work_dir!
             raise AssertionError('malformed upload filename and path.')
 
         def _write_to_disk():
-            rel_path.mkdir(parents=True, exist_ok=True)
+            parent_path.mkdir(parents=True, exist_ok=True)
             dest_path.write_bytes(filedata)
 
         try:

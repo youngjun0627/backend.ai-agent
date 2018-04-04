@@ -4,6 +4,16 @@ Changes
 1.4.0 (to be released)
 ----------------------
 
+1.3.7 (2018-04-05)
+------------------
+
+- Hotfix for handling of dotted image names when they are terminated.
+
+1.3.6 (2018-04-05)
+------------------
+
+- Hotfix for handling subdirectories in batch-mode file uploads.
+
 1.3.5 (2018-03-20)
 ------------------
 
@@ -18,7 +28,6 @@ Changes
 - Deploy a debug log for occasional FileNotFoundError when uploading files
   in the batch mode. (#57)
 
->>>>>>> 1.3
 1.3.3 (2018-03-15)
 ------------------
 
