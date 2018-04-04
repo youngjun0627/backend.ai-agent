@@ -103,7 +103,7 @@ def get_kernel_id_from_container(val):
     if not name.startswith('kernel.'):
         return None
     try:
-        return name.split('.', 2)[-1]
+        return name.rsplit('.', 2)[-1]
     except (IndexError, ValueError):
         return None
 
