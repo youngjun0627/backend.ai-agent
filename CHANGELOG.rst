@@ -1,8 +1,10 @@
 Changes
 =======
 
-1.3.6 (to be released)
-----------------------
+1.3.6 (2018-04-05)
+------------------
+
+- Hotfix for handling subdirectories in batch-mode file uploads.
 
 1.3.5 (2018-03-20)
 ------------------
