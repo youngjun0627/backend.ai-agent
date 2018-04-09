@@ -810,13 +810,28 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _list_files(self, kernel_id: str, path: str):
         container_id = self.container_registry[kernel_id]['container_id']
-        code = '''from datetime import datetime
-import json
-import grp
+
+        # Ensure target directory is under /home/work/ folder.
+        # Append abspath with '/' if it is a directory since pathlib does not provide
+        # a nicer way to add a trailing slash. If this is not appended, directories
+        # like '/home/workfake' will pass the check.
+        code = '''from pathlib import Path
+abspath = Path('%(path)s').resolve(strict=True)
+suffix = '/' if abspath.is_dir() else ''
+print(str(abspath) + suffix)
+''' % {'path': path}
+        command = f'docker exec {container_id} python -c "{code}"'
+        p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        outs, errs = p.communicate()
+        abspath = outs.decode('utf-8')
+        errs = errs.decode('utf-8')
+        if errs or (not abspath.startswith('/home/work/')):
+            return {'files': '', 'errors': 'No such file or directory'}
+
+        # Gather individual file information in the target path.
+        code = '''import json
 import os
-from pathlib import Path
-import platform
-import pwd
 import stat
 
 files = []
@@ -825,51 +840,15 @@ for f in os.scandir('%(path)s'):
     ctime = fstat.st_ctime  # TODO: way to get concrete create time?
     mtime = fstat.st_mtime
     atime = fstat.st_atime
-    cdatetime = datetime.fromtimestamp(ctime)
-    mdatetime = datetime.fromtimestamp(mtime)
-    adatetime = datetime.fromtimestamp(atime)
     files.append({
         'mode': stat.filemode(fstat.st_mode),
-        'nlink': fstat.st_nlink,
-        'uid': fstat.st_uid,
-        'uname': pwd.getpwuid(fstat.st_uid).pw_name,
-        'gid': fstat.st_gid,
-        'gname': grp.getgrgid(fstat.st_gid).gr_name,
         'size': fstat.st_size,
-        # TODO: all these info needed?
         'ctime': ctime,
-        'cmonth': cdatetime.month,
-        'cday': cdatetime.day,
-        'chour': cdatetime.hour,
-        'cminute': cdatetime.minute,
-        'cyear': cdatetime.year,
         'mtime': mtime,
-        'mmonth': mdatetime.month,
-        'mday': mdatetime.day,
-        'mhour': mdatetime.hour,
-        'mminute': mdatetime.minute,
-        'myear': mdatetime.year,
         'atime': atime,
-        'amonth': adatetime.month,
-        'aday': adatetime.day,
-        'ahour': adatetime.hour,
-        'aminute': adatetime.minute,
-        'ayear': adatetime.year,
         'filename': f.name,
-        'is_dir': f.is_dir(),
-        'is_file': f.is_file(),
-        'is_symlink': f.is_symlink(),
     })
 print(json.dumps(files))''' % {'path': path}
-
-        # Get output of 'ls' command for target path.
-        command = f'docker exec {container_id} ls -al {path}'
-        p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE)
-        outs, _ = p.communicate()
-        ls = outs.decode('utf-8')
-
-        # Gather details of individual file in target path.
         command = f'docker exec {container_id} python -c "{code}"'
         p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
@@ -877,7 +856,7 @@ print(json.dumps(files))''' % {'path': path}
         outs = outs.decode('utf-8')
         errs = errs.decode('utf-8')
 
-        return {'files': outs, 'errors': errs, 'ls': ls}
+        return {'files': outs, 'errors': errs, 'abspath': abspath}
 
     async def heartbeat(self, interval):
         '''
