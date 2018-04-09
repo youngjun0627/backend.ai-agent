@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from typing import NamedTuple
 
@@ -452,6 +453,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self._accept_file(kernel_id, filename, filedata)
 
     @aiozmq.rpc.method
+    async def download_file(self, kernel_id: str, filepath: str):
+        log.debug(f'rpc::download_file({kernel_id}, {filepath})')
+        async with self.handle_rpc_exception():
+            return await self._download_file(kernel_id, filepath)
+
+    @aiozmq.rpc.method
     async def list_files(self, kernel_id: str, path: str):
         log.debug(f'rpc::list_files({kernel_id}, {path})')
         async with self.handle_rpc_exception():
@@ -807,6 +814,47 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except FileNotFoundError:
             log.error(f'{kernel_id}: writing uploaded file failed: '
                       f'{filename} -> {dest_path}')
+
+    async def _download_file(self, kernel_id, filepath):
+        loop = asyncio.get_event_loop()
+        container_id = self.container_registry[kernel_id]['container_id']
+
+        # Resolve target file path from inside the container.
+        code = '''from pathlib import Path
+abspath = Path('%(path)s').resolve(strict=True)
+print(abspath)
+''' % {'path': filepath}
+        command = f'docker exec {container_id} python -c "{code}"'
+        p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        outs, errs = p.communicate()
+        abspath = outs.decode('utf-8').strip()
+        errs = errs.decode('utf-8')
+
+        if errs or (not abspath.startswith('/home/work/')):
+            return {'abspath': abspath, 'data': '',
+                    'error': 'No such file or directory'}
+
+        def _copy_from_container(basedir):
+            host_tmppath = Path(basedir + abspath)
+            host_tmppath.parent.mkdir(parents=True, exist_ok=True)
+            command = f'docker cp {container_id}:{abspath} {str(host_tmppath)}'
+            p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+            outs, errs = p.communicate()
+            outs = outs.decode('utf-8')
+            errs = errs.decode('utf-8')
+            try:
+                with open(str(host_tmppath).strip(), 'rb') as f:
+                    data = f.read()
+                return data
+            except FileNotFoundError:
+                log.error(f'{kernel_id}: reading file to be downloaded failed: '
+                          f'{abspath} -> {host_tmppath}')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data = await loop.run_in_executor(None, _copy_from_container, tmpdir)
+            return {'path': abspath, 'data': data}
 
     async def _list_files(self, kernel_id: str, path: str):
         container_id = self.container_registry[kernel_id]['container_id']
