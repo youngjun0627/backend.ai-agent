@@ -67,6 +67,28 @@ def container(event_loop, docker):
 
 
 @pytest.fixture
+def create_container(event_loop, docker):
+    container = None
+
+    async def _create_container(config):
+        nonlocal container
+        container = await docker.containers.create_or_replace(
+            config=config,
+            name='kernel.test-container'
+        )
+        return container
+
+    yield _create_container
+
+    async def finalize():
+        nonlocal container
+        if container:
+            await container.delete(force=True)
+
+    event_loop.run_until_complete(finalize())
+
+
+@pytest.fixture
 def daemon_container(event_loop, docker):
     container = None
     config = {

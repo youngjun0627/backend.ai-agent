@@ -6,7 +6,9 @@ Reference: https://www.datadoghq.com/blog/how-to-collect-docker-metrics/
 
 import asyncio
 import argparse
+from contextlib import closing, contextmanager
 from ctypes import CDLL, get_errno
+import functools
 import logging
 import os
 from pathlib import Path
@@ -14,8 +16,11 @@ import sys
 import time
 
 import aiohttp
+from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
+import zmq
 
+from ai.backend.common import msgpack
 from ai.backend.common.utils import nmget
 from ai.backend.common.identity import is_containerized
 
@@ -30,10 +35,10 @@ def _errcheck(ret, func, args):
         raise OSError(e, os.strerror(e))
 
 
-def _collect_stats_sysfs(container):
-    cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container._id}/'
-    mem_prefix = f'/sys/fs/cgroup/memory/docker/{container._id}/'
-    io_prefix = f'/sys/fs/cgroup/blkio/docker/{container._id}/'
+def _collect_stats_sysfs(container_id):
+    cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
+    mem_prefix = f'/sys/fs/cgroup/memory/docker/{container_id}/'
+    io_prefix = f'/sys/fs/cgroup/blkio/docker/{container_id}/'
 
     try:
         cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage') / 1e6
@@ -61,9 +66,7 @@ def _collect_stats_sysfs(container):
         io_max_scratch_size = 0
         io_cur_scratch_size = 0
 
-        pid_list = sorted(read_sysfs(cpu_prefix + 'tasks', numeric_list))
-        primary_pid = pid_list[0]
-        net_dev_stats = Path(f'/proc/{primary_pid}/net/dev').read_text()
+        net_dev_stats = Path('/proc/net/dev').read_text()
         # example data:
         #   Inter-|   Receive                                                |  Transmit                                                  # noqa: E501
         #    face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed    # noqa: E501
@@ -78,9 +81,10 @@ def _collect_stats_sysfs(container):
             if data[0].startswith('eth'):
                 net_rx_bytes += int(data[1])
                 net_tx_bytes += int(data[9])
-    except IOError:
+    except IOError as e:
         log.warning('cannot read stats: '
-                    f'sysfs unreadable for container {container._id[:7]}!')
+                    f'sysfs unreadable for container {container_id[:7]}!'
+                    f'\n{e!r}')
         return None
 
     return {
@@ -104,6 +108,10 @@ async def _collect_stats_api(container):
                     f'API error for container {container._id[:7]}!')
         return None
     else:
+        # API returned successfully but actually the result may be empty!
+        if ret['preread'].startswith('0001-01-01'):
+            log.warning('No process running in the container!')
+            return None
         cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
         mem_max_bytes = nmget(ret, 'memory_stats.max_usage', 0)
         mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
@@ -138,7 +146,7 @@ async def _collect_stats_api(container):
 
 async def collect_stats(containers):
     if sys.platform == 'linux' and not is_containerized():
-        results = tuple(_collect_stats_sysfs(c) for c in containers)
+        results = tuple(_collect_stats_sysfs(c._id) for c in containers)
     else:
         tasks = []
         for c in containers:
@@ -155,24 +163,37 @@ def read_sysfs(path, type_=int, default_val=0):
     return type_(Path(path).read_text().strip())
 
 
-def main(args):
+@contextmanager
+def join_cgroup_and_namespace(cid, send):
     libc = CDLL('libc.so.6', use_errno=True)
     libc.setns.errcheck = _errcheck
+    mypid = str(os.getpid())
+
+    # The list of monitored cgroup resource types
+    cgroups = ['memory', 'cpuacct', 'blkio', 'net_cls']
 
     try:
-        procs_path = Path(f'/sys/fs/cgroup/net_cls/docker/{args.cid}/cgroup.procs')
-    except (IOError, PermissionError):
-        print('Cannot read cgroup filesystem.', file=sys.stderr)
+        procs_path = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs')
+        pids = numeric_list(procs_path.read_text())
+    except PermissionError:
+        print('Cannot read cgroup filesystem due to permission error!',
+              file=sys.stderr)
         sys.exit(1)
-    mypid = os.getpid()
-    pids = numeric_list(procs_path.read_text())
-    try:
-        # Change the network cgroup membership of myself.
-        tasks_path = Path(f'/sys/fs/cgroup/net_cls/docker/{args.cid}/tasks')
-        tasks_path.write_text(str(mypid))
+    except FileNotFoundError:
+        print('Cannot read cgroup filesystem.\n'
+              'The container did not start or may have already terminated.',
+              file=sys.stderr)
+        send({
+            'cid': args.cid,
+            'status': 'terminated',
+            'data': None,
+        })
+        sys.exit(0)
 
-        # TODO: opening proc namespace file requires root or "all+eip" capabilities.
-        #       could we reduce this?
+    try:
+        # Change the cgroup membership of myself.
+        for cgroup in cgroups:
+            Path(f'/sys/fs/cgroup/{cgroup}/docker/{cid}/tasks').write_text(mypid)
 
         # Enter the container's network namespace so that we can see the exact "eth0"
         # (which is actually "vethXXXX" in the host namespace)
@@ -183,28 +204,94 @@ def main(args):
               'CAP_SYS_ADMIN, CAP_DAC_OVERRIDE, and CAP_SYS_PTRACE capabilities.',
               file=sys.stderr)
         sys.exit(1)
+    except FileNotFoundError:
+        print('The container has already terminated.', file=sys.stderr)
+        send({
+            'cid': args.cid,
+            'status': 'terminated',
+            'data': None,
+        })
+        sys.exit(0)
 
-    while True:
-        time.sleep(0.5)
-        pids = Path(f'/sys/fs/cgroup/net_cls/docker/{args.cid}/tasks').read_text()
-        pids = numeric_list(pids)
-        if len(pids) > 1:
-            print(Path(f'/proc/net/dev').read_text())
-        else:
-            print('terminated', pids)
-            break
+    try:
+        yield
+    finally:
+        # Move to the parent cgroup and self-remove the container cgroup
+        for cgroup in cgroups:
+            Path(f'/sys/fs/cgroup/{cgroup}/tasks').write_text(mypid)
+            try:
+                os.rmdir(f'/sys/fs/cgroup/{cgroup}/docker/{cid}')
+            except OSError:
+                pass
 
-    # TODO: Collect final stats.
 
-    # Move to the parent cgroup and self-remove the container cgroup
-    Path(f'/sys/fs/cgroup/net_cls/tasks').write_text(str(mypid))
-    os.rmdir(f'/sys/fs/cgroup/net_cls/docker/{args.cid}')
+def is_cgroup_running(cid):
+    pids = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/tasks').read_text()
+    pids = numeric_list(pids)
+    return (len(pids) > 1)
+
+
+def main(args):
+    context = zmq.Context.instance()
+    stats_sock = context.socket(zmq.PUSH)
+    stats_sock.setsockopt(zmq.LINGER, 1000)
+    stats_sock.connect(args.sockaddr)
+    send = functools.partial(stats_sock.send_serialized,
+                             serialize=lambda v: [msgpack.packb(v)])
+
+    if args.type == 'cgroup':
+        with closing(stats_sock), join_cgroup_and_namespace(args.cid, send):
+            last_data = None
+            data = None
+            while True:
+                data = _collect_stats_sysfs(args.cid)
+                msg = {
+                    'cid': args.cid,
+                    'data': data,
+                }
+                if is_cgroup_running(args.cid) and data is not None:
+                    msg['status'] = 'running'
+                    send(msg)
+                else:
+                    msg['status'] = 'terminated'
+                    send(msg)
+                    break
+                time.sleep(1.0)
+    elif args.type == 'api':
+        loop = asyncio.get_event_loop()
+        with closing(stats_sock), closing(loop):
+            last_data = None
+            data = None
+            docker = Docker()
+            container = DockerContainer(docker, id=args.cid)
+            while True:
+                data = loop.run_until_complete(_collect_stats_api(container))
+                print(data)
+                msg = {
+                    'cid': args.cid,
+                    'data': data,
+                }
+                if data is not None:
+                    msg['status'] = 'running'
+                    send(msg)
+                    last_data = data
+                else:
+                    msg['status'] = 'terminated'
+                    msg['data'] = last_data
+                    send(msg)
+                    break
+                time.sleep(1.0)
+            loop.run_until_complete(docker.close())
+
     sys.exit(0)
 
 
 if __name__ == '__main__':
     # The entry point for stat collector daemon
     parser = argparse.ArgumentParser()
+    parser.add_argument('sockaddr', type=str)
     parser.add_argument('cid', type=str)
+    parser.add_argument('-t', '--type', choices=['cgroup', 'api'],
+                        default='cgroup')
     args = parser.parse_args()
     main(args)
