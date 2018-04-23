@@ -179,7 +179,8 @@ def main(args):
         with open(f'/proc/{pids[0]}/ns/net', 'r') as f:
             libc.setns(f.fileno(), CLONE_NEWNET)
     except PermissionError:
-        print('This process must be started with the root privilege.',
+        print('This process must be started with the root privilege or have explicit'
+              'CAP_SYS_ADMIN, CAP_DAC_OVERRIDE, and CAP_SYS_PTRACE capabilities.',
               file=sys.stderr)
         sys.exit(1)
 
