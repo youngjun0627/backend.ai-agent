@@ -82,8 +82,9 @@ def _collect_stats_sysfs(container_id):
                 net_rx_bytes += int(data[1])
                 net_tx_bytes += int(data[9])
     except IOError as e:
+        short_cid = container_id[:7]
         log.warning('cannot read stats: '
-                    f'sysfs unreadable for container {container_id[:7]}!'
+                    f'sysfs unreadable for container {short_cid}!'
                     f'\n{e!r}')
         return None
 
@@ -104,13 +105,12 @@ async def _collect_stats_api(container):
     try:
         ret = await container.stats(stream=False)
     except (DockerError, aiohttp.ClientResponseError):
-        log.warning('cannot read stats: '
-                    f'API error for container {container._id[:7]}!')
+        short_cid = container._id[:7]
+        log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')
         return None
     else:
         # API returned successfully but actually the result may be empty!
         if ret['preread'].startswith('0001-01-01'):
-            log.warning('No process running in the container!')
             return None
         cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
         mem_max_bytes = nmget(ret, 'memory_stats.max_usage', 0)
@@ -266,7 +266,6 @@ def main(args):
             container = DockerContainer(docker, id=args.cid)
             while True:
                 data = loop.run_until_complete(_collect_stats_api(container))
-                print(data)
                 msg = {
                     'cid': args.cid,
                     'data': data,
