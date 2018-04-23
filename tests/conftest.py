@@ -12,6 +12,7 @@ def prepare_docker_images():
         images_to_pull = [
             'alpine:latest',
             'lablup/kernel-lua:latest',
+            'nginx:latest',
         ]
         for img in images_to_pull:
             try:

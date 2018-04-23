@@ -1,4 +1,5 @@
 language: generic
+sudo: required
 before_cache:
   - rm -f $HOME/.cache/pip/log/debug.log
 cache:
@@ -75,7 +76,7 @@ jobs:
         - ./scripts/ci/run-manager.sh
       script:
         - source ~/virtualenv/agent/bin/activate; python -m flake8 ai/backend tests
-        - source ~/virtualenv/agent/bin/activate; python -m pytest --cov=ai/backend
+        - sudo sh -c 'source ~/virtualenv/agent/bin/activate; python -m pytest --cov=ai/backend'
       after_success:
         - codecov
       after_script:
