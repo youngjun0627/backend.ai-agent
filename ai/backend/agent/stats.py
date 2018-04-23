@@ -5,9 +5,13 @@ Reference: https://www.datadoghq.com/blog/how-to-collect-docker-metrics/
 '''
 
 import asyncio
+import argparse
+from ctypes import CDLL, get_errno
 import logging
-import sys
+import os
 from pathlib import Path
+import sys
+import time
 
 import aiohttp
 from aiodocker.exceptions import DockerError
@@ -16,6 +20,14 @@ from ai.backend.common.utils import nmget
 from ai.backend.common.identity import is_containerized
 
 log = logging.getLogger('ai.backend.agent.stats')
+
+CLONE_NEWNET = 0x40000000
+
+
+def _errcheck(ret, func, args):
+    if ret == -1:
+        e = get_errno()
+        raise OSError(e, os.strerror(e))
 
 
 def _collect_stats_sysfs(container):
@@ -141,3 +153,57 @@ def numeric_list(s):
 
 def read_sysfs(path, type_=int, default_val=0):
     return type_(Path(path).read_text().strip())
+
+
+def main(args):
+    libc = CDLL('libc.so.6', use_errno=True)
+    libc.setns.errcheck = _errcheck
+
+    try:
+        procs_path = Path(f'/sys/fs/cgroup/net_cls/docker/{args.cid}/cgroup.procs')
+    except (IOError, PermissionError):
+        print('Cannot read cgroup filesystem.', file=sys.stderr)
+        sys.exit(1)
+    mypid = os.getpid()
+    pids = numeric_list(procs_path.read_text())
+    try:
+        # Change the network cgroup membership of myself.
+        tasks_path = Path(f'/sys/fs/cgroup/net_cls/docker/{args.cid}/tasks')
+        tasks_path.write_text(str(mypid))
+
+        # TODO: opening proc namespace file requires root or "all+eip" capabilities.
+        #       could we reduce this?
+
+        # Enter the container's network namespace so that we can see the exact "eth0"
+        # (which is actually "vethXXXX" in the host namespace)
+        with open(f'/proc/{pids[0]}/ns/net', 'r') as f:
+            libc.setns(f.fileno(), CLONE_NEWNET)
+    except PermissionError:
+        print('This process must be started with the root privilege.',
+              file=sys.stderr)
+        sys.exit(1)
+
+    while True:
+        time.sleep(0.5)
+        pids = Path(f'/sys/fs/cgroup/net_cls/docker/{args.cid}/tasks').read_text()
+        pids = numeric_list(pids)
+        if len(pids) > 1:
+            print(Path(f'/proc/net/dev').read_text())
+        else:
+            print('terminated', pids)
+            break
+
+    # TODO: Collect final stats.
+
+    # Move to the parent cgroup and self-remove the container cgroup
+    Path(f'/sys/fs/cgroup/net_cls/tasks').write_text(str(mypid))
+    os.rmdir(f'/sys/fs/cgroup/net_cls/docker/{args.cid}')
+    sys.exit(0)
+
+
+if __name__ == '__main__':
+    # The entry point for stat collector daemon
+    parser = argparse.ArgumentParser()
+    parser.add_argument('cid', type=str)
+    args = parser.parse_args()
+    main(args)

@@ -1,6 +1,23 @@
+import asyncio
+import os
+from pathlib import Path
+
 import pytest
 
 from ai.backend.agent import stats
+
+
+@pytest.mark.asyncio
+async def test_namespace_attach(daemon_container):
+    cid = daemon_container['id']
+    print(f'cid = {cid}')
+    proc = await asyncio.create_subprocess_exec(*[
+        'python', '-m', 'ai.backend.agent.stats', cid,
+    ])
+    await asyncio.sleep(1)
+    await daemon_container.kill()
+    await proc.wait()
+    assert proc.returncode == 0
 
 
 @pytest.mark.skip(reason='way to test exact numbers container used')
@@ -22,8 +39,15 @@ async def test_collect_stats(container):
 def test_numeric_list():
     s = '1 3 5 7'
     ret = stats.numeric_list(s)
-
     assert ret == [1, 3, 5, 7]
+
+    s = ''
+    ret = stats.numeric_list(s)
+    assert ret == []
+
+    s = '123\n456'
+    ret = stats.numeric_list(s)
+    assert ret == [123, 456]
 
 
 def test_read_sysfs(tmpdir):
