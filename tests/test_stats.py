@@ -1,9 +1,10 @@
 import asyncio
 import functools
-import zmq
-from zmq.asyncio import Context as AsyncZmqContext
+import sys
 
 import pytest
+import zmq
+from zmq.asyncio import Context as AsyncZmqContext
 
 from ai.backend.common import msgpack
 from ai.backend.agent import stats
@@ -20,8 +21,13 @@ def stats_server():
         stats_sock.close()
 
 
+active_collection_types = ['api']
+if sys.platform.startswith('linux'):
+    active_collection_types.append('cgroup')
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize('collection_type', ['cgroup', 'api'])
+@pytest.mark.parametrize('collection_type', active_collection_types)
 async def test_collector(event_loop,
                          daemon_container,
                          stats_server,
@@ -60,7 +66,7 @@ async def test_collector(event_loop,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('collection_type', ['cgroup', 'api'])
+@pytest.mark.parametrize('collection_type', active_collection_types)
 async def test_collector_immediate_death_1(event_loop,
                                            create_container,
                                            stats_server,
@@ -102,7 +108,7 @@ async def test_collector_immediate_death_1(event_loop,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('collection_type', ['cgroup', 'api'])
+@pytest.mark.parametrize('collection_type', active_collection_types)
 async def test_collector_immediate_death_2(event_loop,
                                            create_container,
                                            stats_server,
