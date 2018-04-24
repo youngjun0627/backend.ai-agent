@@ -816,45 +816,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                       f'{filename} -> {dest_path}')
 
     async def _download_file(self, kernel_id, filepath):
-        loop = asyncio.get_event_loop()
         container_id = self.container_registry[kernel_id]['container_id']
-
-        # Resolve target file path from inside the container.
-        code = '''from pathlib import Path
-abspath = Path('%(path)s').resolve(strict=True)
-print(abspath)
-''' % {'path': filepath}
-        command = f'docker exec {container_id} python -c "{code}"'
-        p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE)
-        outs, errs = p.communicate()
-        abspath = outs.decode('utf-8').strip()
-        errs = errs.decode('utf-8')
-
-        if errs or (not abspath.startswith('/home/work/')):
-            return {'abspath': abspath, 'data': '',
-                    'error': 'No such file or directory'}
-
-        def _copy_from_container(basedir):
-            host_tmppath = Path(basedir + abspath)
-            host_tmppath.parent.mkdir(parents=True, exist_ok=True)
-            command = f'docker cp {container_id}:{abspath} {str(host_tmppath)}'
-            p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE)
-            outs, errs = p.communicate()
-            outs = outs.decode('utf-8')
-            errs = errs.decode('utf-8')
-            try:
-                with open(str(host_tmppath).strip(), 'rb') as f:
-                    data = f.read()
-                return data
-            except FileNotFoundError:
-                log.error(f'{kernel_id}: reading file to be downloaded failed: '
-                          f'{abspath} -> {host_tmppath}')
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            data = await loop.run_in_executor(None, _copy_from_container, tmpdir)
-            return {'path': abspath, 'data': data}
+        container = self.docker.containers.container(container_id)
+        # Limit file path to /home/work inside a container.
+        # TODO: extend path search in virtual folders.
+        abspath = os.path.abspath(os.path.join('/home/work', filepath))
+        with await container.get_archive(abspath) as tarobj:
+            tarobj.fileobj.seek(0, 2)
+            fsize = tarobj.fileobj.tell()
+            if fsize > 10 * 1048576:
+                tarbytes = b''
+            else:
+                tarbytes = tarobj.fileobj.getvalue()
+        return tarbytes
 
     async def _list_files(self, kernel_id: str, path: str):
         container_id = self.container_registry[kernel_id]['container_id']
