@@ -29,11 +29,13 @@ if sys.platform.startswith('linux'):
 output_opts = {
     'stdout': None,
     'stderr': None,
+    'stdin': asyncio.subprocess.DEVNULL,
 }
 if 'TRAVIS' in os.environ:
     output_opts = {
         'stdout': asyncio.subprocess.DEVNULL,
         'stderr': asyncio.subprocess.DEVNULL,
+        'stdin': asyncio.subprocess.DEVNULL,
     }
 
 
