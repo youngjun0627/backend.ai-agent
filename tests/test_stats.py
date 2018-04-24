@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import os
 import sys
 
 import pytest
@@ -25,6 +26,16 @@ active_collection_types = ['api']
 if sys.platform.startswith('linux'):
     active_collection_types.append('cgroup')
 
+output_opts = {
+    'stdout': None,
+    'stderr': None,
+}
+if 'TRAVIS' in os.environ:
+    output_opts = {
+        'stdout': asyncio.subprocess.DEVNULL,
+        'stderr': asyncio.subprocess.DEVNULL,
+    }
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('collection_type', active_collection_types)
@@ -39,7 +50,7 @@ async def test_collector(event_loop,
         f'tcp://127.0.0.1:{stats_port}',
         cid,
         '--type', collection_type,
-    ])
+    ], **output_opts)
 
     async def kill_after_sleep():
         await asyncio.sleep(2.0)
@@ -88,7 +99,7 @@ async def test_collector_immediate_death_1(event_loop,
         f'tcp://127.0.0.1:{stats_port}',
         cid,
         '--type', collection_type,
-    ])
+    ], **output_opts)
 
     recv = functools.partial(
         stats_sock.recv_serialized,
@@ -126,7 +137,7 @@ async def test_collector_immediate_death_2(event_loop,
         f'tcp://127.0.0.1:{stats_port}',
         cid,
         '--type', collection_type,
-    ])
+    ], **output_opts)
 
     # Start after the collector is spawned.
     await asyncio.sleep(0.5)
