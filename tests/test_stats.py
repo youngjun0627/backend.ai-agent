@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import os
+import signal
 import sys
 
 import pytest
@@ -76,6 +77,7 @@ async def test_collector(event_loop,
     msg = (await recv())[0]
     assert msg['status'] == 'initialized'
     await container.start()
+    os.kill(proc.pid, signal.SIGUSR1)
 
     # Proceed to receive stats.
     async def kill_after_sleep():
@@ -129,6 +131,7 @@ async def test_collector_immediate_death(event_loop,
     msg = (await recv())[0]
     assert msg['status'] == 'initialized'
     await container.start()
+    os.kill(proc.pid, signal.SIGUSR1)
     await container.wait()  # let it die first.
 
     # Proceed to receive stats.

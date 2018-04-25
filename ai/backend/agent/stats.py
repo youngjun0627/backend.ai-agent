@@ -13,6 +13,7 @@ import functools
 import logging
 import os
 from pathlib import Path
+import signal
 import sys
 import time
 
@@ -62,8 +63,6 @@ class ContainerStat:
                                        stat.io_cur_scratch_size)
         self.io_cur_scratch_size = stat.io_cur_scratch_size
 
-
-# TODO: keep "max" value of stat fields because after killing they may become zero.
 
 def _collect_stats_sysfs(container_id):
     cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
@@ -194,7 +193,7 @@ def read_sysfs(path, type_=int, default_val=0):
 
 
 @contextmanager
-def join_cgroup_and_namespace(cid, send):
+def join_cgroup_and_namespace(cid, initial_stat, send):
     libc = CDLL('libc.so.6', use_errno=True)
     libc.setns.errcheck = _errcheck
     mypid = os.getpid()
@@ -223,8 +222,8 @@ def join_cgroup_and_namespace(cid, send):
         'data': None,
     })
 
-    # TODO: Wait for the container to be started.
-    time.sleep(0.1)
+    # Wait for the container to be started.
+    signal.pause()
 
     try:
         procs_path = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs')
@@ -242,7 +241,7 @@ def join_cgroup_and_namespace(cid, send):
         send({
             'cid': args.cid,
             'status': 'terminated',
-            'data': None,
+            'data': asdict(initial_stat),
         })
         sys.exit(0)
 
@@ -264,7 +263,7 @@ def join_cgroup_and_namespace(cid, send):
         send({
             'cid': args.cid,
             'status': 'terminated',
-            'data': None,
+            'data': asdict(initial_stat),
         })
         sys.exit(0)
 
@@ -295,9 +294,12 @@ def main(args):
                              serialize=lambda v: [msgpack.packb(v)])
 
     stat = ContainerStat()
+    # Note: SIG_IGN completely ignores the signal,
+    #       and thus signal.pause() won't unblock.
+    signal.signal(signal.SIGUSR1, lambda signo, frame: None)
 
     if args.type == 'cgroup':
-        with closing(stats_sock), join_cgroup_and_namespace(args.cid, send):
+        with closing(stats_sock), join_cgroup_and_namespace(args.cid, stat, send):
             # Agent notification is done inside join_cgroup_and_namespace
             while True:
                 new_stat = _collect_stats_sysfs(args.cid)
@@ -325,6 +327,8 @@ def main(args):
                 'status': 'initialized',
                 'data': None,
             })
+            # Wait for the container to be actually started.
+            signal.pause()
             while True:
                 new_stat = loop.run_until_complete(_collect_stats_api(container))
                 stat.update(new_stat)
