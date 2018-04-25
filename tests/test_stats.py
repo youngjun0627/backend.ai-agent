@@ -26,13 +26,13 @@ active_collection_types = ['api']
 if sys.platform.startswith('linux'):
     active_collection_types.append('cgroup')
 
-output_opts = {
+pipe_opts = {
     'stdout': None,
     'stderr': None,
     'stdin': asyncio.subprocess.DEVNULL,
 }
 if 'TRAVIS' in os.environ:
-    output_opts = {
+    pipe_opts = {
         'stdout': asyncio.subprocess.DEVNULL,
         'stderr': asyncio.subprocess.DEVNULL,
         'stdin': asyncio.subprocess.DEVNULL,
@@ -42,45 +42,67 @@ if 'TRAVIS' in os.environ:
 @pytest.mark.asyncio
 @pytest.mark.parametrize('collection_type', active_collection_types)
 async def test_collector(event_loop,
-                         daemon_container,
+                         create_container,
                          stats_server,
                          collection_type):
-    cid = daemon_container['id']
+
+    # Create the container but don't start it.
+    container = await create_container({
+        'Image': 'nginx:latest',
+        'ExposedPorts': {
+            '80/tcp': {},
+        },
+        'HostConfig': {
+            'PortBindings': {
+                '80/tcp': [{'HostPort': '8080'}],
+            }
+        }
+    })
+    cid = container['id']
+
+    # Initialize the agent-side.
     stats_sock, stats_port = stats_server
+    recv = functools.partial(
+        stats_sock.recv_serialized,
+        lambda vs: [msgpack.unpackb(v) for v in vs])
+
+    # Spawn the collector and wait for its initialization.
     proc = await asyncio.create_subprocess_exec(*[
         'python', '-m', 'ai.backend.agent.stats',
         f'tcp://127.0.0.1:{stats_port}',
         cid,
         '--type', collection_type,
-    ], **output_opts)
+    ], **pipe_opts)
+    msg = (await recv())[0]
+    assert msg['status'] == 'initialized'
+    await container.start()
 
+    # Proceed to receive stats.
     async def kill_after_sleep():
         await asyncio.sleep(2.0)
-        await daemon_container.kill()
+        await container.kill()
 
     t = event_loop.create_task(kill_after_sleep())
-    recv = functools.partial(
-        stats_sock.recv_serialized,
-        lambda vs: [msgpack.unpackb(v) for v in vs])
     msg_list = []
     while True:
         msg = (await recv())[0]
+        print(msg)
         msg_list.append(msg)
         if msg['status'] == 'terminated':
             break
-
     await proc.wait()
     await t  # for explicit clean up
 
     assert proc.returncode == 0
     assert len(msg_list) >= 1
     assert msg_list[0]['cid'] == cid
+    assert msg_list[0]['status'] in ('running', 'terminated')
     assert msg_list[0]['data'] is not None
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('collection_type', active_collection_types)
-async def test_collector_immediate_death_1(event_loop,
+async def test_collector_immediate_death(event_loop,
                                            create_container,
                                            stats_server,
                                            collection_type):
@@ -89,26 +111,31 @@ async def test_collector_immediate_death_1(event_loop,
         'Entrypoint': 'sh',
         'Image': 'alpine:latest',
     })
-
-    # Start before the collector is spawned.
-    await container.start()
-    await asyncio.sleep(0.5)
-
     cid = container['id']
+
+    # Initialize the agent-side.
     stats_sock, stats_port = stats_server
+    recv = functools.partial(
+        stats_sock.recv_serialized,
+        lambda vs: [msgpack.unpackb(v) for v in vs])
+
+    # Spawn the collector and wait for its initialization.
     proc = await asyncio.create_subprocess_exec(*[
         'python', '-m', 'ai.backend.agent.stats',
         f'tcp://127.0.0.1:{stats_port}',
         cid,
         '--type', collection_type,
-    ], **output_opts)
+    ], **pipe_opts)
+    msg = (await recv())[0]
+    assert msg['status'] == 'initialized'
+    await container.start()
+    await container.wait()  # let it die first.
 
-    recv = functools.partial(
-        stats_sock.recv_serialized,
-        lambda vs: [msgpack.unpackb(v) for v in vs])
+    # Proceed to receive stats.
     msg_list = []
     while True:
         msg = (await recv())[0]
+        print(msg)
         msg_list.append(msg)
         if msg['status'] == 'terminated':
             break
@@ -118,64 +145,7 @@ async def test_collector_immediate_death_1(event_loop,
     assert proc.returncode == 0
     assert len(msg_list) >= 1
     assert msg_list[0]['cid'] == cid
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('collection_type', active_collection_types)
-async def test_collector_immediate_death_2(event_loop,
-                                           create_container,
-                                           stats_server,
-                                           collection_type):
-    container = await create_container({
-        'Cmd': ['-c', 'exit 0'],
-        'Entrypoint': 'sh',
-        'Image': 'alpine:latest',
-    })
-
-    cid = container['id']
-    stats_sock, stats_port = stats_server
-    proc = await asyncio.create_subprocess_exec(*[
-        'python', '-m', 'ai.backend.agent.stats',
-        f'tcp://127.0.0.1:{stats_port}',
-        cid,
-        '--type', collection_type,
-    ], **output_opts)
-
-    # Start after the collector is spawned.
-    await asyncio.sleep(0.5)
-    await container.start()
-
-    recv = functools.partial(
-        stats_sock.recv_serialized,
-        lambda vs: [msgpack.unpackb(v) for v in vs])
-    msg_list = []
-    while True:
-        msg = (await recv())[0]
-        msg_list.append(msg)
-        if msg['status'] == 'terminated':
-            break
-
-    await proc.wait()
-
-    assert proc.returncode == 0
-    assert len(msg_list) >= 1
-    assert msg_list[0]['cid'] == cid
-
-
-@pytest.mark.skip(reason='way to test exact numbers container used')
-@pytest.mark.asyncio
-async def test_collect_stats(container):
-    ret = await stats.collect_stats([container])
-
-    assert 'cpu_used' in ret[0]
-    assert 'mem_max_bytes' in ret[0]
-    assert 'mem_cur_bytes' in ret[0]
-    assert 'net_rx_bytes' in ret[0]
-    assert 'net_tx_bytes' in ret[0]
-    assert 'io_read_bytes' in ret[0]
-    assert 'io_write_bytes' in ret[0]
-    assert 'io_max_scratch_size' in ret[0]
-    assert 'io_cur_scratch_size' in ret[0]
+    assert msg_list[0]['data'] is not None
 
 
 def test_numeric_list():

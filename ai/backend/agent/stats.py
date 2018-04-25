@@ -8,6 +8,7 @@ import asyncio
 import argparse
 from contextlib import closing, contextmanager
 from ctypes import CDLL, get_errno
+from dataclasses import asdict, dataclass
 import functools
 import logging
 import os
@@ -34,6 +35,35 @@ def _errcheck(ret, func, args):
         e = get_errno()
         raise OSError(e, os.strerror(e))
 
+
+@dataclass(frozen=False)
+class ContainerStat:
+    cpu_used: int = 0
+    mem_max_bytes: int = 0
+    mem_cur_bytes: int = 0
+    net_rx_bytes: int = 0
+    net_tx_bytes: int = 0
+    io_read_bytes: int = 0
+    io_write_bytes: int = 0
+    io_max_scratch_size: int = 0
+    io_cur_scratch_size: int = 0
+
+    def update(self, stat: 'ContainerStat'):
+        if stat is None:
+            return
+        self.cpu_used = stat.cpu_used
+        self.mem_max_bytes = stat.mem_max_bytes
+        self.mem_cur_bytes = stat.mem_cur_bytes
+        self.net_rx_bytes = max(self.net_rx_bytes, stat.net_rx_bytes)
+        self.net_tx_bytes = max(self.net_tx_bytes, stat.net_tx_bytes)
+        self.io_read_bytes = max(self.io_read_bytes, stat.io_read_bytes)
+        self.io_write_bytes = max(self.io_write_bytes, stat.io_write_bytes)
+        self.io_max_scratch_size = max(self.io_max_scratch_size,
+                                       stat.io_cur_scratch_size)
+        self.io_cur_scratch_size = stat.io_cur_scratch_size
+
+
+# TODO: keep "max" value of stat fields because after killing they may become zero.
 
 def _collect_stats_sysfs(container_id):
     cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
@@ -88,17 +118,17 @@ def _collect_stats_sysfs(container_id):
                     f'\n{e!r}')
         return None
 
-    return {
-        'cpu_used': cpu_used,
-        'mem_max_bytes': mem_max_bytes,
-        'mem_cur_bytes': mem_cur_bytes,
-        'net_rx_bytes': net_rx_bytes,
-        'net_tx_bytes': net_tx_bytes,
-        'io_read_bytes': io_read_bytes,
-        'io_write_bytes': io_write_bytes,
-        'io_max_scratch_size': io_max_scratch_size,
-        'io_cur_scratch_size': io_cur_scratch_size,
-    }
+    return ContainerStat(
+        cpu_used,
+        mem_max_bytes,
+        mem_cur_bytes,
+        net_rx_bytes,
+        net_tx_bytes,
+        io_read_bytes,
+        io_write_bytes,
+        io_max_scratch_size,
+        io_cur_scratch_size,
+    )
 
 
 async def _collect_stats_api(container):
@@ -131,17 +161,17 @@ async def _collect_stats_api(container):
         for dev in nmget(ret, 'networks', {}).values():
             net_rx_bytes += dev['rx_bytes']
             net_tx_bytes += dev['tx_bytes']
-    return {
-        'cpu_used': cpu_used,
-        'mem_max_bytes': mem_max_bytes,
-        'mem_cur_bytes': mem_cur_bytes,
-        'net_rx_bytes': net_rx_bytes,
-        'net_tx_bytes': net_tx_bytes,
-        'io_read_bytes': io_read_bytes,
-        'io_write_bytes': io_write_bytes,
-        'io_max_scratch_size': io_max_scratch_size,
-        'io_cur_scratch_size': io_cur_scratch_size,
-    }
+    return ContainerStat(
+        cpu_used,
+        mem_max_bytes,
+        mem_cur_bytes,
+        net_rx_bytes,
+        net_tx_bytes,
+        io_read_bytes,
+        io_write_bytes,
+        io_max_scratch_size,
+        io_cur_scratch_size,
+    )
 
 
 async def collect_stats(containers):
@@ -167,19 +197,45 @@ def read_sysfs(path, type_=int, default_val=0):
 def join_cgroup_and_namespace(cid, send):
     libc = CDLL('libc.so.6', use_errno=True)
     libc.setns.errcheck = _errcheck
-    mypid = str(os.getpid())
+    mypid = os.getpid()
 
     # The list of monitored cgroup resource types
     cgroups = ['memory', 'cpuacct', 'blkio', 'net_cls']
 
     try:
+        # Create the cgroups and change my membership.
+        # The reason for creating cgroups first is to keep them alive
+        # after the Docker has killed the container.
+        for cgroup in cgroups:
+            cg_path = Path(f'/sys/fs/cgroup/{cgroup}/docker/{cid}')
+            cg_path.mkdir(parents=True, exist_ok=True)
+            cgtasks_path = Path(f'/sys/fs/cgroup/{cgroup}/docker/{cid}/tasks')
+            cgtasks_path.write_text(str(mypid))
+    except PermissionError:
+        print('Cannot write cgroup filesystem due to permission error!',
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Notify the agent to start the container.
+    send({
+        'cid': args.cid,
+        'status': 'initialized',
+        'data': None,
+    })
+
+    # TODO: Wait for the container to be started.
+    time.sleep(0.1)
+
+    try:
         procs_path = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs')
-        pids = numeric_list(procs_path.read_text())
+        pids = procs_path.read_text()
+        pids = set(int(p) for p in pids.split())
     except PermissionError:
         print('Cannot read cgroup filesystem due to permission error!',
               file=sys.stderr)
         sys.exit(1)
     except FileNotFoundError:
+        print([p.name for p in Path('/sys/fs/cgroup/memory/docker').iterdir()])
         print('Cannot read cgroup filesystem.\n'
               'The container did not start or may have already terminated.',
               file=sys.stderr)
@@ -191,20 +247,19 @@ def join_cgroup_and_namespace(cid, send):
         sys.exit(0)
 
     try:
-        # Change the cgroup membership of myself.
-        for cgroup in cgroups:
-            Path(f'/sys/fs/cgroup/{cgroup}/docker/{cid}/tasks').write_text(mypid)
-
+        # Get non-myself pid from the current running processes.
+        pids.discard(mypid)
+        first_pid = pids.pop()
         # Enter the container's network namespace so that we can see the exact "eth0"
         # (which is actually "vethXXXX" in the host namespace)
-        with open(f'/proc/{pids[0]}/ns/net', 'r') as f:
+        with open(f'/proc/{first_pid}/ns/net', 'r') as f:
             libc.setns(f.fileno(), CLONE_NEWNET)
     except PermissionError:
         print('This process must be started with the root privilege or have explicit'
               'CAP_SYS_ADMIN, CAP_DAC_OVERRIDE, and CAP_SYS_PTRACE capabilities.',
               file=sys.stderr)
         sys.exit(1)
-    except FileNotFoundError:
+    except (FileNotFoundError, KeyError):
         print('The container has already terminated.', file=sys.stderr)
         send({
             'cid': args.cid,
@@ -218,7 +273,7 @@ def join_cgroup_and_namespace(cid, send):
     finally:
         # Move to the parent cgroup and self-remove the container cgroup
         for cgroup in cgroups:
-            Path(f'/sys/fs/cgroup/{cgroup}/tasks').write_text(mypid)
+            Path(f'/sys/fs/cgroup/{cgroup}/tasks').write_text(str(mypid))
             try:
                 os.rmdir(f'/sys/fs/cgroup/{cgroup}/docker/{cid}')
             except OSError:
@@ -234,22 +289,24 @@ def is_cgroup_running(cid):
 def main(args):
     context = zmq.Context.instance()
     stats_sock = context.socket(zmq.PUSH)
-    stats_sock.setsockopt(zmq.LINGER, 1000)
+    stats_sock.setsockopt(zmq.LINGER, 2000)
     stats_sock.connect(args.sockaddr)
     send = functools.partial(stats_sock.send_serialized,
                              serialize=lambda v: [msgpack.packb(v)])
 
+    stat = ContainerStat()
+
     if args.type == 'cgroup':
         with closing(stats_sock), join_cgroup_and_namespace(args.cid, send):
-            last_data = None
-            data = None
+            # Agent notification is done inside join_cgroup_and_namespace
             while True:
-                data = _collect_stats_sysfs(args.cid)
+                new_stat = _collect_stats_sysfs(args.cid)
+                stat.update(new_stat)
                 msg = {
                     'cid': args.cid,
-                    'data': data,
+                    'data': asdict(stat),
                 }
-                if is_cgroup_running(args.cid) and data is not None:
+                if is_cgroup_running(args.cid) and new_stat is not None:
                     msg['status'] = 'running'
                     send(msg)
                 else:
@@ -259,24 +316,27 @@ def main(args):
                 time.sleep(1.0)
     elif args.type == 'api':
         loop = asyncio.get_event_loop()
+        docker = Docker()
         with closing(stats_sock), closing(loop):
-            last_data = None
-            data = None
-            docker = Docker()
             container = DockerContainer(docker, id=args.cid)
+            # Notify the agent to start the container.
+            send({
+                'cid': args.cid,
+                'status': 'initialized',
+                'data': None,
+            })
             while True:
-                data = loop.run_until_complete(_collect_stats_api(container))
+                new_stat = loop.run_until_complete(_collect_stats_api(container))
+                stat.update(new_stat)
                 msg = {
                     'cid': args.cid,
-                    'data': data,
+                    'data': asdict(stat),
                 }
-                if data is not None:
+                if new_stat is not None:
                     msg['status'] = 'running'
                     send(msg)
-                    last_data = data
                 else:
                     msg['status'] = 'terminated'
-                    msg['data'] = last_data
                     send(msg)
                     break
                 time.sleep(1.0)

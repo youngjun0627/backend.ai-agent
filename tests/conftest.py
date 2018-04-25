@@ -86,38 +86,3 @@ def create_container(event_loop, docker):
             await container.delete(force=True)
 
     event_loop.run_until_complete(finalize())
-
-
-@pytest.fixture
-def daemon_container(event_loop, docker):
-    container = None
-    config = {
-        'Image': 'nginx:latest',
-        'ExposedPorts': {
-            '80/tcp': {},
-        },
-        'HostConfig': {
-            'PortBindings': {
-                '80/tcp': [{'HostPort': '8080'}],
-            }
-        }
-    }
-
-    async def spawn():
-        nonlocal container
-        container = await docker.containers.create_or_replace(
-            config=config,
-            name='kernel.test-daemon-container'
-        )
-        await container.start()
-
-    event_loop.run_until_complete(spawn())
-
-    yield container
-
-    async def finalize():
-        nonlocal container
-        if container:
-            await container.delete(force=True)
-
-    event_loop.run_until_complete(finalize())
