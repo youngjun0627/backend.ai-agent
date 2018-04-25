@@ -8,7 +8,7 @@ import asyncio
 import argparse
 from contextlib import closing, contextmanager
 from ctypes import CDLL, get_errno
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import functools
 import logging
 import os
@@ -20,11 +20,19 @@ import time
 import aiohttp
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
+import aiotools
 import zmq
 
 from ai.backend.common import msgpack
 from ai.backend.common.utils import nmget
 from ai.backend.common.identity import is_containerized
+
+__all__ = (
+    'ContainerStat',
+    'StatCollectorState',
+    'spawn_stat_collector',
+    'numeric_list', 'read_sysfs',
+)
 
 log = logging.getLogger('ai.backend.agent.stats')
 
@@ -62,6 +70,34 @@ class ContainerStat:
         self.io_max_scratch_size = max(self.io_max_scratch_size,
                                        stat.io_cur_scratch_size)
         self.io_cur_scratch_size = stat.io_cur_scratch_size
+
+
+@dataclass(frozen=False)
+class StatCollectorState:
+    kernel_id: str
+    last_stat: ContainerStat = None
+    started: asyncio.Event = field(default_factory=lambda: asyncio.Event())
+    terminated: asyncio.Event = field(default_factory=lambda: asyncio.Event())
+
+
+@aiotools.actxmgr
+async def spawn_stat_collector(stat_addr, stat_type, cid, started_event, *,
+                               exec_opts=None):
+    # Spawn high-perf stats collector process for Linux native setups.
+    # NOTE: We don't have to keep track of this process,
+    #       as they will self-terminate when the container terminates.
+    if exec_opts is None:
+        exec_opts = {}
+    proc = await asyncio.create_subprocess_exec(*[
+        'python', '-m', 'ai.backend.agent.stats',
+        stat_addr, cid, '--type', stat_type,
+    ], **exec_opts)
+    await started_event.wait()
+    started_event.clear()
+    try:
+        yield proc
+    finally:
+        proc.send_signal(signal.SIGUSR1)
 
 
 def _collect_stats_sysfs(container_id):

@@ -1,7 +1,6 @@
 import asyncio
 import functools
 import os
-import signal
 import sys
 
 import pytest
@@ -68,16 +67,22 @@ async def test_collector(event_loop,
         lambda vs: [msgpack.unpackb(v) for v in vs])
 
     # Spawn the collector and wait for its initialization.
-    proc = await asyncio.create_subprocess_exec(*[
-        'python', '-m', 'ai.backend.agent.stats',
-        f'tcp://127.0.0.1:{stats_port}',
-        cid,
-        '--type', collection_type,
-    ], **pipe_opts)
-    msg = (await recv())[0]
-    assert msg['status'] == 'initialized'
-    await container.start()
-    os.kill(proc.pid, signal.SIGUSR1)
+    stat_addr = f'tcp://127.0.0.1:{stats_port}'
+    started_event = asyncio.Event()
+
+    async def recv_init():
+        msg = (await recv())[0]
+        assert msg['status'] == 'initialized'
+        started_event.set()
+
+    t = event_loop.create_task(recv_init())
+    proc = None
+    async with stats.spawn_stat_collector(stat_addr, collection_type,
+                                          cid, started_event,
+                                          exec_opts=pipe_opts) as p:
+        proc = p
+        await container.start()
+    await t
 
     # Proceed to receive stats.
     async def kill_after_sleep():
@@ -122,17 +127,25 @@ async def test_collector_immediate_death(event_loop,
         lambda vs: [msgpack.unpackb(v) for v in vs])
 
     # Spawn the collector and wait for its initialization.
-    proc = await asyncio.create_subprocess_exec(*[
-        'python', '-m', 'ai.backend.agent.stats',
-        f'tcp://127.0.0.1:{stats_port}',
-        cid,
-        '--type', collection_type,
-    ], **pipe_opts)
-    msg = (await recv())[0]
-    assert msg['status'] == 'initialized'
-    await container.start()
-    os.kill(proc.pid, signal.SIGUSR1)
-    await container.wait()  # let it die first.
+    stat_addr = f'tcp://127.0.0.1:{stats_port}'
+    started_event = asyncio.Event()
+
+    async def recv_init():
+        msg = (await recv())[0]
+        assert msg['status'] == 'initialized'
+        started_event.set()
+
+    t = event_loop.create_task(recv_init())
+    proc = None
+    async with stats.spawn_stat_collector(stat_addr, collection_type,
+                                          cid, started_event,
+                                          exec_opts=pipe_opts) as p:
+        proc = p
+        await container.start()
+    await t
+
+    # Let it die first!
+    await container.wait()
 
     # Proceed to receive stats.
     msg_list = []

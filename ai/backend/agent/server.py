@@ -1,4 +1,6 @@
 import asyncio
+import dataclasses
+import functools
 from ipaddress import ip_address
 import logging, logging.config
 import os, os.path
@@ -6,6 +8,7 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from typing import NamedTuple
 
@@ -21,6 +24,7 @@ import snappy
 import trafaret as t
 import uvloop
 import zmq
+from zmq.asyncio import Context as AsyncZmqContext
 try:
     import datadog
     datadog_available = True
@@ -41,7 +45,7 @@ from ai.backend.common.monitor import DummyStatsd, DummySentry
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
-from .stats import collect_stats
+from .stats import spawn_stat_collector, StatCollectorState
 from .resources import detect_slots, libnuma, CPUAllocMap
 from .kernel import KernelRunner, KernelFeatures
 
@@ -99,8 +103,13 @@ async def get_extra_volumes(docker, lang):
     return mount_list
 
 
-def get_kernel_id_from_container(val):
-    name = val['Names'][0] if isinstance(val, DockerContainer) else val
+async def get_kernel_id_from_container(val):
+    if isinstance(val, DockerContainer):
+        if 'Name' not in val._container:
+            await val.show()
+        name = val['Name']
+    elif isinstance(val, str):
+        pass
     name = name.lstrip('/')
     if not name.startswith('kernel.'):
         return None
@@ -170,7 +179,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def scan_running_containers(self):
         for container in (await self.docker.containers.list()):
-            kernel_id = get_kernel_id_from_container(container)
+            kernel_id = await get_kernel_id_from_container(container)
             if kernel_id is None:
                 continue
             if container['State'] in {'running', 'restarting', 'paused'}:
@@ -263,6 +272,41 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if runner is not None:
             await runner.close()
 
+    async def collect_stats(self):
+        context = AsyncZmqContext.instance()
+        stats_sock = await context.socket(zmq.PULL)
+        self.stats_port = stats_sock.bind_to_random_port(
+            f'tcp://{self.config.agent_host}')
+        stats_sock.setsockopt(zmq.LINGER, 1000)
+        try:
+            recv = functools.partial(stats_sock.recv_serialized,
+                                     lambda vs: [msgpack.unpackb(v) for v in vs])
+            async for msg in aiotools.aiter(lambda: recv(), None):
+                cid = msg[0]['cid']
+                status = msg[0]['status']
+                if cid not in self.stats:
+                    # If the agent has restarted, the events dict may be empty.
+                    container = await self.docker.get(cid)
+                    kernel_id = await get_kernel_id_from_container(container)
+                    self.stats[cid] = StatCollectorState(kernel_id)
+                if status == 'initialized':
+                    self.stats[cid].started.set()
+                    continue
+                print(msg[0])
+                self.stats[cid].last_stat = msg[0]['data']
+                kernel_id = self.stats[cid].kernel_id
+                pipe = self.redis_stat_pool.pipeline()
+                pipe.hmset_dict(kernel_id, msg[0]['data'])
+                pipe.expire(kernel_id, stat_cache_lifespan)
+                await pipe.execute()
+                if status == 'terminated':
+                    self.stats[cid].terminated.set()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            stats_sock.close()
+            context.term()
+
     async def init(self):
         # Show Docker version info.
         docker_version = await self.docker.version()
@@ -285,13 +329,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             zmq.PUSH, connect=f'tcp://{self.config.event_addr}')
         self.event_sock.transport.setsockopt(zmq.LINGER, 50)
 
+        # Spawn stat collector task.
+        self.stats_port = 0
+        self.stats = dict()
+        self.stat_collector_task = self.loop.create_task(self.collect_stats())
+
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
         self.monitor_handle_task = self.loop.create_task(self.monitor())
 
         # Send the first heartbeat.
         self.hb_timer    = aiotools.create_timer(self.heartbeat, 3.0)
-        self.stats_timer = aiotools.create_timer(self.update_stats, 5.0)
         self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
 
         # Start serving requests.
@@ -337,6 +385,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except Exception:
             pass
         await self.docker.close()
+
+        # Stop stat collector task.
+        self.stat_collector_task.cancel()
+        await self.stat_collector_task
 
         self.redis_stat_pool.close()
         await self.redis_stat_pool.wait_closed()
@@ -597,8 +649,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         kernel_name = f'kernel.{base_name}.{kernel_id}'
         container = await self.docker.containers.create(
             config=container_config, name=kernel_name)
+        cid = container._id
 
-        await container.start()
+        cgroup_available = (not identity.is_containerized() and
+                            sys.platform.startswith('linux'))
+        stat_addr = f'tcp://{self.config.agent_host}:{self.stats_port}'
+        stat_type = 'cgroup' if cgroup_available else 'api'
+        self.stats[cid] = StatCollectorState(kernel_id)
+        async with spawn_stat_collector(stat_addr, stat_type, cid,
+                                        self.stats[cid].started):
+            await container.start()
+
         repl_in_port  = (await container.port(2000))[0]['HostPort']
         repl_out_port = (await container.port(2001))[0]['HostPort']
         stdin_port  = (await container.port(2002))[0]['HostPort']
@@ -653,16 +714,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         container = self.docker.containers.container(cid)
         await self.clean_runner(kernel_id)
         try:
-            # last moment stats must be collected before killing the container.
-            last_stat = (await collect_stats([container]))[0]
-            if last_stat is not None:
-                pipe = self.redis_stat_pool.pipeline()
-                pipe.hmset_dict(kernel_id, last_stat)
-                pipe.expire(kernel_id, stat_cache_lifespan)
-                await pipe.execute()
             await container.kill()
+            # Collect the last-moment statistics.
+            await self.stats[cid].terminated.wait()
+            last_stat = dataclasses.asdict(self.stats[cid].last_stat)
+            del self.stats[cid]
+            # The container will be deleted in the docker monitoring coroutine.
             return last_stat
-            # the container will be deleted in the docker monitoring coroutine.
         except DockerError as e:
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
@@ -900,24 +958,6 @@ print(json.dumps(files))''' % {'path': path}
             log.exception('instance_heartbeat failure')
             self.sentry.captureException()
 
-    async def update_stats(self, interval):
-        running_kernels = [k for k in self.container_registry.keys()]
-        running_containers = [self.container_registry[k]['container_id']
-                              for k in running_kernels]
-        try:
-            stats = await collect_stats(map(self.docker.containers.container,
-                                            running_containers))
-        except asyncio.CancelledError:
-            return
-        pipe = self.redis_stat_pool.pipeline()
-        for idx, stat in enumerate(stats):
-            if stat is None:
-                continue
-            kernel_id = running_kernels[idx]
-            pipe.hmset_dict(kernel_id, stat)
-            pipe.expire(kernel_id, stat_cache_lifespan)
-        await pipe.execute()
-
     async def fetch_docker_events(self):
         while True:
             try:
@@ -964,7 +1004,7 @@ print(json.dumps(files))''' % {'path': path}
                 # When containers die, we immediately clean up them.
                 container_id = evdata['Actor']['ID']
                 container_name = evdata['Actor']['Attributes']['name']
-                kernel_id = get_kernel_id_from_container(container_name)
+                kernel_id = await get_kernel_id_from_container(container_name)
                 if kernel_id is None:
                     continue
                 try:
@@ -985,7 +1025,6 @@ print(json.dumps(files))''' % {'path': path}
             container = self.docker.containers.container(container_id)
             await self.clean_runner(kernel_id)
             try:
-                # TODO: store container logs for debugging/logging
                 await container.delete()
             except DockerError as e:
                 if e.status == 409 and 'already in progress' in e.message:
