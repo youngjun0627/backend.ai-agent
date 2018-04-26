@@ -51,7 +51,7 @@ jobs:
           source ~/virtualenv/agent/bin/activate
           pip install -U pip setuptools
           sed -i'' -e "s/{BRANCH}/$BRANCH/g" requirements-ci.txt
-          pip install -U -r requirements-ci.txt
+          pip install -U --upgrade-strategy=eager -r requirements-ci.txt
         # install backend.ai-manager from github
         - ./scripts/ci/install-manager.sh
       before_script:
