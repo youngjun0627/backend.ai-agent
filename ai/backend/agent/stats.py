@@ -175,6 +175,8 @@ async def _collect_stats_api(container):
         return None
     else:
         # API returned successfully but actually the result may be empty!
+        if ret is None:
+            return None
         if ret['preread'].startswith('0001-01-01'):
             return None
         cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6

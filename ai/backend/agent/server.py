@@ -1,5 +1,4 @@
 import asyncio
-import dataclasses
 import functools
 from ipaddress import ip_address
 import logging, logging.config
@@ -109,7 +108,7 @@ async def get_kernel_id_from_container(val):
             await val.show()
         name = val['Name']
     elif isinstance(val, str):
-        pass
+        name = val
     name = name.lstrip('/')
     if not name.startswith('kernel.'):
         return None
@@ -143,7 +142,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.monitor_fetch_task = None
         self.monitor_handle_task = None
         self.hb_timer = None
-        self.stats_timer = None
         self.clean_timer = None
 
         self.statsd = DummyStatsd()
@@ -273,8 +271,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await runner.close()
 
     async def collect_stats(self):
-        context = AsyncZmqContext.instance()
-        stats_sock = await context.socket(zmq.PULL)
+        context = AsyncZmqContext()
+        stats_sock = context.socket(zmq.PULL)
         self.stats_port = stats_sock.bind_to_random_port(
             f'tcp://{self.config.agent_host}')
         stats_sock.setsockopt(zmq.LINGER, 1000)
@@ -292,7 +290,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 if status == 'initialized':
                     self.stats[cid].started.set()
                     continue
-                print(msg[0])
                 self.stats[cid].last_stat = msg[0]['data']
                 kernel_id = self.stats[cid].kernel_id
                 pipe = self.redis_stat_pool.pipeline()
@@ -369,10 +366,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Stop timers.
         self.hb_timer.cancel()
-        self.stats_timer.cancel()
         self.clean_timer.cancel()
         await self.hb_timer
-        await self.stats_timer
         await self.clean_timer
 
         # Stop event monitoring.
@@ -717,7 +712,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await container.kill()
             # Collect the last-moment statistics.
             await self.stats[cid].terminated.wait()
-            last_stat = dataclasses.asdict(self.stats[cid].last_stat)
+            last_stat = self.stats[cid].last_stat
             del self.stats[cid]
             # The container will be deleted in the docker monitoring coroutine.
             return last_stat
@@ -1101,15 +1096,20 @@ async def server_main(loop, pidx, _args):
              f'({args.inst_type}), host: {args.agent_host}')
 
     # Start RPC server.
-    agent = AgentRPCServer(args, loop=loop)
-    await agent.init()
+    try:
+        agent = AgentRPCServer(args, loop=loop)
+        await agent.init()
+    except Exception:
+        log.error('unexpected error during AgentRPCServer.init()!')
+        return
 
     # Run!
-    yield
-
-    # Shutdown.
-    log.info('shutting down...')
-    await agent.shutdown()
+    try:
+        yield
+    finally:
+        # Shutdown.
+        log.info('shutting down...')
+        await agent.shutdown()
 
 
 def main():
