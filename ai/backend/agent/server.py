@@ -23,7 +23,7 @@ import snappy
 import trafaret as t
 import uvloop
 import zmq
-from zmq.asyncio import Context as AsyncZmqContext
+import zmq.asyncio
 try:
     import datadog
     datadog_available = True
@@ -120,29 +120,42 @@ async def get_kernel_id_from_container(val):
 
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
+    __slots__ = (
+        'loop',
+        'docker', 'container_registry', 'container_cpu_map',
+        'redis_stat_pool',
+        'etcd', 'config', 'slots', 'images',
+        'rpc_server', 'event_sock',
+        'monitor_fetch_task', 'monitor_handle_task', 'stat_collector_task',
+        'hb_timer', 'clean_timer',
+        'statsd', 'sentry',
+        'restarting_kernels', 'blocking_cleans',
+    )
+
     def __init__(self, config, loop=None):
+        self.loop = loop if loop else asyncio.get_event_loop()
         self.config = config
+        self.etcd = None
+
+        self.docker = Docker()
         self.container_registry = {}
         self.container_cpu_map = CPUAllocMap()
-
-        self.loop = loop if loop else asyncio.get_event_loop()
-        self.docker = Docker()
+        self.config.redis_addr = None
+        self.redis_stat_pool = None
 
         self.restarting_kernels = {}
         self.blocking_cleans = {}
 
-        self.etcd = None
-        self.config.redis_addr = None
-
         self.slots = detect_slots()
         self.images = set()
 
-        self.server = None
+        self.rpc_server = None
         self.event_sock = None
         self.monitor_fetch_task = None
         self.monitor_handle_task = None
         self.hb_timer = None
         self.clean_timer = None
+        self.stat_collector_task = None
 
         self.statsd = DummyStatsd()
         self.sentry = DummySentry()
@@ -180,30 +193,35 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             kernel_id = await get_kernel_id_from_container(container)
             if kernel_id is None:
                 continue
-            if container['State'] in {'running', 'restarting', 'paused'}:
+            # NOTE: get_kernel_id_from_containers already performs .show() on
+            #       the returned container objects.
+            status = container['State']['Status']
+            if status in {'running', 'restarting', 'paused'}:
                 log.info(f'detected running kernel: {kernel_id}')
-                ports = {}
-                for item in container['Ports']:
-                    ports[item['PrivatePort']] = item['PublicPort']
-                labels = container['Labels']
-                # NOTE: this changes the content of container incompatibly.
-                details = await container.show()
+                image = container['Config']['Image']
+                labels = container['Config']['Labels']
+                ports = container['NetworkSettings']['Ports']
+                port_map = {}
+                for private_port, host_ports in ports.items():
+                    private_port = int(private_port.split('/')[0])
+                    public_port = int(host_ports[0]['HostPort'])
+                    port_map[private_port] = public_port
                 cpu_set = set(
-                    map(int, (details['HostConfig']['CpusetCpus']).split(',')))
+                    map(int, (container['HostConfig']['CpusetCpus']).split(',')))
                 self.container_cpu_map.update(cpu_set)
                 if self.config.kernel_host_override:
                     kernel_host = self.config.kernel_host_override
                 else:
                     kernel_host = '127.0.0.1'
                 self.container_registry[kernel_id] = {
-                    'lang': container['Image'],
+                    'lang': image[14:],  # len('lablup/kernel-')
                     'version': int(labels['io.sorna.version']),
                     'container_id': container._id,
                     'kernel_host': kernel_host,
-                    'repl_in_port': ports[2000],
-                    'repl_out_port': ports[2001],
-                    'stdin_port': ports[2002],
-                    'stdout_port': ports[2003],
+                    'repl_in_port': port_map[2000],
+                    'repl_out_port': port_map[2001],
+                    'stdin_port': port_map[2002],
+                    'stdout_port': port_map[2003],
                     'numa_node': libnuma.node_of_cpu(next(iter(cpu_set))),
                     'cpu_set': cpu_set,
                     'gpu_set': [],  # TODO: implement (using labels?)
@@ -214,7 +232,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'mounts': None,
                     'runner_tasks': set(),
                 }
-            elif container['State'] in {'exited', 'dead', 'removing'}:
+            elif status in {'exited', 'dead', 'removing'}:
                 log.info(f'detected terminated kernel: {kernel_id}')
                 await self.send_event('kernel_terminated', kernel_id,
                                       'self-terminated', None)
@@ -271,25 +289,22 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await runner.close()
 
     async def collect_stats(self):
-        context = AsyncZmqContext()
+        context = zmq.asyncio.Context()
         stats_sock = context.socket(zmq.PULL)
-        self.stats_port = stats_sock.bind_to_random_port(
-            f'tcp://{self.config.agent_host}')
         stats_sock.setsockopt(zmq.LINGER, 1000)
+        stats_sock.bind(f'tcp://{self.config.agent_host}:{self.config.stat_port}')
         try:
             recv = functools.partial(stats_sock.recv_serialized,
                                      lambda vs: [msgpack.unpackb(v) for v in vs])
             async for msg in aiotools.aiter(lambda: recv(), None):
+                print(msg)
                 cid = msg[0]['cid']
                 status = msg[0]['status']
                 if cid not in self.stats:
                     # If the agent has restarted, the events dict may be empty.
-                    container = await self.docker.get(cid)
+                    container = DockerContainer(self.docker, id=cid)
                     kernel_id = await get_kernel_id_from_container(container)
                     self.stats[cid] = StatCollectorState(kernel_id)
-                if status == 'initialized':
-                    self.stats[cid].started.set()
-                    continue
                 self.stats[cid].last_stat = msg[0]['data']
                 kernel_id = self.stats[cid].kernel_id
                 pipe = self.redis_stat_pool.pipeline()
@@ -327,7 +342,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.event_sock.transport.setsockopt(zmq.LINGER, 50)
 
         # Spawn stat collector task.
-        self.stats_port = 0
         self.stats = dict()
         self.stat_collector_task = self.loop.create_task(self.collect_stats())
 
@@ -357,24 +371,28 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.deregister_myself()
 
         # Stop receiving further requests.
-        self.rpc_server.close()
-        await self.rpc_server.wait_closed()
+        if self.rpc_server is not None:
+            self.rpc_server.close()
+            await self.rpc_server.wait_closed()
 
         # Close all pending kernel runners.
         for kernel_id in self.container_registry.keys():
             await self.clean_runner(kernel_id)
 
         # Stop timers.
-        self.hb_timer.cancel()
-        self.clean_timer.cancel()
-        await self.hb_timer
-        await self.clean_timer
+        if self.hb_timer is not None:
+            self.hb_timer.cancel()
+            await self.hb_timer
+        if self.clean_timer is not None:
+            self.clean_timer.cancel()
+            await self.clean_timer
 
         # Stop event monitoring.
-        self.monitor_fetch_task.cancel()
-        self.monitor_handle_task.cancel()
-        await self.monitor_fetch_task
-        await self.monitor_handle_task
+        if self.monitor_fetch_task is not None:
+            self.monitor_fetch_task.cancel()
+            self.monitor_handle_task.cancel()
+            await self.monitor_fetch_task
+            await self.monitor_handle_task
         try:
             await self.docker.events.stop()
         except Exception:
@@ -382,15 +400,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.docker.close()
 
         # Stop stat collector task.
-        self.stat_collector_task.cancel()
-        await self.stat_collector_task
+        if self.stat_collector_task is not None:
+            self.stat_collector_task.cancel()
+            await self.stat_collector_task
 
-        self.redis_stat_pool.close()
-        await self.redis_stat_pool.wait_closed()
+        if self.redis_stat_pool is not None:
+            self.redis_stat_pool.close()
+            await self.redis_stat_pool.wait_closed()
 
         # Notify the gateway.
-        await self.send_event('instance_terminated', 'shutdown')
-        self.event_sock.close()
+        if self.event_sock is not None:
+            await self.send_event('instance_terminated', 'shutdown')
+            self.event_sock.close()
 
     @aiotools.actxmgr
     async def handle_rpc_exception(self):
@@ -648,11 +669,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         cgroup_available = (not identity.is_containerized() and
                             sys.platform.startswith('linux'))
-        stat_addr = f'tcp://{self.config.agent_host}:{self.stats_port}'
+        stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
         stat_type = 'cgroup' if cgroup_available else 'api'
         self.stats[cid] = StatCollectorState(kernel_id)
-        async with spawn_stat_collector(stat_addr, stat_type, cid,
-                                        self.stats[cid].started):
+        async with spawn_stat_collector(stat_addr, stat_type, cid):
             await container.start()
 
         repl_in_port  = (await container.port(2000))[0]['HostPort']
@@ -711,9 +731,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             await container.kill()
             # Collect the last-moment statistics.
-            await self.stats[cid].terminated.wait()
-            last_stat = self.stats[cid].last_stat
-            del self.stats[cid]
+            last_stat = None
+            if cid in self.stats:
+                await self.stats[cid].terminated.wait()
+                last_stat = self.stats[cid].last_stat
+                del self.stats[cid]
             # The container will be deleted in the docker monitoring coroutine.
             return last_stat
         except DockerError as e:
@@ -1100,8 +1122,7 @@ async def server_main(loop, pidx, _args):
         agent = AgentRPCServer(args, loop=loop)
         await agent.init()
     except Exception:
-        log.error('unexpected error during AgentRPCServer.init()!')
-        return
+        log.exception('unexpected error during AgentRPCServer.init()!')
 
     # Run!
     try:
@@ -1128,6 +1149,10 @@ def main():
     parser.add('--agent-port', type=port_no, default=6001,
                env_var='BACKEND_AGENT_PORT',
                help='The port number to listen on.')
+    parser.add('--stat-port', type=port_no, default=6002,
+               env_var='BACKEND_STAT_PORT',
+               help='The port number to receive statistics reports from '
+                    'local containers.')
     parser.add('--etcd-addr', type=host_port_pair,
                env_var='BACKEND_ETCD_ADDR',
                default=HostPortPair(ip_address('127.0.0.1'), 2379),

@@ -13,7 +13,6 @@ import functools
 import logging
 import os
 from pathlib import Path
-import signal
 import sys
 import time
 
@@ -22,6 +21,7 @@ from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
 import aiotools
 import zmq
+import zmq.asyncio
 
 from ai.backend.common import msgpack
 from ai.backend.common.utils import nmget
@@ -76,41 +76,37 @@ class ContainerStat:
 class StatCollectorState:
     kernel_id: str
     last_stat: ContainerStat = None
-    started: asyncio.Event = field(default_factory=lambda: asyncio.Event())
     terminated: asyncio.Event = field(default_factory=lambda: asyncio.Event())
 
 
-async def notify_start(collector_pid):
-    context = zmq.asyncio.Context.instance()
-    ipc_base_path = Path('/tmp/backend.ai/ipc')
-    ipc_base_path.mkdir(parents=True, exist_ok=True)
-    signal_path = 'ipc://' + str(ipc_base_path / f'stat-start-{collector_pid}.sock')
-    signal_socket = context.socket(zmq.PAIR)
-    try:
-        signal_socket.connect(signal_path)
-        await signal_socket.send_multipart([b''])
-    finally:
-        signal_socket.close()
-
-
 @aiotools.actxmgr
-async def spawn_stat_collector(stat_addr, stat_type, cid, started_event, *,
+async def spawn_stat_collector(stat_addr, stat_type, cid, *,
                                exec_opts=None):
     # Spawn high-perf stats collector process for Linux native setups.
     # NOTE: We don't have to keep track of this process,
     #       as they will self-terminate when the container terminates.
     if exec_opts is None:
         exec_opts = {}
+
+    context = zmq.asyncio.Context()
+    ipc_base_path = Path('/tmp/backend.ai/ipc')
+    ipc_base_path.mkdir(parents=True, exist_ok=True)
+
     proc = await asyncio.create_subprocess_exec(*[
         'python', '-m', 'ai.backend.agent.stats',
         stat_addr, cid, '--type', stat_type,
     ], **exec_opts)
-    await started_event.wait()
-    started_event.clear()
+
+    signal_path = 'ipc://' + str(ipc_base_path / f'stat-start-{proc.pid}.sock')
+    signal_sock = context.socket(zmq.PAIR)
+    signal_sock.connect(signal_path)
+    await signal_sock.recv_multipart()
     try:
         yield proc
     finally:
-        await notify_start(proc.pid)
+        await signal_sock.send_multipart([b''])
+        signal_sock.close()
+        context.term()
 
 
 def _collect_stats_sysfs(container_id):
@@ -243,21 +239,8 @@ def read_sysfs(path, type_=int, default_val=0):
     return type_(Path(path).read_text().strip())
 
 
-def wait_start():
-    mypid = os.getpid()
-    ipc_base_path = Path('/tmp/backend.ai/ipc')
-    signal_path = 'ipc://' + str(ipc_base_path / f'stat-start-{mypid}.sock')
-    context = zmq.Context.instance()
-    signal_socket = context.socket(zmq.PAIR)
-    try:
-        signal_socket.bind(signal_path)
-        signal_socket.recv_multipart()
-    finally:
-        signal_socket.close()
-
-
 @contextmanager
-def join_cgroup_and_namespace(cid, initial_stat, send):
+def join_cgroup_and_namespace(cid, initial_stat, send_stat, signal_sock):
     libc = CDLL('libc.so.6', use_errno=True)
     libc.setns.errcheck = _errcheck
     mypid = os.getpid()
@@ -280,14 +263,10 @@ def join_cgroup_and_namespace(cid, initial_stat, send):
         sys.exit(1)
 
     # Notify the agent to start the container.
-    send({
-        'cid': args.cid,
-        'status': 'initialized',
-        'data': None,
-    })
+    signal_sock.send_multipart([b''])
 
     # Wait for the container to be started.
-    wait_start()
+    signal_sock.recv_multipart()
 
     try:
         procs_path = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs')
@@ -302,7 +281,7 @@ def join_cgroup_and_namespace(cid, initial_stat, send):
         print('Cannot read cgroup filesystem.\n'
               'The container did not start or may have already terminated.',
               file=sys.stderr)
-        send({
+        send_stat({
             'cid': args.cid,
             'status': 'terminated',
             'data': asdict(initial_stat),
@@ -324,7 +303,7 @@ def join_cgroup_and_namespace(cid, initial_stat, send):
         sys.exit(1)
     except (FileNotFoundError, KeyError):
         print('The container has already terminated.', file=sys.stderr)
-        send({
+        send_stat({
             'cid': args.cid,
             'status': 'terminated',
             'data': asdict(initial_stat),
@@ -351,15 +330,23 @@ def is_cgroup_running(cid):
 
 def main(args):
     context = zmq.Context.instance()
+    mypid = os.getpid()
+
+    ipc_base_path = Path('/tmp/backend.ai/ipc')
+    signal_path = 'ipc://' + str(ipc_base_path / f'stat-start-{mypid}.sock')
+    signal_sock = context.socket(zmq.PAIR)
+    signal_sock.bind(signal_path)
+
     stats_sock = context.socket(zmq.PUSH)
     stats_sock.setsockopt(zmq.LINGER, 2000)
     stats_sock.connect(args.sockaddr)
-    send = functools.partial(stats_sock.send_serialized,
+    send_stat = functools.partial(stats_sock.send_serialized,
                              serialize=lambda v: [msgpack.packb(v)])
     stat = ContainerStat()
 
     if args.type == 'cgroup':
-        with closing(stats_sock), join_cgroup_and_namespace(args.cid, stat, send):
+        with closing(stats_sock), join_cgroup_and_namespace(args.cid, stat,
+                                                            send_stat, signal_sock):
             # Agent notification is done inside join_cgroup_and_namespace
             while True:
                 new_stat = _collect_stats_sysfs(args.cid)
@@ -370,10 +357,10 @@ def main(args):
                 }
                 if is_cgroup_running(args.cid) and new_stat is not None:
                     msg['status'] = 'running'
-                    send(msg)
+                    send_stat(msg)
                 else:
                     msg['status'] = 'terminated'
-                    send(msg)
+                    send_stat(msg)
                     break
                 time.sleep(1.0)
     elif args.type == 'api':
@@ -382,13 +369,9 @@ def main(args):
         with closing(stats_sock), closing(loop):
             container = DockerContainer(docker, id=args.cid)
             # Notify the agent to start the container.
-            send({
-                'cid': args.cid,
-                'status': 'initialized',
-                'data': None,
-            })
+            signal_sock.send_multipart([b''])
             # Wait for the container to be actually started.
-            wait_start()
+            signal_sock.recv_multipart()
             while True:
                 new_stat = loop.run_until_complete(_collect_stats_api(container))
                 stat.update(new_stat)
@@ -398,14 +381,15 @@ def main(args):
                 }
                 if new_stat is not None:
                     msg['status'] = 'running'
-                    send(msg)
+                    send_stat(msg)
                 else:
                     msg['status'] = 'terminated'
-                    send(msg)
+                    send_stat(msg)
                     break
                 time.sleep(1.0)
             loop.run_until_complete(docker.close())
 
+    signal_sock.close()
     sys.exit(0)
 
 

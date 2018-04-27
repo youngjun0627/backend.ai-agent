@@ -68,21 +68,12 @@ async def test_collector(event_loop,
 
     # Spawn the collector and wait for its initialization.
     stat_addr = f'tcp://127.0.0.1:{stats_port}'
-    started_event = asyncio.Event()
 
-    async def recv_init():
-        msg = (await recv())[0]
-        assert msg['status'] == 'initialized'
-        started_event.set()
-
-    t = event_loop.create_task(recv_init())
     proc = None
-    async with stats.spawn_stat_collector(stat_addr, collection_type,
-                                          cid, started_event,
+    async with stats.spawn_stat_collector(stat_addr, collection_type, cid,
                                           exec_opts=pipe_opts) as p:
         proc = p
         await container.start()
-    await t
 
     # Proceed to receive stats.
     async def kill_after_sleep():
@@ -128,21 +119,12 @@ async def test_collector_immediate_death(event_loop,
 
     # Spawn the collector and wait for its initialization.
     stat_addr = f'tcp://127.0.0.1:{stats_port}'
-    started_event = asyncio.Event()
 
-    async def recv_init():
-        msg = (await recv())[0]
-        assert msg['status'] == 'initialized'
-        started_event.set()
-
-    t = event_loop.create_task(recv_init())
     proc = None
-    async with stats.spawn_stat_collector(stat_addr, collection_type,
-                                          cid, started_event,
+    async with stats.spawn_stat_collector(stat_addr, collection_type, cid,
                                           exec_opts=pipe_opts) as p:
         proc = p
         await container.start()
-    await t
 
     # Let it die first!
     await container.wait()
