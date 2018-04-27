@@ -80,6 +80,19 @@ class StatCollectorState:
     terminated: asyncio.Event = field(default_factory=lambda: asyncio.Event())
 
 
+async def notify_start(collector_pid):
+    context = zmq.asyncio.Context.instance()
+    ipc_base_path = Path('/tmp/backend.ai/ipc')
+    ipc_base_path.mkdir(parents=True, exist_ok=True)
+    signal_path = 'ipc://' + str(ipc_base_path / f'stat-start-{collector_pid}.sock')
+    signal_socket = context.socket(zmq.PAIR)
+    try:
+        signal_socket.connect(signal_path)
+        await signal_socket.send_multipart([b''])
+    finally:
+        signal_socket.close()
+
+
 @aiotools.actxmgr
 async def spawn_stat_collector(stat_addr, stat_type, cid, started_event, *,
                                exec_opts=None):
@@ -97,7 +110,7 @@ async def spawn_stat_collector(stat_addr, stat_type, cid, started_event, *,
     try:
         yield proc
     finally:
-        proc.send_signal(signal.SIGUSR1)
+        await notify_start(proc.pid)
 
 
 def _collect_stats_sysfs(container_id):
@@ -230,6 +243,19 @@ def read_sysfs(path, type_=int, default_val=0):
     return type_(Path(path).read_text().strip())
 
 
+def wait_start():
+    mypid = os.getpid()
+    ipc_base_path = Path('/tmp/backend.ai/ipc')
+    signal_path = 'ipc://' + str(ipc_base_path / f'stat-start-{mypid}.sock')
+    context = zmq.Context.instance()
+    signal_socket = context.socket(zmq.PAIR)
+    try:
+        signal_socket.bind(signal_path)
+        signal_socket.recv_multipart()
+    finally:
+        signal_socket.close()
+
+
 @contextmanager
 def join_cgroup_and_namespace(cid, initial_stat, send):
     libc = CDLL('libc.so.6', use_errno=True)
@@ -261,7 +287,7 @@ def join_cgroup_and_namespace(cid, initial_stat, send):
     })
 
     # Wait for the container to be started.
-    signal.pause()
+    wait_start()
 
     try:
         procs_path = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs')
@@ -330,11 +356,7 @@ def main(args):
     stats_sock.connect(args.sockaddr)
     send = functools.partial(stats_sock.send_serialized,
                              serialize=lambda v: [msgpack.packb(v)])
-
     stat = ContainerStat()
-    # Note: SIG_IGN completely ignores the signal,
-    #       and thus signal.pause() won't unblock.
-    signal.signal(signal.SIGUSR1, lambda signo, frame: None)
 
     if args.type == 'cgroup':
         with closing(stats_sock), join_cgroup_and_namespace(args.cid, stat, send):
@@ -366,7 +388,7 @@ def main(args):
                 'data': None,
             })
             # Wait for the container to be actually started.
-            signal.pause()
+            wait_start()
             while True:
                 new_stat = loop.run_until_complete(_collect_stats_api(container))
                 stat.update(new_stat)
