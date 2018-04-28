@@ -27,7 +27,7 @@ requires = [
     'requests_unixsocket',
     'trafaret>=1.0',
     'uvloop~=0.8.0',
-    'backend.ai-common~=1.3.0',
+    'backend.ai-common',
 ]
 build_requires = [
     'wheel>=0.31.0',
