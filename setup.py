@@ -30,8 +30,8 @@ requires = [
     'backend.ai-common~=1.3.0',
 ]
 build_requires = [
-    'wheel',
-    'twine',
+    'wheel>=0.31.0',
+    'twine>=1.11.0',
 ]
 test_requires = [
     'pytest>=3.1',
@@ -56,7 +56,8 @@ setup(
     name='backend.ai-agent',
     version=read_src_version(),
     description='Backend.AI Agent',
-    long_description=Path('README.rst').read_text(),
+    long_description=Path('README.md').read_text(),
+    long_description_content_type='text/markdown',
     url='https://github.com/lablup/backend.ai-agent',
     author='Lablup Inc.',
     author_email='joongi@lablup.com',
@@ -78,6 +79,7 @@ setup(
     packages=['ai.backend.agent'],
 
     python_requires='>=3.6',
+    setup_requires=['setuptools>=38.6.0'],
     install_requires=requires,
     extras_require={
         'build': build_requires,
