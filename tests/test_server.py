@@ -111,6 +111,7 @@ async def kernel_info(agent, docker):
         if cinfo and cinfo['State']['Status'] != 'removing':
             await container.delete(force=True)
 
+
 @pytest.mark.integration
 def test_ping(agent):
     ret = agent.ping('ping~')

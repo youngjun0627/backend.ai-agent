@@ -1,11 +1,10 @@
 import asyncio
-import functools
 import os
 import sys
 
 import pytest
 import zmq
-from zmq.asyncio import Context as AsyncZmqContext
+import zmq.asyncio
 
 from ai.backend.common import msgpack
 from ai.backend.agent import stats
@@ -13,13 +12,14 @@ from ai.backend.agent import stats
 
 @pytest.fixture
 def stats_server():
-    context = AsyncZmqContext.instance()
+    context = zmq.asyncio.Context()
     stats_sock = context.socket(zmq.PULL)
     stats_port = stats_sock.bind_to_random_port('tcp://127.0.0.1')
     try:
         yield stats_sock, stats_port
     finally:
         stats_sock.close()
+        context.term()
 
 
 active_collection_types = ['api']
@@ -37,6 +37,11 @@ if 'TRAVIS' in os.environ:
         'stderr': asyncio.subprocess.DEVNULL,
         'stdin': asyncio.subprocess.DEVNULL,
     }
+
+
+async def recv_deserialized(sock):
+    msg = await sock.recv_multipart()
+    return [msgpack.unpackb(v) for v in msg]
 
 
 @pytest.mark.asyncio
@@ -62,9 +67,6 @@ async def test_collector(event_loop,
 
     # Initialize the agent-side.
     stats_sock, stats_port = stats_server
-    recv = functools.partial(
-        stats_sock.recv_serialized,
-        lambda vs: [msgpack.unpackb(v) for v in vs])
 
     # Spawn the collector and wait for its initialization.
     stat_addr = f'tcp://127.0.0.1:{stats_port}'
@@ -83,7 +85,7 @@ async def test_collector(event_loop,
     t = event_loop.create_task(kill_after_sleep())
     msg_list = []
     while True:
-        msg = (await recv())[0]
+        msg = (await recv_deserialized(stats_sock))[0]
         print(msg)
         msg_list.append(msg)
         if msg['status'] == 'terminated':
@@ -113,9 +115,6 @@ async def test_collector_immediate_death(event_loop,
 
     # Initialize the agent-side.
     stats_sock, stats_port = stats_server
-    recv = functools.partial(
-        stats_sock.recv_serialized,
-        lambda vs: [msgpack.unpackb(v) for v in vs])
 
     # Spawn the collector and wait for its initialization.
     stat_addr = f'tcp://127.0.0.1:{stats_port}'
@@ -132,7 +131,7 @@ async def test_collector_immediate_death(event_loop,
     # Proceed to receive stats.
     msg_list = []
     while True:
-        msg = (await recv())[0]
+        msg = (await recv_deserialized(stats_sock))[0]
         print(msg)
         msg_list.append(msg)
         if msg['status'] == 'terminated':
