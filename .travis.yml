@@ -52,8 +52,6 @@ jobs:
           pip install -U pip setuptools
           sed -i'' -e "s/{BRANCH}/$BRANCH/g" requirements-ci.txt
           pip install -U --upgrade-strategy=eager -r requirements-ci.txt
-        # install backend.ai-manager from github
-        - ./scripts/ci/install-manager.sh
       before_script:
         # load etcd server
         - mkdir -p /tmp/etcd
@@ -72,8 +70,6 @@ jobs:
            --initial-cluster-token backendai-etcd-token
            --initial-cluster-state new
            --auto-compaction-retention 1
-        # load backend.ai-manager server
-        - ./scripts/ci/run-manager.sh
       script:
         - source ~/virtualenv/agent/bin/activate; python -m flake8 ai/backend tests
         - sudo bash -c 'source ~/virtualenv/agent/bin/activate; python -m pytest --cov=ai/backend'
