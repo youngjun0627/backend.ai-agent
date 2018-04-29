@@ -132,11 +132,11 @@ def _collect_stats_sysfs(container_id):
         for line in io_stats.splitlines():
             if line.startswith('Total '):
                 continue
-            dev, op, bytes = line.strip().split()
+            dev, op, nbytes = line.strip().split()
             if op == 'Read':
-                io_read_bytes += int(bytes)
+                io_read_bytes += int(nbytes)
             elif op == 'Write':
-                io_write_bytes += int(bytes)
+                io_write_bytes += int(nbytes)
         io_max_scratch_size = 0
         io_cur_scratch_size = 0
 

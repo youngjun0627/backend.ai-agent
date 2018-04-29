@@ -11,7 +11,7 @@ def prepare_docker_images():
         docker = aiodocker.Docker()
         images_to_pull = [
             'alpine:latest',
-            'lablup/kernel-lua:latest',
+            'lablup/kernel-lua:5.3-alpine',
             'nginx:latest',
         ]
         for img in images_to_pull:
@@ -29,12 +29,14 @@ def prepare_docker_images():
 @pytest.fixture
 def docker(event_loop, prepare_docker_images):
     docker = aiodocker.Docker()
-    yield docker
 
     async def finalize():
         await docker.close()
 
-    event_loop.run_until_complete(finalize())
+    try:
+        yield docker
+    finally:
+        event_loop.run_until_complete(finalize())
 
 
 @pytest.fixture

@@ -39,6 +39,7 @@ from ai.backend.common import utils, identity, msgpack
 from ai.backend.common.argparse import (
     port_no, HostPortPair,
     host_port_pair, positive_int)
+from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import Logger
 from ai.backend.common.monitor import DummyStatsd, DummySentry
 from . import __version__ as VERSION
@@ -140,7 +141,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.docker = Docker()
         self.container_registry = {}
         self.container_cpu_map = CPUAllocMap()
-        self.config.redis_addr = None
         self.redis_stat_pool = None
 
         self.restarting_kernels = {}
@@ -168,8 +168,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def detect_manager(self):
         log.info('detecting the manager...')
-        from ai.backend.common.etcd import AsyncEtcd
-        self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
         manager_id = await self.etcd.get('nodes/manager')
         if manager_id is None:
             log.warning('watching etcd to wait for the manager being available')
@@ -178,9 +176,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     manager_id = ev.value
                     break
         log.info(f'detecting the manager: OK ({manager_id})')
-        self.config.redis_addr = host_port_pair(await self.etcd.get('nodes/redis'))
-        self.config.event_addr = host_port_pair(
-            await self.etcd.get('nodes/manager/event_addr'))
+
+    async def read_etcd_configs(self):
+        print('read_etcd_configs', self.config.redis_addr)
+        print('read_etcd_configs', self.config.event_addr)
+        if self.config.redis_addr is None:
+            self.config.redis_addr = host_port_pair(
+                await self.etcd.get('nodes/redis'))
+        if self.config.event_addr is None:
+            self.config.event_addr = host_port_pair(
+                await self.etcd.get('nodes/manager/event_addr'))
         log.info(f'configured redis_addr: {self.config.redis_addr}')
         log.info(f'configured event_addr: {self.config.event_addr}')
         vfolder_mount = await self.etcd.get('volumes/_mount')
@@ -302,7 +307,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 status = msg[0]['status']
                 if cid not in self.stats:
                     # If the agent has restarted, the events dict may be empty.
-                    container = DockerContainer(self.docker, id=cid)
+                    container = self.docker.containers.container(cid)
                     kernel_id = await get_kernel_id_from_container(container)
                     self.stats[cid] = StatCollectorState(kernel_id)
                 self.stats[cid].last_stat = msg[0]['data']
@@ -319,13 +324,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             stats_sock.close()
             context.term()
 
-    async def init(self):
+    async def init(self, *, skip_detect_manager=False):
         # Show Docker version info.
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}'
                  .format(docker_version['Version'], docker_version['ApiVersion']))
 
-        await self.detect_manager()
+        self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
+        if not skip_detect_manager:
+            await self.detect_manager()
+        await self.read_etcd_configs()
         await self.update_status('starting')
         await self.scan_images()
         await self.scan_running_containers()
@@ -354,7 +362,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
 
         # Start serving requests.
-        agent_addr = 'tcp://*:{}'.format(self.config.agent_port)
+        agent_addr = f'tcp://*:{self.config.agent_port}'
         self.rpc_server = await aiozmq.rpc.serve_rpc(self, bind=agent_addr)
         self.rpc_server.transport.setsockopt(zmq.LINGER, 200)
         log.info('serving at {0}'.format(agent_addr))
