@@ -255,7 +255,7 @@ def join_cgroup_and_namespace(cid, initial_stat, send_stat, signal_sock):
         for cgroup in cgroups:
             cg_path = Path(f'/sys/fs/cgroup/{cgroup}/docker/{cid}')
             cg_path.mkdir(parents=True, exist_ok=True)
-            cgtasks_path = Path(f'/sys/fs/cgroup/{cgroup}/docker/{cid}/tasks')
+            cgtasks_path = Path(f'/sys/fs/cgroup/{cgroup}/docker/{cid}/cgroup.procs')
             cgtasks_path.write_text(str(mypid))
     except PermissionError:
         print('Cannot write cgroup filesystem due to permission error!',
@@ -315,7 +315,7 @@ def join_cgroup_and_namespace(cid, initial_stat, send_stat, signal_sock):
     finally:
         # Move to the parent cgroup and self-remove the container cgroup
         for cgroup in cgroups:
-            Path(f'/sys/fs/cgroup/{cgroup}/tasks').write_text(str(mypid))
+            Path(f'/sys/fs/cgroup/{cgroup}/cgorup.procs').write_text(str(mypid))
             try:
                 os.rmdir(f'/sys/fs/cgroup/{cgroup}/docker/{cid}')
             except OSError:
@@ -323,7 +323,7 @@ def join_cgroup_and_namespace(cid, initial_stat, send_stat, signal_sock):
 
 
 def is_cgroup_running(cid):
-    pids = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/tasks').read_text()
+    pids = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs').read_text()
     pids = numeric_list(pids)
     return (len(pids) > 1)
 

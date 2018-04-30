@@ -44,6 +44,29 @@ async def recv_deserialized(sock):
     return [msgpack.unpackb(v) for v in msg]
 
 
+def test_numeric_list():
+    s = '1 3 5 7'
+    ret = stats.numeric_list(s)
+    assert ret == [1, 3, 5, 7]
+
+    s = ''
+    ret = stats.numeric_list(s)
+    assert ret == []
+
+    s = '123\n456'
+    ret = stats.numeric_list(s)
+    assert ret == [123, 456]
+
+
+def test_read_sysfs(tmpdir):
+    p = tmpdir.join('test.txt')
+    p.write('1357')
+    ret = stats.read_sysfs(p)
+
+    assert isinstance(ret, int)
+    assert ret == 1357
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('collection_type', active_collection_types)
 async def test_collector(event_loop,
@@ -143,26 +166,3 @@ async def test_collector_immediate_death(event_loop,
     assert len(msg_list) >= 1
     assert msg_list[0]['cid'] == cid
     assert msg_list[0]['data'] is not None
-
-
-def test_numeric_list():
-    s = '1 3 5 7'
-    ret = stats.numeric_list(s)
-    assert ret == [1, 3, 5, 7]
-
-    s = ''
-    ret = stats.numeric_list(s)
-    assert ret == []
-
-    s = '123\n456'
-    ret = stats.numeric_list(s)
-    assert ret == [123, 456]
-
-
-def test_read_sysfs(tmpdir):
-    p = tmpdir.join('test.txt')
-    p.write('1357')
-    ret = stats.read_sysfs(p)
-
-    assert isinstance(ret, int)
-    assert ret == 1357
