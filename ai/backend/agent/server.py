@@ -178,10 +178,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info(f'detecting the manager: OK ({manager_id})')
 
     async def read_etcd_configs(self):
-        if self.config.redis_addr is None:
+        if not hasattr(self.config, 'redis_addr') or self.config.redis_addr is None:
             self.config.redis_addr = host_port_pair(
                 await self.etcd.get('nodes/redis'))
-        if self.config.event_addr is None:
+        if not hasattr(self.config, 'event_addr') or self.config.event_addr is None:
             self.config.event_addr = host_port_pair(
                 await self.etcd.get('nodes/manager/event_addr'))
         log.info(f'configured redis_addr: {self.config.redis_addr}')
