@@ -178,8 +178,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info(f'detecting the manager: OK ({manager_id})')
 
     async def read_etcd_configs(self):
-        print('read_etcd_configs', self.config.redis_addr)
-        print('read_etcd_configs', self.config.event_addr)
         if self.config.redis_addr is None:
             self.config.redis_addr = host_port_pair(
                 await self.etcd.get('nodes/redis'))
@@ -302,7 +300,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             recv = functools.partial(stats_sock.recv_serialized,
                                      lambda vs: [msgpack.unpackb(v) for v in vs])
             async for msg in aiotools.aiter(lambda: recv(), None):
-                print(msg)
                 cid = msg[0]['cid']
                 status = msg[0]['status']
                 if cid not in self.stats:
