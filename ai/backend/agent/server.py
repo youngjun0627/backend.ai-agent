@@ -900,11 +900,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Limit file path to /home/work inside a container.
         # TODO: extend path search in virtual folders.
         abspath = os.path.abspath(os.path.join('/home/work', filepath))
-        with await container.get_archive(abspath) as tarobj:
-            tarobj.fileobj.seek(0, 2)
-            fsize = tarobj.fileobj.tell()
-            assert fsize < 1 * 1048576, 'too large file.'
-            tarbytes = tarobj.fileobj.getvalue()
+        try:
+            with await container.get_archive(abspath) as tarobj:
+                tarobj.fileobj.seek(0, 2)
+                fsize = tarobj.fileobj.tell()
+                assert fsize < 1 * 1048576, 'too large file.'
+                tarbytes = tarobj.fileobj.getvalue()
+        except DockerError:
+            log.warning(f'Could not found the file: {abspath}')
+            raise FileNotFoundError(f'Could not found the file: {abspath}')
         return tarbytes
 
     async def _list_files(self, kernel_id: str, path: str):
