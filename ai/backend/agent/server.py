@@ -903,10 +903,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         with await container.get_archive(abspath) as tarobj:
             tarobj.fileobj.seek(0, 2)
             fsize = tarobj.fileobj.tell()
-            if fsize > 10 * 1048576:
-                tarbytes = b''
-            else:
-                tarbytes = tarobj.fileobj.getvalue()
+            assert fsize < 1 * 1048576, 'too large file.'
+            tarbytes = tarobj.fileobj.getvalue()
         return tarbytes
 
     async def _list_files(self, kernel_id: str, path: str):
