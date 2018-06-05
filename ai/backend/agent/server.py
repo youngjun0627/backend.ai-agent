@@ -490,8 +490,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
         kernel_features = set(image_labels.get('io.sorna.features', '').split())
 
-        work_dir = self.config.scratch_root / kernel_id
-        config_dir = self.config.scratch_root / kernel_id / '.config'
+        work_dir = (self.config.scratch_root / kernel_id).resolve()
+        config_dir = (self.config.scratch_root / kernel_id / '.config').resolve()
 
         if not restarting:
             os.makedirs(work_dir)
