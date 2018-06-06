@@ -348,6 +348,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             yield
         except AssertionError:
+            log.exception('assertion failure')
             raise
         except Exception:
             log.exception('unexpected error')
@@ -668,9 +669,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.exception(f'_destroy_kernel({kernel_id}) unexpected error')
             self.sentry.captureException()
 
-    async def _ensure_runner(self, kernel_id):
+    async def _ensure_runner(self, kernel_id, *, api_version=3):
         # TODO: clean up
-        api_version = 3
         runner = self.container_registry[kernel_id].get('runner')
         if runner is not None:
             log.debug(f'_execute_code:v{api_version}({kernel_id}) use '
@@ -706,7 +706,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
                                '(might be terminated)') from None
 
-        runner = await self._ensure_runner(kernel_id)
+        runner = await self._ensure_runner(kernel_id, api_version=api_version)
 
         try:
             myself = asyncio.Task.current_task()
