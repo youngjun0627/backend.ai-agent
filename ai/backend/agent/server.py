@@ -577,20 +577,23 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
         kernel_features = set(image_labels.get('io.sorna.features', '').split())
 
-        work_dir = self.config.scratch_root / kernel_id
-        config_dir = self.config.scratch_root / kernel_id / '.config'
+        work_dir = (self.config.scratch_root / kernel_id / '.work').resolve()
+        config_dir = (self.config.scratch_root / kernel_id / '.config').resolve()
 
         if not restarting:
             os.makedirs(work_dir)
             os.makedirs(config_dir)
             # Store custom environment variables for kernel runner.
             if environ:
-                try:
-                    with open(config_dir / 'environ.txt', 'w') as f:
-                        for k, v in environ.items():
-                            print(f'{k}={v}', file=f)
-                except IOError:
-                    pass
+                with open(config_dir / 'environ.txt', 'w') as f:
+                    for k, v in environ.items():
+                        print(f'{k}={v}', file=f)
+            with open(config_dir / 'gpu.txt', 'w') as f:
+                # TODO: let users and the scheduler decide these limits
+                gpu_mem_limit = 4 * (2 ** 30)  # 4 GiB in bytes
+                gpu_proc_limit = 4             # 4 SMP
+                print(f'GPU_MEMORY_LIMIT={gpu_mem_limit}', file=f)
+                print(f'GPU_PROCESSOR_LIMIT={gpu_proc_limit}', file=f)
 
         cpu_set = config.get('cpu_set')
         if cpu_set is None:
@@ -610,7 +613,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                   f'cores={cpu_set!r}@{numa_node}')
 
         mount_list = await get_extra_volumes(self.docker, lang)
-        binds = [f'{work_dir}:/home/work:rw']
+        binds = [
+            f'{config_dir}:/home/work/.config:ro',
+            f'{work_dir}:/home/work:rw',
+        ]
         binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
                      for v in mount_list)
         volumes = ['/home/work']
@@ -635,7 +641,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             # TODO: allocation of mulitple GPUs
             # TODO: update gpu_set
             nvidia_enabled = image_labels.get('io.sorna.nvidia.enabled', 'no')
-            assert nvidia_enabled == 'yes'
+            assert nvidia_enabled == 'yes', 'Image does not have NVIDIA-enabled tag!'
             extra_binds, extra_devices = \
                 await prepare_nvidia(self.docker, numa_node)
             binds.extend(extra_binds)
