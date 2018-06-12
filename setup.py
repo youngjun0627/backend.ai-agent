@@ -14,7 +14,7 @@ requires = [
     'ConfigArgParse==0.12',
     'coloredlogs>=5.2',
     'dataclasses; python_version<"3.7"',
-    'pyzmq>=16.0',
+    'pyzmq>=17.0',
     'aiodocker',
     'aiozmq>=0.7',
     'aiohttp~=3.3.0',
@@ -29,7 +29,7 @@ requires = [
     'requests',
     'requests_unixsocket',
     'trafaret>=1.0',
-    'uvloop~=0.8.0',
+    'uvloop~=0.10.0',
     'backend.ai-common',
 ]
 build_requires = [
@@ -37,7 +37,7 @@ build_requires = [
     'twine>=1.11.0',
 ]
 test_requires = [
-    'pytest>=3.1',
+    'pytest>=3.6',
     'pytest-asyncio',
     'pytest-cov',
     'pytest-mock',
