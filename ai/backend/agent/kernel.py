@@ -195,7 +195,7 @@ class KernelRunner:
             result['media'] = media_items
             result['html'] = html_items
 
-        elif api_ver == 2:
+        elif api_ver in (2, 3):
 
             console_items = []
             last_stdout = io.StringIO()

@@ -11,15 +11,18 @@ def read_src_version():
 
 
 requires = [
+    'ConfigArgParse==0.12',
+    'coloredlogs>=5.2',
+    'dataclasses; python_version<"3.7"',
+    'pyzmq>=16.0',
     'aiodocker',
     'aiozmq>=0.7',
-    'aiohttp~=3.1.0',
+    'aiohttp~=3.3.0',
     'aioredis~=1.0.0',
     'aiobotocore>=0.3.0',
-    'aiotools>=0.5.4',
-    'async_timeout>=2.0',
-    'ConfigArgParse==0.12',
-    'dataclasses; python_version<"3.7"',
+    'aiotools>=0.6.0',
+    'async_timeout~=3.0',
+    'attrs>=18.0',  # to avoid pip 10 resolver issue
     'psutil~=5.4.0',
     'python-snappy~=0.5.1',
     'pyzmq>=17.0',
