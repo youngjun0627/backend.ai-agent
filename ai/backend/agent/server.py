@@ -791,10 +791,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return runner
 
     async def _execute(self, api_version, kernel_id, run_id, mode, text, opts):
-        work_dir = self.config.scratch_root / kernel_id
         # Save kernel-generated output files in a separate sub-directory
         # (to distinguish from user-uploaded files)
-        output_dir = work_dir / '.output'
+        output_dir = self.config.scratch_root / kernel_id / '.work' / '.output'
 
         restart_tracker = self.restarting_kernels.get(kernel_id)
         if restart_tracker:
@@ -882,7 +881,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _accept_file(self, kernel_id, filename, filedata):
         loop = asyncio.get_event_loop()
-        work_dir = self.config.scratch_root / kernel_id
+        work_dir = self.config.scratch_root / kernel_id / '.work'
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
@@ -1068,9 +1067,9 @@ print(json.dumps(files))''' % {'path': path}
         if kernel_id in self.restarting_kernels:
             self.restarting_kernels[kernel_id].destroy_event.set()
         else:
-            work_dir = self.config.scratch_root / kernel_id
+            scratch_dir = self.config.scratch_root / kernel_id
             try:
-                shutil.rmtree(work_dir)
+                shutil.rmtree(scratch_dir)
             except FileNotFoundError:
                 pass
             try:
