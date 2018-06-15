@@ -634,7 +634,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Mount the external kernel runner source code directly.
         if self.config.debug_kernel is not None:
             container_pkg_path = ('/usr/local/lib/python3.6/'
-                                  'site-packages/ai/backend/kernel')
+                                  'site-packages/ai/backend/')
             volumes.append(container_pkg_path)
             binds.append(f'{self.config.debug_kernel}:{container_pkg_path}:ro')
 
@@ -1206,7 +1206,7 @@ def main():
         )
 
     if args.debug_kernel is not None:
-        assert args.debug_kernel.match('ai/backend/kernel'), \
+        assert args.debug_kernel.match('ai/backend'), \
                'debug-kernel path must end with "ai/backend/kernel".'
 
     logger = Logger(args)
