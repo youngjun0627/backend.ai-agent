@@ -671,7 +671,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'HostConfig': {
                 'MemorySwap': 0,
                 'Memory': utils.readable_size_to_bytes(mem_limit),
-                'Cpus': fnum_cores,
+                # 'Cpus': fnum_cores,  # seems not working
+                'CpuPeriod': 100000,  # docker default
+                'CpuQuota': int(100000 * fnum_cores),
                 'CpusetCpus': cpu_set_str,
                 'CpusetMems': f'{numa_node}',
                 'SecurityOpt': ['seccomp=unconfined'],
