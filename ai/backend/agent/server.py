@@ -572,7 +572,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Read labels and configs
         version        = int(image_labels.get('io.sorna.version', '1'))
-        mem_limit      = f"{limits['mem_slot'] * 256}m"
+        # mem_limit      = f"{limits['mem_slot'] * 256}m"
+        mem_limit      = f"{limits['mem_slot']}m"  # mem_slot in MiB
         exec_timeout   = int(image_labels.get('io.sorna.timeout', '10'))
         envs_corecount = image_labels.get('io.sorna.envs.corecount', '')
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
@@ -604,6 +605,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         else:
             num_cores = len(cpu_set)
             numa_node = libnuma.node_of_cpu(next(iter(cpu_set)))
+        if limits['cpu_slot'] < self.container_cpu_map.num_cores and \
+                limits['cpu_slot'] < num_cores + 1:
+            fnum_cores = limits['cpu_slot']
+        else:
+            fnum_cores = num_cores
 
         cpu_set_str = ','.join(map(str, sorted(cpu_set)))
         environ.update({k: str(num_cores) for k in envs_corecount})
@@ -665,6 +671,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'HostConfig': {
                 'MemorySwap': 0,
                 'Memory': utils.readable_size_to_bytes(mem_limit),
+                'Cpus': fnum_cores,
                 'CpusetCpus': cpu_set_str,
                 'CpusetMems': f'{numa_node}',
                 'SecurityOpt': ['seccomp=unconfined'],
