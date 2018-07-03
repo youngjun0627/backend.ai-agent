@@ -591,9 +591,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     for k, v in environ.items():
                         print(f'{k}={v}', file=f)
             with open(config_dir / 'gpu.txt', 'w') as f:
-                # TODO: let users and the scheduler decide these limits
-                gpu_mem_limit = 4 * (2 ** 30)  # 4 GiB in bytes
-                gpu_proc_limit = 4             # 4 SMP
+                # 1 vGPU slot = 10 SM + 8 GiB vRAM
+                gpu_mem_limit = int((8 * (2 ** 30)) * limits['gpu_slot'])
+                gpu_proc_limit = int(10 * limits['gpu_slot'])
                 print(f'GPU_MEMORY_LIMIT={gpu_mem_limit}', file=f)
                 print(f'GPU_PROCESSOR_LIMIT={gpu_proc_limit}', file=f)
 
