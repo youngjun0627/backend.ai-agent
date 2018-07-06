@@ -315,7 +315,7 @@ def join_cgroup_and_namespace(cid, initial_stat, send_stat, signal_sock):
     finally:
         # Move to the parent cgroup and self-remove the container cgroup
         for cgroup in cgroups:
-            Path(f'/sys/fs/cgroup/{cgroup}/cgorup.procs').write_text(str(mypid))
+            Path(f'/sys/fs/cgroup/{cgroup}/cgroup.procs').write_text(str(mypid))
             try:
                 os.rmdir(f'/sys/fs/cgroup/{cgroup}/docker/{cid}')
             except OSError:
