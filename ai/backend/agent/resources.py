@@ -52,9 +52,11 @@ class libnuma:
                 return {idx for idx in range(os.cpu_count())}
 
     @staticmethod
-    def get_core_topology():
+    def get_core_topology(limit_cpus=None):
         topo = tuple([] for _ in range(libnuma.num_nodes()))
         for c in libnuma.get_available_cores():
+            if limit_cpus is not None and c not in limit_cpus:
+                continue
             n = libnuma.node_of_cpu(c)
             topo[n].append(c)
         return topo
@@ -62,13 +64,19 @@ class libnuma:
 
 class CPUAllocMap:
 
-    def __init__(self):
-        self.core_topo = libnuma.get_core_topology()
+    def __init__(self, limit_cpus=None):
+        self.limit_cpus = limit_cpus
+        self.core_topo = libnuma.get_core_topology(limit_cpus)
         self.num_cores = len(libnuma.get_available_cores())
+        if limit_cpus is not None:
+            self.num_cores = min(self.num_cores, len(limit_cpus))
+        assert sum(len(node) for node in self.core_topo) == self.num_cores
         self.num_nodes = libnuma.num_nodes()
-        self.alloc_per_node = [0 for _ in range(self.num_nodes)]
-        self.core_shares = tuple([0 for _ in self.core_topo[node]]
+        self.core_shares = tuple({c: 0 for c in self.core_topo[node]
+                                 if limit_cpus is None or c in limit_cpus}
                                  for node in range(self.num_nodes))
+        self.alloc_per_node = {n: 0 for n in range(self.num_nodes)
+                               if len(self.core_shares[n]) > 0}
 
     def alloc(self, num_cores):
         '''
@@ -77,17 +85,19 @@ class CPUAllocMap:
         This method guarantees that all cores are alloacted within the same
         NUMA node.
         '''
-        node, current_alloc = min(enumerate(self.alloc_per_node),
-                                  key=operator.itemgetter(1))
+        node, current_alloc = min(
+            ((n, alloc) for n, alloc in self.alloc_per_node.items()),
+            key=operator.itemgetter(1))
         self.alloc_per_node[node] = current_alloc + num_cores
 
         shares = self.core_shares[node].copy()
         allocated_cores = set()
         for _ in range(num_cores):
-            core_idx, _ = min(enumerate(shares), key=operator.itemgetter(1))
-            allocated_cores.add(self.core_topo[node][core_idx])
-            shares[core_idx] = sys.maxsize   # prune allocated one
-            self.core_shares[node][core_idx] += 1  # update the original share
+            core, share = min(((core, share) for core, share in shares.items()),
+                              key=operator.itemgetter(1))
+            allocated_cores.add(core)
+            shares[core] = sys.maxsize   # prune allocated one
+            self.core_shares[node][core] += 1  # update the original share
         return node, allocated_cores
 
     def update(self, core_set):
@@ -98,8 +108,7 @@ class CPUAllocMap:
         node = libnuma.node_of_cpu(any_core)
         self.alloc_per_node[node] += len(core_set)
         for c in core_set:
-            core_idx = self.core_topo[node].index(c)
-            self.core_shares[node][core_idx] += 1
+            self.core_shares[node][c] += 1
 
     def free(self, core_set):
         '''
@@ -110,8 +119,7 @@ class CPUAllocMap:
         node = libnuma.node_of_cpu(any_core)
         self.alloc_per_node[node] -= len(core_set)
         for c in core_set:
-            core_idx = self.core_topo[node].index(c)
-            self.core_shares[node][core_idx] -= 1
+            self.core_shares[node][c] -= 1
 
 
 def gpu_count():
@@ -128,14 +136,29 @@ def gpu_count():
     return len(gpu_info['Devices'])
 
 
-def detect_slots():
+def bitmask2set(mask):
+    bpos = 0
+    bset = []
+    while mask > 0:
+        if (mask & 1) == 1:
+            bset.append(bpos)
+        mask = (mask >> 1)
+        bpos += 1
+    return frozenset(bset)
+
+
+def detect_slots(limit_cpus, limit_gpus):
     '''
     Detect available resource of the system and calculate mem/cpu/gpu slots.
     '''
 
     mem_bytes = psutil.virtual_memory().total
     num_cores = len(libnuma.get_available_cores())
+    if limit_cpus is not None:
+        num_cores = min(num_cores, len(limit_cpus))
     num_gpus = gpu_count()
+    if limit_gpus is not None:
+        num_gpus = min(num_gpus, len(limit_gpus))
     return (
         mem_bytes >> 20,  # MiB
         num_cores,        # core count

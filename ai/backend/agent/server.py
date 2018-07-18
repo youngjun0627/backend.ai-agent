@@ -46,7 +46,7 @@ from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .gpu import prepare_nvidia
 from .stats import spawn_stat_collector, StatCollectorState
-from .resources import detect_slots, libnuma, CPUAllocMap
+from .resources import bitmask2set, detect_slots, libnuma, CPUAllocMap
 from .kernel import KernelRunner, KernelFeatures
 
 log = logging.getLogger('ai.backend.agent.server')
@@ -140,13 +140,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.docker = Docker()
         self.container_registry = {}
-        self.container_cpu_map = CPUAllocMap()
+        self.container_cpu_map = CPUAllocMap(config.limit_cpus)
         self.redis_stat_pool = None
 
         self.restarting_kernels = {}
         self.blocking_cleans = {}
 
-        self.slots = detect_slots()
+        self.slots = detect_slots(config.limit_cpus, config.limit_gpus)
         self.images = set()
 
         self.rpc_server = None
@@ -650,7 +650,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             nvidia_enabled = image_labels.get('io.sorna.nvidia.enabled', 'no')
             assert nvidia_enabled == 'yes', 'Image does not have NVIDIA-enabled tag!'
             extra_binds, extra_devices = \
-                await prepare_nvidia(self.docker, numa_node)
+                await prepare_nvidia(self.docker, numa_node, self.config.limit_gpus)
             binds.extend(extra_binds)
             devices.extend(extra_devices)
 
@@ -1188,6 +1188,12 @@ def main():
                     'the latest kernel runner code with immediate changes.')
     parser.add('--kernel-aliases', type=str, default=None,
                help='The filename for additional kernel aliases')
+    parser.add('--limit-cpus', type=str, default=None,
+               help='The hexademical mask to limit available CPUs '
+                    'reported to the manager (default: not limited)')
+    parser.add('--limit-gpus', type=str, default=None,
+               help='The hexademical mask to limit available GPUs '
+                    'reported to the manager (default: not limited)')
     parser.add('--scratch-root', type=Path,
                default=Path('/var/cache/scratches'),
                env_var='BACKEND_SCRATCH_ROOT',
@@ -1217,6 +1223,13 @@ def main():
     if args.debug_kernel is not None:
         assert args.debug_kernel.match('ai/backend'), \
                'debug-kernel path must end with "ai/backend/kernel".'
+
+    if args.limit_cpus is not None:
+        args.limit_cpus = int(args.limit_cpus, 16)
+        args.limit_cpus = bitmask2set(args.limit_cpus)
+    if args.limit_gpus is not None:
+        args.limit_gpus = int(args.limit_gpus, 16)
+        args.limit_gpus = bitmask2set(args.limit_gpus)
 
     logger = Logger(args)
     logger.add_pkg('aiodocker')

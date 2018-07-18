@@ -99,51 +99,51 @@ class TestCPUAllocMap:
         assert cpu_alloc_map.core_topo == ([0, 3], [1], [2])
         assert cpu_alloc_map.num_cores == 4
         assert cpu_alloc_map.num_nodes == 3
-        assert cpu_alloc_map.alloc_per_node == [0, 0, 0]
-        assert cpu_alloc_map.core_shares == ([0, 0], [0], [0])
+        assert cpu_alloc_map.alloc_per_node == {0: 0, 1: 0, 2: 0}
+        assert cpu_alloc_map.core_shares == ({0: 0, 3: 0}, {1: 0}, {2: 0})
 
     def test_alloc(self):
         cpu_alloc_map = self.get_cpu_alloc_map(num_nodes=3, num_cores=4)
 
-        assert cpu_alloc_map.alloc_per_node == [0, 0, 0]
-        assert cpu_alloc_map.core_shares == ([0, 0], [0], [0])
+        assert cpu_alloc_map.alloc_per_node == {0: 0, 1: 0, 2: 0}
+        assert cpu_alloc_map.core_shares == ({0: 0, 3: 0}, {1: 0}, {2: 0})
 
         assert cpu_alloc_map.alloc(3) == (0, {0, 3})
-        assert cpu_alloc_map.alloc_per_node == [3, 0, 0]
-        assert cpu_alloc_map.core_shares == ([2, 1], [0], [0])
+        assert cpu_alloc_map.alloc_per_node == {0: 3, 1: 0, 2: 0}
+        assert cpu_alloc_map.core_shares == ({0: 2, 3: 1}, {1: 0}, {2: 0})
 
         assert cpu_alloc_map.alloc(2) == (1, {1})
-        assert cpu_alloc_map.alloc_per_node == [3, 2, 0]
-        assert cpu_alloc_map.core_shares == ([2, 1], [2], [0])
+        assert cpu_alloc_map.alloc_per_node == {0: 3, 1: 2, 2: 0}
+        assert cpu_alloc_map.core_shares == ({0: 2, 3: 1}, {1: 2}, {2: 0})
 
         assert cpu_alloc_map.alloc(3) == (2, {2})
-        assert cpu_alloc_map.alloc_per_node == [3, 2, 3]
-        assert cpu_alloc_map.core_shares == ([2, 1], [2], [3])
+        assert cpu_alloc_map.alloc_per_node == {0: 3, 1: 2, 2: 3}
+        assert cpu_alloc_map.core_shares == ({0: 2, 3: 1}, {1: 2}, {2: 3})
 
         assert cpu_alloc_map.alloc(4) == (1, {1})  # 2nd node least populated
-        assert cpu_alloc_map.alloc_per_node == [3, 6, 3]
-        assert cpu_alloc_map.core_shares == ([2, 1], [6], [3])
+        assert cpu_alloc_map.alloc_per_node == {0: 3, 1: 6, 2: 3}
+        assert cpu_alloc_map.core_shares == ({0: 2, 3: 1}, {1: 6}, {2: 3})
 
     def test_free(self):
         cpu_alloc_map = self.get_cpu_alloc_map(num_nodes=3, num_cores=4)
-        cpu_alloc_map.alloc_per_node = [3, 6, 3]
-        cpu_alloc_map.core_shares = ([2, 1], [6], [3])
+        cpu_alloc_map.alloc_per_node = {0: 3, 1: 6, 2: 3}
+        cpu_alloc_map.core_shares = ({0: 2, 3: 1}, {1: 6}, {2: 3})
 
         with mock.patch.object(libnuma, 'node_of_cpu', return_value=0):
             cpu_alloc_map.free({0, 3})
-            assert cpu_alloc_map.alloc_per_node == [1, 6, 3]
-            assert cpu_alloc_map.core_shares == ([1, 0], [6], [3])
+            assert cpu_alloc_map.alloc_per_node == {0: 1, 1: 6, 2: 3}
+            assert cpu_alloc_map.core_shares == ({0: 1, 3: 0}, {1: 6}, {2: 3})
 
             cpu_alloc_map.free({0})
-            assert cpu_alloc_map.alloc_per_node == [0, 6, 3]
-            assert cpu_alloc_map.core_shares == ([0, 0], [6], [3])
+            assert cpu_alloc_map.alloc_per_node == {0: 0, 1: 6, 2: 3}
+            assert cpu_alloc_map.core_shares == ({0: 0, 3: 0}, {1: 6}, {2: 3})
 
         with mock.patch.object(libnuma, 'node_of_cpu', return_value=1):
             cpu_alloc_map.free({1})
-            assert cpu_alloc_map.alloc_per_node == [0, 5, 3]
-            assert cpu_alloc_map.core_shares == ([0, 0], [5], [3])
+            assert cpu_alloc_map.alloc_per_node == {0: 0, 1: 5, 2: 3}
+            assert cpu_alloc_map.core_shares == ({0: 0, 3: 0}, {1: 5}, {2: 3})
 
         with mock.patch.object(libnuma, 'node_of_cpu', return_value=2):
             cpu_alloc_map.free({2})
-            assert cpu_alloc_map.alloc_per_node == [0, 5, 2]
-            assert cpu_alloc_map.core_shares == ([0, 0], [5], [2])
+            assert cpu_alloc_map.alloc_per_node == {0: 0, 1: 5, 2: 2}
+            assert cpu_alloc_map.core_shares == ({0: 0, 3: 0}, {1: 5}, {2: 2})

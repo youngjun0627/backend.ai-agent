@@ -7,7 +7,7 @@ import requests
 log = logging.getLogger('ai.backend.agent.gpu')
 
 
-async def prepare_nvidia(docker, numa_node):
+async def prepare_nvidia(docker, numa_node, limit_gpus=None):
     try:
         r = requests.get('http://localhost:3476/docker/cli/json')
         nvidia_params = r.json()
@@ -38,22 +38,26 @@ async def prepare_nvidia(docker, numa_node):
                 binds.append('{}:{}:{}'.format(vol_name, mount_pt, permission))
     devices = []
     for dev in nvidia_params['Devices']:
-        if re.search(r'^/dev/nvidia\d+$', dev) is None:
+        m = re.search(r'^/dev/nvidia(\d+)$', dev)
+        if m is None:
             devices.append(dev)
-        else:
-            # Only expose GPUs in the same NUMA node.
-            for gpu in gpu_info['Devices']:
-                if gpu['Path'] == dev:
-                    try:
-                        pci_id = gpu['PCI']['BusID'].lower()
-                        pci_path = f"/sys/bus/pci/devices/{pci_id}/numa_node"
-                        gpu_node = int(Path(pci_path).read_text().strip())
-                    except FileNotFoundError:
-                        gpu_node = -1
-                    # Even when numa_node file exists, gpu_node may become -1
-                    # (e.g., Amazon p2 instances)
-                    if gpu_node == numa_node or gpu_node == -1:
-                        devices.append(dev)
+            continue
+        dev_idx = int(m.group(1))
+        if limit_gpus is not None and dev_idx not in limit_gpus:
+            continue
+        # Only expose GPUs in the same NUMA node.
+        for gpu in gpu_info['Devices']:
+            if gpu['Path'] == dev:
+                try:
+                    pci_id = gpu['PCI']['BusID'].lower()
+                    pci_path = f"/sys/bus/pci/devices/{pci_id}/numa_node"
+                    gpu_node = int(Path(pci_path).read_text().strip())
+                except FileNotFoundError:
+                    gpu_node = -1
+                # Even when numa_node file exists, gpu_node may become -1
+                # (e.g., Amazon p2 instances)
+                if gpu_node == numa_node or gpu_node == -1:
+                    devices.append(dev)
     devices = [{
         'PathOnHost': dev,
         'PathInContainer': dev,
