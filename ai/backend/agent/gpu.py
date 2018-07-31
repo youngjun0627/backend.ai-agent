@@ -134,7 +134,9 @@ class CUDAAccelerator(AbstractAccelerator):
                 if limit_gpus is None or dev_idx in limit_gpus:
                     gpus.append(dev_idx)
             return {
-                'Runtime': 'nvidia',
+                'HostConfig': {
+                    'Runtime': 'nvidia',
+                },
                 'Env': [
                     f"NVIDIA_VISIBLE_DEVICES={','.join(map(str, gpus))}",
                 ],
