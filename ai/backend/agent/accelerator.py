@@ -1,7 +1,7 @@
 from abc import abstractmethod, ABCMeta
 from typing import Any, Collection, Container, Hashable, Mapping, Sequence, TypeVar
 
-ProcessorIdType = TypeVar('ProcessorIdType', Hashable)
+ProcessorIdType = TypeVar('ProcessorIdType', int, str, Hashable)
 
 
 class AbstractAccelerator(metaclass=ABCMeta):
