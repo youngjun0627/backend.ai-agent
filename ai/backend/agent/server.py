@@ -1,5 +1,4 @@
 import asyncio
-from decimal import Decimal
 import functools
 from ipaddress import ip_address
 import logging, logging.config
@@ -48,10 +47,13 @@ from .files import scandir, upload_output_files_to_s3
 from .gpu import CUDAAccelerator
 from .stats import spawn_stat_collector, StatCollectorState
 from .resources import (
-    bitmask2set, detect_slots, libnuma,
-    CPUAllocMap, ProcessorAllocMap)
+    bitmask2set, detect_slots,
+    CPUAllocMap,
+    # ProcessorAllocMap,
+)
 from .kernel import KernelRunner, KernelFeatures
 from .utils import update_nested_dict
+from .vendor.linux import libnuma
 
 log = logging.getLogger('ai.backend.agent.server')
 
@@ -151,8 +153,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.slots = detect_slots(config.limit_cpus, config.limit_gpus)
         self.container_cpu_map = CPUAllocMap(config.limit_cpus)
-        self.container_gpu_map = ProcessorAllocMap(
-            config.limit_gpus, max_share_per_processor=Decimal('1.0'))
+        # TODO: implement
+        # self.container_gpu_map = ProcessorAllocMap(
+        #     config.limit_gpus, max_share_per_processor=Decimal('1.0'))
         self.images = set()
 
         self.rpc_server = None
@@ -652,7 +655,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         if limits['gpu_slot'] > 0.0:
             # TODO: allocation of mulitple GPUs
-            node, gpus = self.container_gpu_map.alloc_by_share(limits['gpu_slot'])
+            # node, gpus = self.container_gpu_map.alloc_by_share(limits['gpu_slot'])
             # TODO: generalize CUDAAccelerator
             accel_args = await CUDAAccelerator.generate_docker_args(
                 self.docker, numa_node, self.config.limit_gpus)

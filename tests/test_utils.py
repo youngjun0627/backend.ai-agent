@@ -36,3 +36,11 @@ def test_update_nested_dict():
         'y': 4,
     }
     assert o['b'] == 5
+
+    o = {
+        'a': [1, 2],
+        'b': 3,
+    }
+    utils.update_nested_dict(o, {'a': [4, 5], 'b': 6})
+    assert o['a'] == [1, 2, 4, 5]
+    assert o['b'] == 6

@@ -7,6 +7,8 @@ from typing import Collection, Sequence
 import requests
 
 from .accelerator import AbstractAccelerator, ProcessorIdType
+from .vendor.linux import libnuma
+from .vendor.nvidia import libcudart
 
 log = logging.getLogger('ai.backend.agent.gpu')
 
@@ -34,8 +36,8 @@ class CUDAAccelerator(AbstractAccelerator):
                 return 0
             return min(len(limit_gpus), len(gpu_info['Devices']))
         elif cls.nvdocker_version[0] == 2:
-            # TODO: implement
-            raise NotImplementedError
+            num_devices = libcudart.get_device_count()
+            return min(len(limit_gpus), num_devices)
         elif cls.nvdocker_version[0] == 0:
             log.info('nvidia-docker is not available!')
         else:
@@ -45,14 +47,20 @@ class CUDAAccelerator(AbstractAccelerator):
 
     @classmethod
     def list_devices(cls) -> Sequence[Collection[ProcessorIdType]]:
-        # TODO: implement
-        '''
         devices_per_nodes = [[] for _ in range(libnuma.num_nodes())]
-        num_devices = 0
-        ret = cudaGetDeviceCount(...)
+        num_devices = libcudart.get_device_count()
         for dev_idx in range(num_devices):
-            ret = cudaGetDeviceProperties(dev_idx, ...)
-        '''
+            dev_info = libcudart.get_device_props(dev_idx)
+            sysfs_node_path = "/sys/bus/pci/devices/" \
+                              f"{dev_info['pciBusID_str']}/numa_node"
+            try:
+                node = int(Path(sysfs_node_path).read_text().strip())
+                if node == -1:
+                    node = 0
+            except OSError:
+                node = 0
+            devices_per_nodes[node] = dev_idx
+        return devices_per_nodes
 
     @classmethod
     async def generate_docker_args(cls, docker, numa_node, limit_gpus=None):
@@ -119,9 +127,17 @@ class CUDAAccelerator(AbstractAccelerator):
                     'Devices': devices,
                 },
             }
-        elif cls.nvdocker_version[0] == 1:
+        elif cls.nvdocker_version[0] == 2:
+            gpus = []
+            num_devices = libcudart.get_device_count()
+            for dev_idx in range(num_devices):
+                if limit_gpus is None or dev_idx in limit_gpus:
+                    gpus.append(dev_idx)
             return {
                 'Runtime': 'nvidia',
+                'Env': [
+                    f"NVIDIA_VISIBLE_DEVICES={','.join(map(str, gpus))}",
+                ],
             }
         else:
             raise RuntimeError('BUG: should not be reached here!')
