@@ -159,6 +159,8 @@ def detect_slots(limit_cpus, limit_gpus):
     num_gpus = gpu_count()
     if limit_gpus is not None:
         num_gpus = min(num_gpus, len(limit_gpus))
+    log.info('Resource slots: cpu=%d, gpu=%d, mem=%dMiB',
+             num_cores, num_gpus, mem_bytes >> 20)
     return (
         mem_bytes >> 20,  # MiB
         num_cores,        # core count
