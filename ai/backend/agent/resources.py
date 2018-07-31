@@ -1,13 +1,16 @@
 import ctypes, ctypes.util
+from decimal import Decimal
 import functools
 import logging
 import operator
 import os
 import sys
+from typing import Container, Collection, Sequence
 
 import psutil
-import requests
 import requests_unixsocket as requnix
+
+from .accelerator import ProcessorIdType
 
 log = logging.getLogger('ai.backend.agent.resources')
 
@@ -122,18 +125,95 @@ class CPUAllocMap:
             self.core_shares[node][c] -= 1
 
 
-def gpu_count():
-    '''
-    Get the number of GPU devices installed in this system
-    available via the nvidia-docker plugin.
-    '''
+class ProcessorAllocMap:
 
-    try:
-        r = requests.get('http://localhost:3476/gpu/info/json', timeout=0.5)
-        gpu_info = r.json()
-    except requests.exceptions.ConnectionError:
-        return 0
-    return len(gpu_info['Devices'])
+    def __init__(self,
+                 processors_per_node: Sequence[Collection[ProcessorIdType]],
+                 max_share_per_processor: Decimal=Decimal(0),
+                 limit_mask: Container[ProcessorIdType]=None):
+        self.limit_mask = limit_mask
+        self.procs_per_node = processors_per_node
+        self.max_share_per_proc = max_share_per_processor
+        self.num_nodes = libnuma.num_nodes()
+        self.num_processors = sum(len(p) for p in processors_per_node)
+        if limit_mask is not None:
+            self.num_processors = min(self.num_processors, len(limit_mask))
+
+        self.node_membership = {}
+        for node, procs in enumerate(processors_per_node):
+            for p in procs:
+                self.node_membership[p] = node
+        self.proc_shares = tuple({p: Decimal(0) for p in self.procs_per_node[node]
+                                 if limit_mask is None or p in limit_mask}
+                                 for node in range(self.num_nodes))
+        self.node_shares = {n: Decimal(0) for n in range(self.num_nodes)
+                            if len(self.proc_shares[n]) > 0}
+
+    def alloc_by_share(self, share: Decimal=Decimal('1.0')):
+        node = 0
+        allocated_procs = []
+        if share > Decimal('1.0'):
+            # TODO: allocate from multiple processors
+            # TODO: evenly spread the share or fill from free ones?
+            pass
+        else:
+            # TODO: allocate from single processor
+            pass
+        return node, allocated_procs
+
+    def alloc_by_proc(self,
+              num_processors: int,
+              share_per_proc: Decimal=Decimal('1.0')):
+        '''
+        Find a most free set of processors and return a tuple of the NUMA node
+        index and the set of allocated processor IDs.
+        This method guarantees that all processors are alloacted within the same
+        NUMA node.
+        '''
+        node, current_alloc = min(
+            ((n, alloc) for n, alloc in self.node_shares.items()),
+            key=operator.itemgetter(1))
+        self.node_shares[node] = (
+            current_alloc + (share_per_proc * num_processors))
+
+        shares = self.proc_shares[node].copy()
+        allocated_procs = set()
+        for _ in range(num_processors):
+            pshares = [(proc, share) for proc, share in shares.items()
+                       if self.max_share_per_proc == Decimal(0) or
+                          share + share_per_proc <= self.max_share_per_proc]
+            assert len(pshares) > 0, 'Cannot allocate more shares'
+            proc, share = min(pshares, key=operator.itemgetter(1))
+            allocated_procs.add(proc)
+            shares[proc] = self.max_share_per_proc + Decimal(1)  # prune allocated
+            self.proc_shares[node][proc] += share_per_proc
+        return node, allocated_procs
+
+    def update(self,
+               proc_set: Collection[ProcessorIdType],
+               share_per_proc: Decimal):
+        '''
+        Manually add a given processor set as if it is allocated by us,
+        regardless of their NUMA node membership.
+        '''
+        any_proc = next(iter(proc_set))
+        node = self.node_membership[any_proc]
+        self.node_shares[node] += len(proc_set)
+        for p in proc_set:
+            self.proc_shares[node][p] += share_per_proc
+
+    def free(self,
+             proc_set: Collection[ProcessorIdType],
+             share_per_proc: Decimal):
+        '''
+        Remove the given set of processors from the allocated shares.
+        It assumes that all processors are in the same NUMA node.
+        '''
+        any_proc = next(iter(proc_set))
+        node = self.node_membership[any_proc]
+        self.node_shares[node] -= len(proc_set)
+        for p in proc_set:
+            self.proc_shares[node][p] -= share_per_proc
 
 
 def bitmask2set(mask):
@@ -147,7 +227,7 @@ def bitmask2set(mask):
     return frozenset(bset)
 
 
-def detect_slots(limit_cpus, limit_gpus):
+def detect_slots(limit_cpus=None, limit_gpus=None):
     '''
     Detect available resource of the system and calculate mem/cpu/gpu slots.
     '''
@@ -156,13 +236,16 @@ def detect_slots(limit_cpus, limit_gpus):
     num_cores = len(libnuma.get_available_cores())
     if limit_cpus is not None:
         num_cores = min(num_cores, len(limit_cpus))
-    num_gpus = gpu_count()
-    if limit_gpus is not None:
-        num_gpus = min(num_gpus, len(limit_gpus))
-    log.info('Resource slots: cpu=%d, gpu=%d, mem=%dMiB',
-             num_cores, num_gpus, mem_bytes >> 20)
-    return (
-        mem_bytes >> 20,  # MiB
-        num_cores,        # core count
-        num_gpus,         # device count
-    )
+    slots = {
+        'mem': mem_bytes >> 20,  # MiB
+        'cpu': num_cores,        # core count
+    }
+    # TODO: generalize as plugins of accelerators
+    from .gpu import CUDAAccelerator
+    accelerator_types = [
+        CUDAAccelerator,
+    ]
+    for accel in accelerator_types:
+        slots[accel.slot_key] = accel.slots(limit_gpus)
+    log.info(f'Resource slots: {slots!r}')
+    return slots

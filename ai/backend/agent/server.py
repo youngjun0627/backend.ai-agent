@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 import functools
 from ipaddress import ip_address
 import logging, logging.config
@@ -44,10 +45,13 @@ from ai.backend.common.logging import Logger
 from ai.backend.common.monitor import DummyStatsd, DummySentry
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
-from .gpu import prepare_nvidia
+from .gpu import CUDAAccelerator
 from .stats import spawn_stat_collector, StatCollectorState
-from .resources import bitmask2set, detect_slots, libnuma, CPUAllocMap
+from .resources import (
+    bitmask2set, detect_slots, libnuma,
+    CPUAllocMap, ProcessorAllocMap)
 from .kernel import KernelRunner, KernelFeatures
+from .utils import update_nested_dict
 
 log = logging.getLogger('ai.backend.agent.server')
 
@@ -140,13 +144,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.docker = Docker()
         self.container_registry = {}
-        self.container_cpu_map = CPUAllocMap(config.limit_cpus)
         self.redis_stat_pool = None
 
         self.restarting_kernels = {}
         self.blocking_cleans = {}
 
         self.slots = detect_slots(config.limit_cpus, config.limit_gpus)
+        self.container_cpu_map = CPUAllocMap(config.limit_cpus)
+        self.container_gpu_map = ProcessorAllocMap(
+            config.limit_gpus, max_share_per_processor=Decimal('1.0'))
         self.images = set()
 
         self.rpc_server = None
@@ -646,13 +652,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         if limits['gpu_slot'] > 0.0:
             # TODO: allocation of mulitple GPUs
-            # TODO: update gpu_set
-            nvidia_enabled = image_labels.get('io.sorna.nvidia.enabled', 'no')
-            assert nvidia_enabled == 'yes', 'Image does not have NVIDIA-enabled tag!'
-            extra_binds, extra_devices = \
-                await prepare_nvidia(self.docker, numa_node, self.config.limit_gpus)
-            binds.extend(extra_binds)
-            devices.extend(extra_devices)
+            node, gpus = self.container_gpu_map.alloc_by_share(limits['gpu_slot'])
+            # TODO: generalize CUDAAccelerator
+            accel_args = await CUDAAccelerator.generate_docker_args(
+                self.docker, numa_node, self.config.limit_gpus)
 
         container_config = {
             'Image': image_name,
@@ -682,6 +685,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'PublishAllPorts': True,
             },
         }
+        update_nested_dict(container_config, accel_args)
         base_name, _, tag = lang.partition(':')
         kernel_name = f'kernel.{base_name}.{kernel_id}'
         container = await self.docker.containers.create(
@@ -983,9 +987,9 @@ print(json.dumps(files))''' % {'path': path}
             'ip': self.config.agent_host,
             'region': self.config.region,
             'addr': f'tcp://{self.config.agent_host}:{self.config.agent_port}',
-            'mem_slots': self.slots[0],
-            'cpu_slots': self.slots[1],
-            'gpu_slots': self.slots[2],
+            'mem_slots': self.slots['mem'],
+            'cpu_slots': self.slots['cpu'],
+            'gpu_slots': self.slots['gpu'],  # TODO: generalize
             'images': snappy.compress(msgpack.packb(list(self.images))),
         }
         try:
