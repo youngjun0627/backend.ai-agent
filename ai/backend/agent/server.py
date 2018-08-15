@@ -1071,7 +1071,8 @@ print(json.dumps(files))''' % {'path': path}
             container = self.docker.containers.container(container_id)
             await self.clean_runner(kernel_id)
             try:
-                await container.delete()
+                if not self.config.debug_skip_container_deletion:
+                    await container.delete()
             except DockerError as e:
                 if e.status == 409 and 'already in progress' in e.message:
                     pass
@@ -1194,6 +1195,10 @@ def main():
                help='If set to a path to backend.ai-kernel-runner clone, '
                     'mounts it into the containers so that you can test and debug '
                     'the latest kernel runner code with immediate changes.')
+    parser.add('--debug-skip-container-deletion', action='store_true', default=False,
+               help='If specified, skips container deletion when container is dead '
+                    'or killed.  You may check the container logs for additional '
+                    'in-container debugging, but also need to manaully remove them.')
     parser.add('--kernel-aliases', type=str, default=None,
                help='The filename for additional kernel aliases')
     parser.add('--limit-cpus', type=str, default=None,
