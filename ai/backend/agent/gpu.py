@@ -22,7 +22,12 @@ class CUDAAccelerator(AbstractAccelerator):
 
     @classmethod
     def slots(cls, limit_gpus=None) -> float:
-        ret = subprocess.run(['nvidia-docker', 'version'], stdout=subprocess.PIPE)
+        try:
+            ret = subprocess.run(['nvidia-docker', 'version'],
+                                 stdout=subprocess.PIPE)
+        except FileNotFoundError:
+            log.info('nvidia-docker is not installed.')
+            return 0
         rx = cls.rx_nvdocker_version
         for line in ret.stdout.decode().strip().splitlines():
             m = rx.search(line)
