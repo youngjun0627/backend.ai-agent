@@ -1166,6 +1166,7 @@ async def server_main(loop, pidx, _args):
 def main():
     parser = configargparse.ArgumentParser()
     parser.add('--namespace', type=str, default='local',
+               env_var='BACKEND_NAMESPACE',
                help='The namespace of this Backend.AI cluster. (default: local)')
     parser.add('--agent-host-override', type=str, default=None,
                dest='agent_host',
