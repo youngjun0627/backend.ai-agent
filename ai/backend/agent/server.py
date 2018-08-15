@@ -653,6 +653,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             volumes.append(container_pkg_path)
             binds.append(f'{self.config.debug_kernel}:{container_pkg_path}:ro')
 
+        accel_args = {}
         if limits['gpu_slot'] > 0.0:
             # TODO: allocation of mulitple GPUs
             # node, gpus = self.container_gpu_map.alloc_by_share(limits['gpu_slot'])
