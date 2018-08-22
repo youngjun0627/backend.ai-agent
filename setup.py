@@ -29,7 +29,7 @@ requires = [
     'requests',
     'requests_unixsocket',
     'trafaret>=1.0',
-    'uvloop~=0.10.0',
+    'uvloop~=0.11.0',
     'backend.ai-common',
 ]
 build_requires = [
@@ -37,8 +37,8 @@ build_requires = [
     'twine>=1.11.0',
 ]
 test_requires = [
-    'pytest>=3.6',
-    'pytest-asyncio',
+    'pytest>=3.7.0',
+    'pytest-asyncio>=0.3.0',
     'pytest-cov',
     'pytest-mock',
     'asynctest',
@@ -81,8 +81,8 @@ setup(
 
     packages=['ai.backend.agent'],
 
-    python_requires='>=3.6',
-    setup_requires=['setuptools>=38.6.0'],
+    python_requires='>=3.6,<3.7',
+    setup_requires=['setuptools>=40.0.0'],
     install_requires=requires,
     extras_require={
         'build': build_requires,
