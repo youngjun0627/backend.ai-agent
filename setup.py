@@ -82,7 +82,7 @@ setup(
     packages=['ai.backend.agent'],
 
     python_requires='>=3.6,<3.7',
-    setup_requires=['setuptools>=40.0.0'],
+    setup_requires=['setuptools>=40.1.0'],
     install_requires=requires,
     extras_require={
         'build': build_requires,
