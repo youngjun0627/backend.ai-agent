@@ -12,6 +12,10 @@ services:
   - docker
   - postgresql
   - redis-server
+addons:
+  apt:
+    packages:
+    - libsnappy-dev
 
 # stage decl.
 stages:
@@ -20,8 +24,6 @@ stages:
     if: tag IS present
 
 # build matrix for test stage
-python:
-  - "3.6"
 os:
   - linux
 env:
@@ -33,11 +35,8 @@ env:
     - BACKEND_DB_USER=postgres
     - BACKEND_DB_PASSWORD=
     - BACKEND_DB_NAME=testing
-
-addons:
-  apt:
-    packages:
-    - libsnappy-dev
+python:
+  - "3.6"
 
 # default test job
 before_install:
@@ -58,7 +57,7 @@ before_script:
   - mkdir -p /tmp/vfolders
   - docker run -d -p 2379:2379 -p 2380:2380 --name backendai-etcd
      -v /tmp/etcd:/etcd-data
-     quay.io/coreos/etcd:v3.2.8
+     quay.io/coreos/etcd:v3.3.9
      /usr/local/bin/etcd
      --name backendai-etcd
      --data-dir /etcd-data
@@ -81,6 +80,7 @@ after_script:
 # stage def.
 jobs:
   include:
+    - stage: test
     - stage: deploy
       before_install:
         - PYTHON_VERSION=3.6 ./scripts/ci/overwrite-python.sh
