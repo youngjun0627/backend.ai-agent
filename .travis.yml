@@ -1,4 +1,5 @@
 language: generic
+dist: xenial
 sudo: required
 before_cache:
   - rm -f $HOME/.cache/pip/log/debug.log
