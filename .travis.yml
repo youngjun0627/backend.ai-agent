@@ -1,4 +1,4 @@
-language: generic
+language: python
 dist: xenial
 sudo: required
 before_cache:
@@ -20,6 +20,8 @@ stages:
     if: tag IS present
 
 # build matrix for test stage
+python:
+  - "3.6"
 os:
   - linux
 env:
