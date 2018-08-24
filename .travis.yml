@@ -36,48 +36,47 @@ addons:
     packages:
     - libsnappy-dev
 
+# default test job
+before_install:
+  - PYTHON_VERSION=3.6 ./scripts/ci/overwrite-python.sh
+install:
+  - if [[ $TRAVIS_BRANCH == "develop" ]]; then BRANCH="develop"; else BRANCH="master"; fi
+  # install backend.ai-agent
+  - |
+    python -m venv ~/virtualenv/agent
+    source ~/virtualenv/agent/bin/activate
+    pip install -U pip setuptools
+    sed -i'' -e "s/{BRANCH}/$BRANCH/g" requirements-ci.txt
+    pip install -U --upgrade-strategy=eager -r requirements-ci.txt
+before_script:
+  # load etcd server
+  - mkdir -p /tmp/etcd
+  - mkdir -p /tmp/vfolders
+  - docker run -d -p 2379:2379 -p 2380:2380 --name backendai-etcd
+     -v /tmp/etcd:/etcd-data
+     quay.io/coreos/etcd:v3.2.8
+     /usr/local/bin/etcd
+     --name backendai-etcd
+     --data-dir /etcd-data
+     --listen-client-urls http://0.0.0.0:2379
+     --advertise-client-urls http://0.0.0.0:2379
+     --listen-peer-urls http://0.0.0.0:2380
+     --initial-advertise-peer-urls http://0.0.0.0:2380
+     --initial-cluster backendai-etcd=http://0.0.0.0:2380
+     --initial-cluster-token backendai-etcd-token
+     --initial-cluster-state new
+     --auto-compaction-retention 1
+script:
+  - source ~/virtualenv/agent/bin/activate; python -m flake8 src tests
+  - sudo bash -c 'source ~/virtualenv/agent/bin/activate; python -m pytest --cov=src'
+after_success:
+  - codecov
+after_script:
+  - killall -9 python
+
 # stage def.
 jobs:
   include:
-
-    - stage: test
-      before_install:
-        - PYTHON_VERSION=3.6 ./scripts/ci/overwrite-python.sh
-      install:
-        - if [[ $TRAVIS_BRANCH == "develop" ]]; then BRANCH="develop"; else BRANCH="master"; fi
-        # install backend.ai-agent
-        - |
-          python -m venv ~/virtualenv/agent
-          source ~/virtualenv/agent/bin/activate
-          pip install -U pip setuptools
-          sed -i'' -e "s/{BRANCH}/$BRANCH/g" requirements-ci.txt
-          pip install -U --upgrade-strategy=eager -r requirements-ci.txt
-      before_script:
-        # load etcd server
-        - mkdir -p /tmp/etcd
-        - mkdir -p /tmp/vfolders
-        - docker run -d -p 2379:2379 -p 2380:2380 --name backendai-etcd
-           -v /tmp/etcd:/etcd-data
-           quay.io/coreos/etcd:v3.2.8
-           /usr/local/bin/etcd
-           --name backendai-etcd
-           --data-dir /etcd-data
-           --listen-client-urls http://0.0.0.0:2379
-           --advertise-client-urls http://0.0.0.0:2379
-           --listen-peer-urls http://0.0.0.0:2380
-           --initial-advertise-peer-urls http://0.0.0.0:2380
-           --initial-cluster backendai-etcd=http://0.0.0.0:2380
-           --initial-cluster-token backendai-etcd-token
-           --initial-cluster-state new
-           --auto-compaction-retention 1
-      script:
-        - source ~/virtualenv/agent/bin/activate; python -m flake8 ai/backend tests
-        - sudo bash -c 'source ~/virtualenv/agent/bin/activate; python -m pytest --cov=ai/backend'
-      after_success:
-        - codecov
-      after_script:
-        - killall -9 python
-
     - stage: deploy
       before_install:
         - PYTHON_VERSION=3.6 ./scripts/ci/overwrite-python.sh
