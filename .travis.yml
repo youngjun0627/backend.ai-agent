@@ -39,7 +39,8 @@ addons:
 
 # default test job
 before_install:
-  - PYTHON_VERSION=3.6 ./scripts/ci/overwrite-python.sh
+  - type -t deactivate && deactivate || true
+  - export PATH=/opt/python/3.6/bin:$PATH
 install:
   - if [[ $TRAVIS_BRANCH == "develop" ]]; then BRANCH="develop"; else BRANCH="master"; fi
   # install backend.ai-agent
