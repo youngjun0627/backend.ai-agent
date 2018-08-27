@@ -137,6 +137,7 @@ class CUDAAccelerator(AbstractAccelerator):
             num_devices = libcudart.get_device_count()
             for dev_idx in range(num_devices):
                 if limit_gpus is None or dev_idx in limit_gpus:
+                    # TODO: check numa node
                     gpus.append(dev_idx)
             return {
                 'HostConfig': {
