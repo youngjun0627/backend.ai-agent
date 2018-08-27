@@ -15,7 +15,7 @@ log = logging.getLogger('ai.backend.agent.gpu')
 
 class CUDAAccelerator(AbstractAccelerator):
 
-    slot_key = 'gpu'  # TODO: generalize as 'cuda-gpu'
+    slot_key = 'gpu'  # TODO: generalize
 
     nvdocker_version = (0, 0, 0)
     rx_nvdocker_version = re.compile(r'^NVIDIA Docker: (\d+\.\d+\.\d+)')
@@ -68,7 +68,7 @@ class CUDAAccelerator(AbstractAccelerator):
         return devices_per_nodes
 
     @classmethod
-    async def generate_docker_args(cls, docker, numa_node, limit_gpus=None):
+    async def generate_docker_args(cls, docker, numa_node, proc_shares):
         if cls.nvdocker_version[0] == 1:
             try:
                 r = requests.get('http://localhost:3476/docker/cli/json')
@@ -106,7 +106,7 @@ class CUDAAccelerator(AbstractAccelerator):
                     devices.append(dev)
                     continue
                 dev_idx = int(m.group(1))
-                if limit_gpus is not None and dev_idx not in limit_gpus:
+                if dev_idx not in proc_shares:
                     continue
                 # Only expose GPUs in the same NUMA node.
                 for gpu in gpu_info['Devices']:
@@ -131,12 +131,15 @@ class CUDAAccelerator(AbstractAccelerator):
                     'Binds': binds,
                     'Devices': devices,
                 },
+                'Env': {
+                    f"BACKEND_CUDA_SHARES=",  # TODO: implement
+                }
             }
         elif cls.nvdocker_version[0] == 2:
             gpus = []
             num_devices = libcudart.get_device_count()
             for dev_idx in range(num_devices):
-                if limit_gpus is None or dev_idx in limit_gpus:
+                if dev_idx not in proc_shares:
                     # TODO: check numa node
                     gpus.append(dev_idx)
             return {
@@ -145,6 +148,7 @@ class CUDAAccelerator(AbstractAccelerator):
                 },
                 'Env': [
                     f"NVIDIA_VISIBLE_DEVICES={','.join(map(str, gpus))}",
+                    f"BACKEND_CUDA_SHARES=",  # TODO: implement
                 ],
             }
         else:

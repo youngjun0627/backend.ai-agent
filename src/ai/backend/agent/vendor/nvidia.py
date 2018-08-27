@@ -136,7 +136,8 @@ class libcudart:
     def _ensure_lib(cls):
         if cls._lib is None:
             cls._lib = _load_libcudart()
-        assert cls._lib is not None, 'CUDA runtime is not available!'
+        if cls._lib is None:
+            raise ImportError('CUDA runtime is not available!')
 
     @classmethod
     def invoke_lib(cls, func_name, *args):
@@ -150,13 +151,19 @@ class libcudart:
     @classmethod
     def get_device_count(cls) -> int:
         count = ctypes.c_int()
-        cls.invoke_lib('cudaGetDeviceCount', ctypes.byref(count))
+        try:
+            cls.invoke_lib('cudaGetDeviceCount', ctypes.byref(count))
+        except ImportError:
+            return 0
         return count.value
 
     @classmethod
     def get_version(cls) -> int:
         version = ctypes.c_int()
-        cls.invoke_lib('cudaRuntimeGetVersion', ctypes.byref(version))
+        try:
+            cls.invoke_lib('cudaRuntimeGetVersion', ctypes.byref(version))
+        except ImportError:
+            return 0
         return version.value
 
     @classmethod

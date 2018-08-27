@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 import functools
 from ipaddress import ip_address
 import logging, logging.config
@@ -44,12 +45,13 @@ from ai.backend.common.logging import Logger
 from ai.backend.common.monitor import DummyStatsd, DummySentry
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
+from .accelerator import AbstractAccelerator
 from .gpu import CUDAAccelerator
 from .stats import spawn_stat_collector, StatCollectorState
 from .resources import (
     bitmask2set, detect_slots,
     CPUAllocMap,
-    # ProcessorAllocMap,
+    ProcessorAllocMap,
 )
 from .kernel import KernelRunner, KernelFeatures
 from .utils import update_nested_dict
@@ -71,6 +73,11 @@ class RestartTracker(NamedTuple):
     request_lock: asyncio.Lock
     destroy_event: asyncio.Event
     done_event: asyncio.Event
+
+
+class AcceleratorSet(NamedTuple):
+    klass: AbstractAccelerator
+    alloc_map: ProcessorAllocMap
 
 
 deeplearning_image_keys = {
@@ -153,9 +160,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.slots = detect_slots(config.limit_cpus, config.limit_gpus)
         self.container_cpu_map = CPUAllocMap(config.limit_cpus)
-        # TODO: implement
-        # self.container_gpu_map = ProcessorAllocMap(
-        #     config.limit_gpus, max_share_per_processor=Decimal('1.0'))
+        self.accelerators = {
+            'cuda': AcceleratorSet(CUDAAccelerator, ProcessorAllocMap(
+                CUDAAccelerator.list_devices(),
+                max_share_per_processor=Decimal('1.0'),
+                limit_mask=config.limit_gpus)),
+        }
         self.images = set()
 
         self.rpc_server = None
@@ -655,11 +665,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         accel_args = {}
         if limits['gpu_slot'] > 0.0:
-            # TODO: allocation of mulitple GPUs
-            # node, gpus = self.container_gpu_map.alloc_by_share(limits['gpu_slot'])
-            # TODO: generalize CUDAAccelerator
-            accel_args = await CUDAAccelerator.generate_docker_args(
-                self.docker, numa_node, self.config.limit_gpus)
+            # TODO: generalize "gpu" to multiple types of accelerators
+            alloc_map = self.accelerators['cuda'].alloc_map
+            # Prefer the CPU-map's NUMA node over GPU-map's NUMA node assignment.
+            _, proc_shares = alloc_map.alloc(limits['gpu_slot'], numa_node)
+            accel_args = await self.acceleators['cuda'].klass.generate_docker_args(
+                self.docker, numa_node, proc_shares)
 
         container_config = {
             'Image': image_name,

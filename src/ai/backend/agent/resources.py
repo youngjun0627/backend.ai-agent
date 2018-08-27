@@ -98,11 +98,10 @@ class ProcessorAllocMap:
         self.node_shares = {n: zero for n in range(self.num_nodes)
                             if len(self.proc_shares[n]) > 0}
 
-    def alloc(self, total_share: Decimal=Decimal('1.0')):
+    def alloc(self, total_share: Decimal=Decimal('1.0'), node: int=None):
         total_share = self._ctx.create_decimal(total_share)
         zero, one = Decimal('0'), Decimal('1')
         assert total_share > zero, 'You cannot allocate zero share of processors.'
-        node = None
         allocated_procs = defaultdict(zero)
         full_share = total_share.quantize(one)  # extract the integer part
         partial_share = total_share - full_share
