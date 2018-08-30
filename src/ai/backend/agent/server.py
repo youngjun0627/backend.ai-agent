@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import NamedTuple
+from typing import Collection, NamedTuple
 
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
@@ -45,13 +45,12 @@ from ai.backend.common.logging import Logger
 from ai.backend.common.monitor import DummyStatsd, DummySentry
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
-from .accelerator import AbstractAccelerator
-from .gpu import CUDAAccelerator
+from .accelerator import accelerator_types, AbstractAccelerator
 from .stats import spawn_stat_collector, StatCollectorState
 from .resources import (
     bitmask2set, detect_slots,
     CPUAllocMap,
-    ProcessorAllocMap,
+    AcceleratorAllocMap,
 )
 from .kernel import KernelRunner, KernelFeatures
 from .utils import update_nested_dict
@@ -77,7 +76,8 @@ class RestartTracker(NamedTuple):
 
 class AcceleratorSet(NamedTuple):
     klass: AbstractAccelerator
-    alloc_map: ProcessorAllocMap
+    devices: Collection[AbstractAccelerator]
+    alloc_map: AcceleratorAllocMap
 
 
 deeplearning_image_keys = {
@@ -160,12 +160,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.slots = detect_slots(config.limit_cpus, config.limit_gpus)
         self.container_cpu_map = CPUAllocMap(config.limit_cpus)
-        self.accelerators = {
-            'cuda': AcceleratorSet(CUDAAccelerator, ProcessorAllocMap(
-                CUDAAccelerator.list_devices(),
-                max_share_per_processor=Decimal('1.0'),
-                limit_mask=config.limit_gpus)),
-        }
+        self.accelerators = {}
+        for name, klass in accelerator_types.items():
+            devices = klass.list_devices()
+            alloc_map = AcceleratorAllocMap(devices, limit_mask=config.limit_gpus)
+            self.accelerators[name] = AcceleratorSet(klass, devices, alloc_map)
         self.images = set()
 
         self.rpc_server = None
@@ -254,6 +253,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'mounts': None,
                     'runner_tasks': set(),
                 }
+                # TODO: recover accelerator_shares from resource.txt
             elif status in {'exited', 'dead', 'removing'}:
                 log.info(f'detected terminated kernel: {kernel_id}')
                 await self.send_event('kernel_terminated', kernel_id,
@@ -601,21 +601,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         work_dir = (self.config.scratch_root / kernel_id / '.work').resolve()
         config_dir = (self.config.scratch_root / kernel_id / '.config').resolve()
 
-        if not restarting:
-            os.makedirs(work_dir)
-            os.makedirs(config_dir)
-            # Store custom environment variables for kernel runner.
-            if environ:
-                with open(config_dir / 'environ.txt', 'w') as f:
-                    for k, v in environ.items():
-                        print(f'{k}={v}', file=f)
-            with open(config_dir / 'gpu.txt', 'w') as f:
-                # 1 vGPU slot = 10 SM + 8 GiB vRAM
-                gpu_mem_limit = int((8 * (2 ** 30)) * limits['gpu_slot'])
-                gpu_proc_limit = int(10 * limits['gpu_slot'])
-                print(f'GPU_MEMORY_LIMIT={gpu_mem_limit}', file=f)
-                print(f'GPU_PROCESSOR_LIMIT={gpu_proc_limit}', file=f)
-
         cpu_set = config.get('cpu_set')
         if cpu_set is None:
             requested_cores = int(limits['cpu_slot'])
@@ -637,6 +622,52 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug(f'container config: mem_limit={mem_limit}, '
                   f'exec_timeout={exec_timeout}, '
                   f'cores={cpu_set!r}@{numa_node}')
+
+        accel_args = {}
+        cuda_allocated_shares = {}
+
+        if not restarting:
+            os.makedirs(work_dir)
+            os.makedirs(config_dir)
+            # Store custom environment variables for kernel runner.
+            if environ:
+                with open(config_dir / 'environ.txt', 'w') as f:
+                    for k, v in environ.items():
+                        print(f'{k}={v}', file=f)
+            if limits['gpu_slot'] > 0:
+                with open(config_dir / 'resource.txt', 'w') as f:
+                    # TODO: iterate over all configured accelerator sets
+                    accl = self.accelerators['cuda']
+                    _, cuda_allocated_shares = \
+                        accl.alloc_map.alloc(limits['gpu_slot'])
+                    mem_limits = []
+                    proc_limits = []
+                    for dev_id, dev_share in cuda_allocated_shares:
+                        device = accl.devices[dev_id]
+                        mem = device.share_to_memory(dev_share)
+                        proc = device.share_to_processing_units(dev_share)
+                        mem_limits.append((dev_id, mem))
+                        proc_limits.append((dev_id, proc))
+                    cuda_mem_limits = ','.join(
+                        f'{dev_id}:{mem}' for dev_id, mem in
+                        mem_limits
+                    )
+                    cuda_proc_limits = ','.join(
+                        f'{dev_id}:{proc}' for dev_id, proc in
+                        proc_limits
+                    )
+                    print(f'CUDA_MEMORY_LIMITS={cuda_mem_limits}', file=f)
+                    print(f'CUDA_PROCESSOR_LIMITS={cuda_proc_limits}', file=f)
+        else:
+            cuda_allocated_shares \
+                = self.container_registry[kernel_id]['accelerator_shares'] \
+                      .get('cuda', {})
+
+        if limits['gpu_slot'] > 0:
+            # TODO: iterate over all configured accelerator sets
+            accl = self.accelerators['cuda']
+            accel_args = await accl.klass.generate_docker_args(
+                self.docker, numa_node, cuda_allocated_shares)
 
         mount_list = await get_extra_volumes(self.docker, lang)
         binds = [
@@ -662,15 +693,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                                   'site-packages/ai/backend/')
             volumes.append(container_pkg_path)
             binds.append(f'{self.config.debug_kernel}:{container_pkg_path}:ro')
-
-        accel_args = {}
-        if limits['gpu_slot'] > 0.0:
-            # TODO: generalize "gpu" to multiple types of accelerators
-            alloc_map = self.accelerators['cuda'].alloc_map
-            # Prefer the CPU-map's NUMA node over GPU-map's NUMA node assignment.
-            _, proc_shares = alloc_map.alloc(limits['gpu_slot'], numa_node)
-            accel_args = await self.acceleators['cuda'].klass.generate_docker_args(
-                self.docker, numa_node, proc_shares)
 
         container_config = {
             'Image': image_name,
@@ -741,6 +763,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'limits': limits,
             'mounts': mounts,
             'runner_tasks': set(),
+            'accelerator_shares': {  # TODO: generalize
+                'cuda': cuda_allocated_shares,
+            },
         }
         log.debug(f'kernel repl-in address: {kernel_host}:{repl_in_port}')
         log.debug(f'kernel repl-out address: {kernel_host}:{repl_out_port}')
@@ -786,8 +811,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             elif e.status == 404:
                 log.warning(f'_destroy_kernel({kernel_id}) kernel missing, '
                             'forgetting this kernel')
+                reg_entry = self.container_registry[kernel_id]
                 self.container_cpu_map.free(
-                    self.container_registry[kernel_id]['cpu_set'])
+                    reg_entry['cpu_set'])
+                for dev_type, dev_shares in reg_entry['accelerator_shares'].items():
+                    self.accelerators[dev_type].alloc_map.free(dev_shares)
                 self.container_registry.pop(kernel_id, None)
                 pass
             else:
@@ -1102,8 +1130,11 @@ print(json.dumps(files))''' % {'path': path}
             except FileNotFoundError:
                 pass
             try:
+                reg_entry = self.container_registry[kernel_id]
                 self.container_cpu_map.free(
-                    self.container_registry[kernel_id]['cpu_set'])
+                    reg_entry['cpu_set'])
+                for dev_type, dev_shares in reg_entry['accelerator_shares'].items():
+                    self.accelerators[dev_type].alloc_map.free(dev_shares)
                 self.container_registry.pop(kernel_id, None)
             except KeyError:
                 pass

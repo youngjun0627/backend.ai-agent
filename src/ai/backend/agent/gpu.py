@@ -1,16 +1,40 @@
+import decimal
 import logging
-import subprocess
 from pathlib import Path
 import re
-from typing import Collection, Sequence
+from typing import Collection
 
+import attr
 import requests
 
-from .accelerator import AbstractAccelerator, ProcessorIdType
-from .vendor.linux import libnuma
+from .accelerator import (
+    AbstractAccelerator, AbstractAcceleratorInfo,
+    accelerator_types,
+)
 from .vendor.nvidia import libcudart
 
 log = logging.getLogger('ai.backend.agent.gpu')
+
+
+@attr.s(auto_attribs=True)
+class CUDAAcceleratorInfo(AbstractAcceleratorInfo):
+
+    unit_memory = (2 * (2 ** 30))  # 1 unit = 2 GiB
+    unit_proc = 8                  # 1 unit = 8 SMPs
+
+    def max_share(self) -> decimal.Decimal:
+        mem_shares = self.memory_size / self.unit_memory
+        proc_shares = self.processing_units / self.unit_proc
+        with decimal.localcontext() as ctx:
+            ctx.rounding = decimal.ROUND_DOWN
+            quantum = decimal.Decimal('1.00')
+            return decimal.Decimal(min(mem_shares, proc_shares)).quantize(quantum)
+
+    def share_to_memory(self, share: decimal.Decimal) -> int:
+        return int(self.unit_memory * share)
+
+    def share_to_processing_units(self, share: decimal.Decimal) -> int:
+        return int(self.unit_proc * share)
 
 
 class CUDAAccelerator(AbstractAccelerator):
@@ -21,51 +45,26 @@ class CUDAAccelerator(AbstractAccelerator):
     rx_nvdocker_version = re.compile(r'^NVIDIA Docker: (\d+\.\d+\.\d+)')
 
     @classmethod
-    def slots(cls, limit_gpus=None) -> float:
-        try:
-            ret = subprocess.run(['nvidia-docker', 'version'],
-                                 stdout=subprocess.PIPE)
-        except FileNotFoundError:
-            log.info('nvidia-docker is not installed.')
-            return 0
-        rx = cls.rx_nvdocker_version
-        for line in ret.stdout.decode().strip().splitlines():
-            m = rx.search(line)
-            if m is not None:
-                cls.nvdocker_version = tuple(map(int, m.group(1).split('.')))
-        if cls.nvdocker_version[0] == 1:
-            try:
-                r = requests.get('http://localhost:3476/gpu/info/json', timeout=0.5)
-                gpu_info = r.json()
-            except requests.exceptions.ConnectionError:
-                return 0
-            return min(len(limit_gpus), len(gpu_info['Devices']))
-        elif cls.nvdocker_version[0] == 2:
-            num_devices = libcudart.get_device_count()
-            return min(len(limit_gpus), num_devices)
-        elif cls.nvdocker_version[0] == 0:
-            log.info('nvidia-docker is not available!')
-        else:
-            vstr = '{0[0]}.{0[1]}.{0[2]}'.format(cls.nvdocker_version)
-            log.warning(f'Unsupported nvidia docker version: {vstr}')
-        return 0
-
-    @classmethod
-    def list_devices(cls) -> Sequence[Collection[ProcessorIdType]]:
-        devices_per_nodes = [[] for _ in range(libnuma.num_nodes())]
+    def list_devices(cls) -> Collection[CUDAAcceleratorInfo]:
+        all_devices = []
         num_devices = libcudart.get_device_count()
         for dev_idx in range(num_devices):
-            dev_info = libcudart.get_device_props(dev_idx)
+            raw_info = libcudart.get_device_props(dev_idx)
             sysfs_node_path = "/sys/bus/pci/devices/" \
-                              f"{dev_info['pciBusID_str']}/numa_node"
+                              f"{raw_info['pciBusID_str']}/numa_node"
             try:
                 node = int(Path(sysfs_node_path).read_text().strip())
-                if node == -1:
-                    node = 0
             except OSError:
-                node = 0
-            devices_per_nodes[node] = dev_idx
-        return devices_per_nodes
+                node = -1
+            dev_info = CUDAAcceleratorInfo(
+                device_id=dev_idx,
+                hw_location=raw_info['pciBusID_str'],
+                numa_node=node,
+                memory_size=raw_info['totalGlobalMem'],
+                processing_units=raw_info['multiProcessorCount'],
+            )
+            all_devices.append(dev_info)
+        return all_devices
 
     @classmethod
     async def generate_docker_args(cls, docker, numa_node, proc_shares):
@@ -131,9 +130,6 @@ class CUDAAccelerator(AbstractAccelerator):
                     'Binds': binds,
                     'Devices': devices,
                 },
-                'Env': {
-                    f"BACKEND_CUDA_SHARES=",  # TODO: implement
-                }
             }
         elif cls.nvdocker_version[0] == 2:
             gpus = []
@@ -148,8 +144,10 @@ class CUDAAccelerator(AbstractAccelerator):
                 },
                 'Env': [
                     f"NVIDIA_VISIBLE_DEVICES={','.join(map(str, gpus))}",
-                    f"BACKEND_CUDA_SHARES=",  # TODO: implement
                 ],
             }
         else:
             raise RuntimeError('BUG: should not be reached here!')
+
+
+accelerator_types['cuda'] = CUDAAccelerator

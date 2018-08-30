@@ -1,7 +1,37 @@
 from abc import abstractmethod, ABCMeta
-from typing import Any, Collection, Container, Hashable, Mapping, Sequence, TypeVar
+import decimal
+from typing import (
+    Any, Collection, Container, Hashable,
+    Mapping, TypeVar, Optional,
+)
+
+import attr
 
 ProcessorIdType = TypeVar('ProcessorIdType', int, str, Hashable)
+
+
+accelerator_types = {}
+
+
+@attr.s(auto_attribs=True)
+class AbstractAcceleratorInfo(metaclass=ABCMeta):
+    device_id: ProcessorIdType
+    hw_location: str            # either PCI bus ID or arbitrary string
+    numa_node: Optional[int]    # NUMA node ID (None if not applicable)
+    memory_size: int            # bytes of available per-accelerator memory
+    processing_units: int       # number of processing units (e.g., cores, SMP)
+
+    @abstractmethod
+    def max_share(self) -> decimal.Decimal:
+        '''Calculated maximum share for scheduling.'''
+        return decimal.Decimal('0')
+
+    @abstractmethod
+    def share_to_memory(self, share: decimal.Decimal) -> int:
+        return 0
+
+    def share_to_processing_units(self, share: decimal.Decimal) -> int:
+        return 0
 
 
 class AbstractAccelerator(metaclass=ABCMeta):
@@ -10,14 +40,9 @@ class AbstractAccelerator(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    def slots(cls) -> float:
-        return 0.0
-
-    @classmethod
-    @abstractmethod
-    def list_devices(cls) -> Sequence[Collection[ProcessorIdType]]:
+    def list_devices(cls) -> Collection[AbstractAcceleratorInfo]:
         '''
-        Return a list of processor sets per each NUMA node.
+        Return a collection of processors.
         '''
         return []
 
