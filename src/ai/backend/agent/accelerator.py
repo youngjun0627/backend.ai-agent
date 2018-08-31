@@ -23,15 +23,27 @@ class AbstractAcceleratorInfo(metaclass=ABCMeta):
 
     @abstractmethod
     def max_share(self) -> decimal.Decimal:
-        '''Calculated maximum share for scheduling.'''
+        '''
+        Calculates the amount of available shares for this accelerator.
+        '''
         return decimal.Decimal('0')
 
     @abstractmethod
-    def share_to_memory(self, share: decimal.Decimal) -> int:
+    def share_to_spec(self, share: decimal.Decimal) -> (int, int):
+        '''
+        Calculates the amount of memory and processing units corresponding to the
+        given share.
+        '''
         return 0
 
-    def share_to_processing_units(self, share: decimal.Decimal) -> int:
-        return 0
+    @abstractmethod
+    def spec_to_share(self, requested_memory: int,
+                      requested_proc_units: int) -> decimal.Decimal:
+        '''
+        Calculates the minimum required share to guarantee the given requested
+        resource specification (memory in bytes and the number of processing units).
+        '''
+        return decimal.Decimal('0')
 
 
 class AbstractAccelerator(metaclass=ABCMeta):

@@ -650,8 +650,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     proc_limits = []
                     for dev_id, dev_share in cuda_allocated_shares:
                         device = accl.devices[dev_id]
-                        mem = device.share_to_memory(dev_share)
-                        proc = device.share_to_processing_units(dev_share)
+                        mem, proc = device.share_to_spec(dev_share)
                         mem_limits.append((dev_id, mem))
                         proc_limits.append((dev_id, proc))
                     cuda_mem_limits = ','.join(
