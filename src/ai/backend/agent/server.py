@@ -648,7 +648,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         accl.alloc_map.alloc(limits['gpu_slot'])
                     mem_limits = []
                     proc_limits = []
-                    for dev_id, dev_share in cuda_allocated_shares:
+                    for dev_id, dev_share in cuda_allocated_shares.items():
                         device = accl.devices[dev_id]
                         mem, proc = device.share_to_spec(dev_share)
                         mem_limits.append((dev_id, mem))

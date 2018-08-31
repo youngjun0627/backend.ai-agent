@@ -97,7 +97,7 @@ class AcceleratorAllocMap:
         zero = Decimal('0')
         assert requested_share > zero, \
                'You cannot allocate zero share of devices.'
-        device_shares = []
+        allocated_shares = defaultdict(lambda: zero)
         try:
             # try filling up beginning from largest free shares
             # TODO: apply advanced scheduling and make it replacible
@@ -106,29 +106,31 @@ class AcceleratorAllocMap:
                 if s >= requested_share:
                     remaining_share = zero
                     self.device_shares[p] -= requested_share
-                    device_shares.append((p, requested_share))
+                    allocated_shares[p] += requested_share
                 elif s == 0:
-                    raise RuntimeError('Cannot allocate requested shares')
+                    raise RuntimeError('Cannot allocate requested shares '
+                                       f'in NUMA node {node}')
                 else:
                     remaining_share -= s
                     self.device_shares[p] -= s
-                    device_shares.append((p, s))
+                    allocated_shares[p] += s
         except RuntimeError:
             # revert back
-            for p, s in device_shares:
+            for p, s in allocated_shares.items():
                 self.device_shares[p] += s
             raise
-        return node, device_shares
+        return node, allocated_shares
 
-    def free(self, device_shares: Mapping[ProcessorIdType, Decimal]):
-        for proc, share in device_shares.items():
+    def free(self, allocated_shares: Mapping[ProcessorIdType, Decimal]):
+        for proc, share in allocated_shares.items():
             self.device_shares[proc] -= share
 
     def _find_most_free_node(self):
         zero = self._ctx.create_decimal('0')
         per_node_allocs = defaultdict(lambda: zero)
-        for p, s in self.device_shares:
-            per_node_allocs[self.devices[p].numa_node] += s
+        for p, s in self.device_shares.items():
+            remaining = self.devices[p].max_share() - s
+            per_node_allocs[self.devices[p].numa_node] += remaining
         node, _ = min(
             ((n, alloc) for n, alloc in per_node_allocs.items()),
             key=operator.itemgetter(1))
@@ -136,7 +138,8 @@ class AcceleratorAllocMap:
 
     def _find_largest_free_share(self, node: int=None):
         shares = [
-            (proc, share) for proc, share in self.device_shares
+            (proc, self.devices[proc].max_share() - share)
+            for proc, share in self.device_shares.items()
             if node is None or self.devices[proc].numa_node == node
         ]
         largest_proc_share = max(shares, key=operator.itemgetter(1))
