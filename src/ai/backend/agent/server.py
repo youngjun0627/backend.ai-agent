@@ -341,11 +341,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('running with Docker {0} with API {1}'
                  .format(docker_version['Version'], docker_version['ApiVersion']))
 
-        self.etcd = AsyncEtcd(self.config.etcd_addr, self.config.namespace)
-        self.slots = await detect_slots(self.config.limit_cpus, self.config.limit_gpus)
+        self.etcd = AsyncEtcd(self.config.etcd_addr,
+                              self.config.namespace)
+        # detect_slots() loads accelerator plugins
+        self.slots = await detect_slots(
+            self.etcd,
+            self.config.limit_cpus,
+            self.config.limit_gpus)
         for name, klass in accelerator_types.items():
             devices = klass.list_devices()
-            alloc_map = AcceleratorAllocMap(devices, limit_mask=self.config.limit_gpus)
+            alloc_map = AcceleratorAllocMap(devices,
+                                            limit_mask=self.config.limit_gpus)
             self.accelerators[name] = AcceleratorSet(klass, devices, alloc_map)
         if not skip_detect_manager:
             await self.detect_manager()

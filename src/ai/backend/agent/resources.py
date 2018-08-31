@@ -154,7 +154,7 @@ def bitmask2set(mask):
     return frozenset(bset)
 
 
-async def detect_slots(limit_cpus=None, limit_gpus=None):
+async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
     '''
     Detect available resource of the system and calculate mem/cpu/gpu slots.
     '''
@@ -172,7 +172,7 @@ async def detect_slots(limit_cpus=None, limit_gpus=None):
     for entrypoint in pkg_resources.iter_entry_points(entry_prefix):
         log.info(f'loading accelerator plugin: {entrypoint.module_name}')
         plugin = entrypoint.load()
-        await plugin.init()
+        await plugin.init(etcd)
     for accel_type, accel in accelerator_types.items():
         total_share = sum(
             dev.max_share() for dev in accel.list_devices()
