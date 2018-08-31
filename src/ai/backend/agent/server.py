@@ -692,12 +692,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             volumes.append(f'/home/work/{folder_name}')
             binds.append(f'/{host_path}:/home/work/{folder_name}:rw')
 
-        # Mount the external kernel runner source code directly.
+        # Mount the in-kernel packaes/binaries directly from the host for debugging.
         if self.config.debug_kernel is not None:
             container_pkg_path = ('/usr/local/lib/python3.6/'
                                   'site-packages/ai/backend/')
             volumes.append(container_pkg_path)
             binds.append(f'{self.config.debug_kernel}:{container_pkg_path}:ro')
+        if self.config.debug_hook is not None:
+            container_pkg_path = '/home/sorna/libbaihook.so'
+            volumes.append(container_pkg_path)
+            binds.append(f'{self.config.debug_hook}:{container_pkg_path}:ro')
+        if self.config.debug_jail is not None:
+            container_pkg_path = '/home/sorna/jail'
+            volumes.append(container_pkg_path)
+            binds.append(f'{self.config.debug_jail}:{container_pkg_path}:ro')
 
         container_config = {
             'Image': image_name,
@@ -1243,6 +1251,18 @@ def main():
                help='If set to a path to backend.ai-kernel-runner clone, '
                     'mounts it into the containers so that you can test and debug '
                     'the latest kernel runner code with immediate changes.')
+    parser.add('--debug-jail', type=Path, default=None,
+               env_var='DEBUG_JAIL',
+               help='The path to the jail binary. '
+                    'If set, the agent mounts it into the containers '
+                    'so that you can test and debug the latest jail code '
+                    'with immediate changes.')
+    parser.add('--debug-hook', type=Path, default=None,
+               env_var='DEBUG_HOOK',
+               help='The path to the hook binary. '
+                    'If set, the agent mounts it into the containers '
+                    'so that you can test and debug the latest hook code '
+                    'with immediate changes.')
     parser.add('--debug-skip-container-deletion', action='store_true', default=False,
                help='If specified, skips container deletion when container is dead '
                     'or killed.  You may check the container logs for additional '
@@ -1282,8 +1302,13 @@ def main():
         )
 
     if args.debug_kernel is not None:
+        args.debug_kernel = args.debug_kernel.resolve()
         assert args.debug_kernel.match('ai/backend'), \
-               'debug-kernel path must end with "ai/backend/kernel".'
+               'debug-kernel path must end with "ai/backend".'
+    if args.debug_jail is not None:
+        args.debug_jail = args.debug_jail.resolve()
+    if args.debug_hook is not None:
+        args.debug_hook = args.debug_hook.resolve()
 
     if args.limit_cpus is not None:
         args.limit_cpus = int(args.limit_cpus, 16)
