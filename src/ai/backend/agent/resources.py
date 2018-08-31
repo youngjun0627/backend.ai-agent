@@ -2,6 +2,7 @@ from collections import defaultdict
 from decimal import Decimal, Context as DecimalContext, ROUND_DOWN
 import logging
 import operator
+import pkg_resources
 import sys
 from typing import Container, Collection, Mapping
 
@@ -153,7 +154,7 @@ def bitmask2set(mask):
     return frozenset(bset)
 
 
-def detect_slots(limit_cpus=None, limit_gpus=None):
+async def detect_slots(limit_cpus=None, limit_gpus=None):
     '''
     Detect available resource of the system and calculate mem/cpu/gpu slots.
     '''
@@ -165,10 +166,14 @@ def detect_slots(limit_cpus=None, limit_gpus=None):
     slots = {
         'mem': mem_bytes >> 20,  # MiB
         'cpu': num_cores,        # core count
+        'gpu': '0.0',
     }
-    # TODO: auto-import installed 3rd-party accelerator modules
-    import ai.backend.agent.gpu  # noqa
-    for accel in accelerator_types:
+    entry_prefix = 'backendai_accelerator_v10'
+    for entrypoint in pkg_resources.iter_entry_points(entry_prefix):
+        log.info(f'loading accelerator plugin: {entrypoint.module_name}')
+        plugin = entrypoint.load()
+        await plugin.init()
+    for accel_type, accel in accelerator_types.items():
         total_share = sum(
             dev.max_share() for dev in accel.list_devices()
             if limit_gpus is None or dev.device_id not in limit_gpus)
