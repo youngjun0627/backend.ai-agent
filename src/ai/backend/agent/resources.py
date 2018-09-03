@@ -201,7 +201,7 @@ class AcceleratorAllocMap:
                  limit_mask: Container[ProcessorIdType]=None):
         self._quantum = Decimal('.01')
         self.limit_mask = limit_mask
-        self.devices = devices
+        self.devices = {dev.device_id: dev for dev in devices}
         zero = Decimal('0')
         self.device_shares = {
             p.device_id: zero for p in devices
@@ -224,21 +224,21 @@ class AcceleratorAllocMap:
             # TODO: apply advanced scheduling and make it replacible
             while remaining_share > zero:
                 p, s = self._find_largest_free_share(node)
-                if s >= requested_share:
+                if s >= remaining_share:  # shortcut
+                    self.device_shares[p] += remaining_share
+                    allocated_shares[p] += remaining_share
                     remaining_share = zero
-                    self.device_shares[p] -= requested_share
-                    allocated_shares[p] += requested_share
                 elif s == 0:
                     raise RuntimeError('Cannot allocate requested shares '
                                        f'in NUMA node {node}')
-                else:
-                    remaining_share -= s
-                    self.device_shares[p] -= s
+                else:  # s < remaining_share
+                    self.device_shares[p] += s
                     allocated_shares[p] += s
+                    remaining_share -= s
         except RuntimeError:
             # revert back
             for p, s in allocated_shares.items():
-                self.device_shares[p] += s
+                self.device_shares[p] -= s
             raise
         return node, allocated_shares
 
@@ -250,8 +250,7 @@ class AcceleratorAllocMap:
         zero = Decimal('0')
         per_node_allocs = defaultdict(lambda: zero)
         for p, s in self.device_shares.items():
-            remaining = self.devices[p].max_share() - s
-            per_node_allocs[self.devices[p].numa_node] += remaining
+            per_node_allocs[self.devices[p].numa_node] += s
         node, _ = min(
             ((n, alloc) for n, alloc in per_node_allocs.items()),
             key=operator.itemgetter(1))

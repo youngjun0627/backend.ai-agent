@@ -710,6 +710,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         environ.update({
             k: str(len(resource_spec.cpu_set))
             for k in envs_corecount})
+        environ['LD_PRELOAD'] = '/home/backend.ai/libbaihook.so'
 
         # Inject accelerator-specific env-variables for libbaihook
         accel_docker_args = {}

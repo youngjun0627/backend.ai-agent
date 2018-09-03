@@ -34,7 +34,7 @@ class AbstractAcceleratorInfo(metaclass=ABCMeta):
         Calculates the amount of memory and processing units corresponding to the
         given share.
         '''
-        return 0
+        return 0, 0
 
     @abstractmethod
     def spec_to_share(self, requested_memory: int,

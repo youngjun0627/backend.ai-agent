@@ -5,9 +5,13 @@ import json
 from pathlib import Path
 
 import pytest
+import attr
+
 from ai.backend.agent.vendor import linux
+from ai.backend.agent.accelerator import AbstractAcceleratorInfo
 from ai.backend.agent.resources import (
     CPUAllocMap, KernelResourceSpec,
+    AcceleratorAllocMap,
     Mount, MountPermission,
 )
 
@@ -155,6 +159,109 @@ class TestCPUAllocMap:
             cpu_alloc_map.free({2})
             assert cpu_alloc_map.alloc_per_node == {0: 0, 1: 5, 2: 2}
             assert cpu_alloc_map.core_shares == ({0: 0, 3: 0}, {1: 5}, {2: 2})
+
+
+@attr.s(auto_attribs=True)
+class DummyAcceleratorInfo(AbstractAcceleratorInfo):
+
+    unit_memory = 1 * (2 ** 20)  # 1 MiB
+    unit_proc = 3
+
+    def max_share(self):
+        q = Decimal('.01')
+        return min(Decimal(self.memory_size / type(self).unit_memory).quantize(q),
+                   Decimal(self.processing_units / type(self).unit_proc).quantize(q))
+
+    def share_to_spec(self, share) -> (int, int):
+        return (share * type(self).unit_memory,
+                share * type(self).unit_proc)
+
+    def spec_to_share(self, req_mem, req_proc) -> Decimal:
+        return max(req_mem / type(self).unit_memory,
+                   req_proc / type(self).unit_proc)
+
+
+class TestAcceleratorAllocMap:
+
+    @pytest.fixture
+    def dummy_devices(self):
+        return [
+            DummyAcceleratorInfo('d1', '00:01', 0, 2 * (2 ** 20), 9),
+            DummyAcceleratorInfo('d2', '08:01', 1, 1 * (2 ** 20), 3),
+        ]
+
+    @pytest.fixture
+    def dummy_devices_in_same_node(self):
+        return [
+            DummyAcceleratorInfo('d1', '00:01', 0, 2 * (2 ** 20), 9),
+            DummyAcceleratorInfo('d2', '00:02', 0, 1 * (2 ** 20), 3),
+        ]
+
+    def test_max_share(self, dummy_devices, dummy_devices_in_same_node):
+        assert dummy_devices[0].max_share() == 2
+        assert dummy_devices[1].max_share() == 1
+        assert dummy_devices_in_same_node[0].max_share() == 2
+        assert dummy_devices_in_same_node[1].max_share() == 1
+
+    def test_alloc_free_within_limits(self, dummy_devices):
+        alloc_map = AcceleratorAllocMap(dummy_devices, None)
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('0')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('0')
+
+        node, dev_shares = alloc_map.alloc(Decimal('0.5'))
+        assert node == 0
+        assert dev_shares == {'d1': Decimal('0.5')}
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('0.5')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('0')
+
+        alloc_map.free(dev_shares)
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('0')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('0')
+
+    def test_alloc_free_multi_devices(self, dummy_devices_in_same_node):
+        alloc_map = AcceleratorAllocMap(dummy_devices_in_same_node, None)
+
+        node, dev_shares = alloc_map.alloc(Decimal('2.5'))
+        assert node == 0
+        assert dev_shares == {'d1': Decimal('2.0'), 'd2': Decimal('0.5')}
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('2.0')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('0.5')
+
+        alloc_map.free(dev_shares)
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('0')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('0')
+
+    def test_alloc_free_across_numa_nodes(self, dummy_devices):
+        alloc_map = AcceleratorAllocMap(dummy_devices, None)
+
+        node, dev_shares = alloc_map.alloc(Decimal('1.5'))
+        assert node == 0
+        assert dev_shares == {'d1': Decimal('1.5')}
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('1.5')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('0')
+
+        node, dev_shares = alloc_map.alloc(Decimal('1.0'))
+        assert node == 1
+        assert dev_shares == {'d2': Decimal('1.0')}
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('1.5')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('1.0')
+
+        alloc_map.free({'d1': Decimal('1.5')})
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('0')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('1.0')
+
+        node, dev_shares = alloc_map.alloc(Decimal('1.0'))
+        assert node == 0
+        assert dev_shares == {'d1': Decimal('1.0')}
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('1.0')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('1.0')
+
+    def test_alloc_free_above_limits(self, dummy_devices):
+        alloc_map = AcceleratorAllocMap(dummy_devices, None)
+        with pytest.raises(RuntimeError):
+            _, _ = alloc_map.alloc(Decimal('2.5'))
+        assert alloc_map.device_shares['d1'].normalize() == Decimal('0')
+        assert alloc_map.device_shares['d2'].normalize() == Decimal('0')
 
 
 class TestKernelResourceSpec:
