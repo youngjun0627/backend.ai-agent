@@ -109,7 +109,7 @@ class KernelResourceSpec:
                         dev_share = Decimal(dev_share)
                         share_details[dev_id] = dev_share
                 shares[share_type] = share_details
-        mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',')]
+        mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',') if m]
         return cls(
             numa_node=int(kvpairs['NUMA_NODE']),
             cpu_set=set(map(int, kvpairs['CPU_CORES'].split(','))),
