@@ -1,16 +1,16 @@
 import asyncio
-from decimal import Decimal
 import functools
 from ipaddress import ip_address
 import logging, logging.config
 import os, os.path
 from pathlib import Path
+from pprint import pformat
 import shlex
 import shutil
 import subprocess
 import sys
 import time
-from typing import Collection, NamedTuple
+from typing import Collection, Mapping
 
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
@@ -19,6 +19,7 @@ import aioredis
 import aiotools
 import aiozmq, aiozmq.rpc
 from async_timeout import timeout
+import attr
 import configargparse
 import snappy
 import trafaret as t
@@ -48,6 +49,8 @@ from .files import scandir, upload_output_files_to_s3
 from .accelerator import accelerator_types, AbstractAccelerator
 from .stats import spawn_stat_collector, StatCollectorState
 from .resources import (
+    KernelResourceSpec,
+    Mount, MountPermission,
     bitmask2set, detect_slots,
     CPUAllocMap,
     AcceleratorAllocMap,
@@ -62,19 +65,22 @@ max_upload_size = 100 * 1024 * 1024  # 100 MB
 stat_cache_lifespan = 30.0  # 30 secs
 
 
-class VolumeInfo(NamedTuple):
+@attr.s(auto_attribs=True, slots=True)
+class VolumeInfo:
     name: str             # volume name
     container_path: str   # in-container path as str
     mode: str             # 'rw', 'ro', 'rwm'
 
 
-class RestartTracker(NamedTuple):
+@attr.s(auto_attribs=True, slots=True)
+class RestartTracker:
     request_lock: asyncio.Lock
     destroy_event: asyncio.Event
     done_event: asyncio.Event
 
 
-class AcceleratorSet(NamedTuple):
+@attr.s(auto_attribs=True, slots=True)
+class AcceleratorSet:
     klass: AbstractAccelerator
     devices: Collection[AbstractAccelerator]
     alloc_map: AcceleratorAllocMap
@@ -130,6 +136,16 @@ async def get_kernel_id_from_container(val):
         return name.rsplit('.', 2)[-1]
     except (IndexError, ValueError):
         return None
+
+
+def get_label(labels: Mapping[str, str], name, default):
+    sentinel = object()
+    v = labels.get(f'ai.backend.{name}', sentinel)
+    if v is sentinel:
+        v = labels.get(f'io.sorna.{name}', sentinel)
+        if v is sentinel:
+            return default
+    return v
 
 
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
@@ -229,26 +245,24 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     kernel_host = self.config.kernel_host_override
                 else:
                     kernel_host = '127.0.0.1'
+                config_dir = (self.config.scratch_root /
+                              kernel_id / '.config').resolve()
+                with open(config_dir / 'resource.txt', 'r') as f:
+                    resource_spec = KernelResourceSpec.read_from_file(f)
                 self.container_registry[kernel_id] = {
                     'lang': image[14:],  # len('lablup/kernel-')
-                    'version': int(labels['io.sorna.version']),
+                    'version': int(get_label(labels, 'version', '1')),
                     'container_id': container._id,
                     'kernel_host': kernel_host,
                     'repl_in_port': port_map[2000],
                     'repl_out_port': port_map[2001],
                     'stdin_port': port_map[2002],
                     'stdout_port': port_map[2003],
-                    'numa_node': libnuma.node_of_cpu(next(iter(cpu_set))),
-                    'cpu_set': cpu_set,
-                    'gpu_set': [],  # TODO: implement (using labels?)
-                    'exec_timeout': int(labels['io.sorna.timeout']),
+                    'exec_timeout': int(get_label(labels, 'timeout', '10')),
                     'last_used': time.monotonic(),
-                    'limits': None,
-                    # TODO: implement vfolders
-                    'mounts': None,
                     'runner_tasks': set(),
+                    'resource_spec': resource_spec,
                 }
-                # TODO: recover accelerator_shares from resource.txt
             elif status in {'exited', 'dead', 'removing'}:
                 log.info(f'detected terminated kernel: {kernel_id}')
                 await self.send_event('kernel_terminated', kernel_id,
@@ -497,9 +511,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             tracker = self.restarting_kernels.get(kernel_id)
             if tracker is None:
                 tracker = RestartTracker(
-                    asyncio.Lock(),
-                    asyncio.Event(),
-                    asyncio.Event())
+                    request_lock=asyncio.Lock(),
+                    destroy_event=asyncio.Event(),
+                    done_event=asyncio.Event())
             async with tracker.request_lock:
                 self.restarting_kernels[kernel_id] = tracker
                 await self._destroy_kernel(kernel_id, 'restarting')
@@ -523,8 +537,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             kernel_info = self.container_registry[kernel_id]
             return {
                 'container_id': kernel_info['container_id'],
-                'cpu_set': list(kernel_info['cpu_set']),
-                'gpu_set': list(kernel_info['gpu_set']),
                 'repl_in_port': kernel_info['repl_in_port'],
                 'repl_out_port': kernel_info['repl_out_port'],
                 'stdin_port': kernel_info['stdin_port'],
@@ -578,119 +590,186 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     log.exception(f'reset: destroying {kernel_id}')
             await asyncio.gather(*tasks)
 
-    async def _create_kernel(self, kernel_id, config, restarting=False):
+    async def _create_kernel(self, kernel_id, kernel_config, restarting=False):
 
         await self.send_event('kernel_creating', kernel_id)
 
-        lang: str = config['lang']
-        limits: dict = config['limits']
-        mounts: list = config['mounts']
-        environ: dict = config.get('environ', {})
+        # Read image-specific labels and settings
 
-        assert 'cpu_slot' in limits
-        assert 'gpu_slot' in limits
-        assert 'mem_slot' in limits
+        lang: str = kernel_config['lang']
+        environ: dict = kernel_config.get('environ', {})
+        extra_mount_list = await get_extra_volumes(self.docker, lang)
 
         image_name = f'lablup/kernel-{lang}'
         image_props = await self.docker.images.get(image_name)
         image_labels = image_props['ContainerConfig']['Labels']
 
-        # Read labels and configs
-        version        = int(image_labels.get('io.sorna.version', '1'))
-        # mem_limit      = f"{limits['mem_slot'] * 256}m"
-        mem_limit      = f"{limits['mem_slot']}m"  # mem_slot in MiB
-        exec_timeout   = int(image_labels.get('io.sorna.timeout', '10'))
-        envs_corecount = image_labels.get('io.sorna.envs.corecount', '')
+        version        = int(get_label(image_labels, 'version', '1'))
+        exec_timeout   = int(get_label(image_labels, 'timeout', '10'))
+        envs_corecount = get_label(image_labels, 'envs.corecount', '')
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
-        kernel_features = set(image_labels.get('io.sorna.features', '').split())
+        kernel_features = set(get_label(image_labels, 'features', '').split())
 
-        work_dir = (self.config.scratch_root / kernel_id / '.work').resolve()
-        config_dir = (self.config.scratch_root / kernel_id / '.config').resolve()
+        scratch_dir = self.config.scratch_root / kernel_id
+        work_dir = (scratch_dir / '.work').resolve()
+        config_dir = (scratch_dir / '.config').resolve()
 
-        cpu_set = config.get('cpu_set')
-        if cpu_set is None:
-            requested_cores = int(limits['cpu_slot'])
-            num_cores = min(self.container_cpu_map.num_cores, requested_cores)
-            numa_node, cpu_set = self.container_cpu_map.alloc(num_cores)
+        # PHASE 1: Read existing resource spec or devise a new resource spec.
+
+        if restarting:
+            with open(config_dir / 'resource.txt', 'r') as f:
+                resource_spec = KernelResourceSpec.read_from_file(f)
         else:
-            num_cores = len(cpu_set)
-            numa_node = libnuma.node_of_cpu(next(iter(cpu_set)))
-        if limits['cpu_slot'] < self.container_cpu_map.num_cores and \
-                limits['cpu_slot'] < num_cores + 1:
-            fnum_cores = limits['cpu_slot']
-        else:
-            fnum_cores = num_cores
+            limits = kernel_config['limits']
+            vfolders = kernel_config['mounts']
+            assert 'cpu_slot' in limits
+            assert 'gpu_slot' in limits
+            assert 'mem_slot' in limits
+            resource_spec = KernelResourceSpec(
+                shares={
+                    '_cpu': limits['cpu_slot'],
+                    '_gpu': limits['gpu_slot'],
+                    '_mem': limits['mem_slot'],
+                },
+                mounts=[],
+                scratch_disk_size=0,  # TODO: implement (#70)
+            )
 
-        cpu_set_str = ','.join(map(str, sorted(cpu_set)))
-        environ.update({k: str(num_cores) for k in envs_corecount})
+        # PHASE 2: Apply the resource spec.
+
+        # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
             environ['LOCAL_USER_ID'] = os.getuid()
-        log.debug(f'container config: mem_limit={mem_limit}, '
-                  f'exec_timeout={exec_timeout}, '
-                  f'cores={cpu_set!r}@{numa_node}')
 
-        accel_args = {}
-        cuda_allocated_shares = {}
-
-        if not restarting:
-            os.makedirs(work_dir)
-            os.makedirs(config_dir)
-            # Store custom environment variables for kernel runner.
-            if environ:
-                with open(config_dir / 'environ.txt', 'w') as f:
-                    for k, v in environ.items():
-                        print(f'{k}={v}', file=f)
-            if limits['gpu_slot'] > 0:
-                with open(config_dir / 'resource.txt', 'w') as f:
-                    # TODO: iterate over all configured accelerator sets
-                    accl = self.accelerators['cuda']
-                    _, cuda_allocated_shares = \
-                        accl.alloc_map.alloc(limits['gpu_slot'])
-                    mem_limits = []
-                    proc_limits = []
-                    for dev_id, dev_share in cuda_allocated_shares.items():
-                        device = accl.devices[dev_id]
-                        mem, proc = device.share_to_spec(dev_share)
-                        mem_limits.append((dev_id, mem))
-                        proc_limits.append((dev_id, proc))
-                    cuda_mem_limits = ','.join(
-                        f'{dev_id}:{mem}' for dev_id, mem in
-                        mem_limits
-                    )
-                    cuda_proc_limits = ','.join(
-                        f'{dev_id}:{proc}' for dev_id, proc in
-                        proc_limits
-                    )
-                    print(f'CUDA_MEMORY_LIMITS={cuda_mem_limits}', file=f)
-                    print(f'CUDA_PROCESSOR_LIMITS={cuda_proc_limits}', file=f)
-        else:
-            cuda_allocated_shares \
-                = self.container_registry[kernel_id]['accelerator_shares'] \
-                      .get('cuda', {})
-
-        if limits['gpu_slot'] > 0:
-            # TODO: iterate over all configured accelerator sets
-            accl = self.accelerators['cuda']
-            accel_args = await accl.klass.generate_docker_args(
-                self.docker, numa_node, cuda_allocated_shares)
-
-        mount_list = await get_extra_volumes(self.docker, lang)
+        # Inject Backend.AI-intrinsic mount points and extra mounts
         binds = [
             f'{config_dir}:/home/work/.config:ro',
             f'{work_dir}:/home/work:rw',
         ]
         binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
-                     for v in mount_list)
-        volumes = ['/home/work']
-        volumes.extend(v.container_path for v in mount_list)
-        devices = []
-        gpu_set = config.get('gpu_set', [])
+                     for v in extra_mount_list)
+        volumes = [
+            '/home/work/.config',
+            '/home/work/.work',
+        ]
+        volumes.extend(v.container_path for v in extra_mount_list)
 
-        # Mount vfolders
-        for folder_name, folder_host, folder_id in mounts:
-            host_path = self.config.vfolder_mount / folder_host / folder_id
-            volumes.append(f'/home/work/{folder_name}')
-            binds.append(f'/{host_path}:/home/work/{folder_name}:rw')
+        if restarting:
+            # Reuse previous CPU share.
+            pass
+
+            # Reuse previous memory share.
+            pass
+
+            # Reuse previous accelerator share.
+            pass
+
+            # Reuse previous mounts.
+            for mount in resource_spec.mounts:
+                volumes.append(str(mount.kernel_path))
+                binds.append(str(mount))
+        else:
+            # Realize CPU share.
+            cpu_set = kernel_config.get('cpu_set')
+            if cpu_set is None:
+                requested_cores = int(limits['cpu_slot'])
+                num_cores = min(self.container_cpu_map.num_cores, requested_cores)
+                numa_node, cpu_set = self.container_cpu_map.alloc(num_cores)
+            else:
+                num_cores = len(cpu_set)
+                numa_node = libnuma.node_of_cpu(next(iter(cpu_set)))
+            if limits['cpu_slot'] < self.container_cpu_map.num_cores and \
+                    limits['cpu_slot'] < num_cores + 1:
+                fnum_cores = limits['cpu_slot']
+            else:
+                fnum_cores = num_cores
+            resource_spec.numa_node = numa_node
+            resource_spec.cpu_set = cpu_set
+
+            # Realize memory share. (the creation-config unit is MiB)
+            resource_spec.memory_limit = limits['mem_slot'] * (2 ** 20)
+
+            # Realize accelerator shares.
+            if limits['gpu_slot'] > 0:
+                # TODO: generalize gpu_slot
+                accl = self.accelerators['cuda']
+                _, cuda_allocated_shares = \
+                    accl.alloc_map.alloc(limits['gpu_slot'])
+                resource_spec.shares['cuda'] = cuda_allocated_shares
+
+            # Reallize vfolder mounts.
+            for folder_name, folder_host, folder_id in vfolders:
+                host_path = self.config.vfolder_mount / folder_host / folder_id
+                kernel_path = Path(f'/home/work/{folder_name}')
+                # TODO: apply READ_ONLY for read-only shared vfolders
+                mount = Mount(host_path, kernel_path, MountPermission.READ_WRITE)
+                resource_spec.mounts.append(mount)
+                volumes.append(str(kernel_path))
+                binds.append(str(mount))
+
+            # should no longer be used!
+            del limits
+            del vfolders
+
+        # Inject Backend.AI-intrinsic env-variables for libbaihook and gosu
+        environ.update({
+            k: str(len(resource_spec.cpu_set))
+            for k in envs_corecount})
+
+        # Inject accelerator-specific env-variables for libbaihook
+        accel_docker_args = {}
+        for dev_type, dev_share in resource_spec.shares.items():
+            if dev_type in KernelResourceSpec.reserved_share_types:
+                continue
+            accl = self.accelerators[dev_type]
+            accel_docker_args = await accl.klass.generate_docker_args(
+                self.docker, resource_spec.numa_node, dev_share)
+
+        # PHASE 3: Store the resource spec.
+
+        if restarting:
+            pass
+        else:
+            os.makedirs(work_dir)
+            os.makedirs(config_dir)
+            # Store custom environment variables for kernel runner.
+            with open(config_dir / 'environ.txt', 'w') as f:
+                for k, v in environ.items():
+                    f.write(f'{k}={v}\n')
+            with open(config_dir / 'resource.txt', 'w') as f:
+                resource_spec.write_to_file(f)
+
+                # Store accelerator-specific resource-share preparation
+                for dev_type, dev_shares in resource_spec.shares.items():
+                    if dev_type in KernelResourceSpec.reserved_share_types:
+                        continue
+                    mem_limits = []
+                    proc_limits = []
+                    accl = self.accelerators[dev_type]
+                    for dev_id, dev_share in dev_shares.items():
+                        device = accl.devices[dev_id]
+                        mem, proc = device.share_to_spec(dev_share)
+                        mem_limits.append((dev_id, mem))
+                        proc_limits.append((dev_id, proc))
+                    mlim_str = ','.join(
+                        f'{dev_id}:{mem}' for dev_id, mem in
+                        mem_limits
+                    )
+                    plim_str = ','.join(
+                        f'{dev_id}:{proc}' for dev_id, proc in
+                        proc_limits
+                    )
+                    f.write(f'{dev_type.upper()}_MEMORY_LIMITS={mlim_str}\n')
+                    f.write(f'{dev_type.upper()}_PROCESSOR_LIMITS={plim_str}\n')
+
+        # PHASE 4: Run!
+        log.info(f'kernel {kernel_id} starting with resource spec: \n' +
+                 pformat(attr.asdict(resource_spec)))
+
+        # TODO: Refactor out as separate "Docker execution driver plugin"
+        #   - Refactor volumes/binds lists to a plugin "mount" API
+        #   - Refactor "/home/work" and "/home/backend.ai" prefixes to be specified
+        #     by the plugin implementation.
 
         # Mount the in-kernel packaes/binaries directly from the host for debugging.
         if self.config.debug_kernel is not None:
@@ -699,14 +778,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             volumes.append(container_pkg_path)
             binds.append(f'{self.config.debug_kernel}:{container_pkg_path}:ro')
         if self.config.debug_hook is not None:
+            container_pkg_path = '/home/backend.ai/libbaihook.so'
+            volumes.append(container_pkg_path)
+            binds.append(f'{self.config.debug_hook}:{container_pkg_path}:ro')
             container_pkg_path = '/home/sorna/libbaihook.so'
             volumes.append(container_pkg_path)
             binds.append(f'{self.config.debug_hook}:{container_pkg_path}:ro')
         if self.config.debug_jail is not None:
+            container_pkg_path = '/home/backend.ai/jail'
+            volumes.append(container_pkg_path)
+            binds.append(f'{self.config.debug_jail}:{container_pkg_path}:ro')
             container_pkg_path = '/home/sorna/jail'
             volumes.append(container_pkg_path)
             binds.append(f'{self.config.debug_jail}:{container_pkg_path}:ro')
-
         container_config = {
             'Image': image_name,
             'Tty': True,
@@ -723,19 +807,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'Env': [f'{k}={v}' for k, v in environ.items()],
             'HostConfig': {
                 'MemorySwap': 0,
-                'Memory': utils.readable_size_to_bytes(mem_limit),
+                'Memory': resource_spec.memory_limit,
                 # 'Cpus': fnum_cores,  # seems not working
                 'CpuPeriod': 100000,  # docker default
                 'CpuQuota': int(100000 * fnum_cores),
-                'CpusetCpus': cpu_set_str,
-                'CpusetMems': f'{numa_node}',
+                'CpusetCpus': ','.join(map(str, sorted(resource_spec.cpu_set))),
+                'CpusetMems': f'{resource_spec.numa_node}',
                 'SecurityOpt': ['seccomp=unconfined'],
                 'Binds': binds,
-                'Devices': devices,
                 'PublishAllPorts': True,
             },
         }
-        update_nested_dict(container_config, accel_args)
+        update_nested_dict(container_config, accel_docker_args)
         base_name, _, tag = lang.partition(':')
         kernel_name = f'kernel.{base_name}.{kernel_id}'
         container = await self.docker.containers.create(
@@ -768,17 +851,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,
             'stdout_port': stdout_port,
-            'numa_node': numa_node,
-            'cpu_set': cpu_set,
-            'gpu_set': gpu_set,
             'exec_timeout': exec_timeout,
             'last_used': time.monotonic(),
-            'limits': limits,
-            'mounts': mounts,
             'runner_tasks': set(),
-            'accelerator_shares': {  # TODO: generalize
-                'cuda': cuda_allocated_shares,
-            },
+            'resource_spec': resource_spec,
         }
         log.debug(f'kernel repl-in address: {kernel_host}:{repl_in_port}')
         log.debug(f'kernel repl-out address: {kernel_host}:{repl_out_port}')
@@ -792,8 +868,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'stdin_port': int(stdin_port),
             'stdout_port': int(stdout_port),
             'container_id': container._id,
-            'cpu_set': list(cpu_set),
-            'gpu_set': list(gpu_set),
+            'resource_spec': resource_spec.to_json(),
         }
 
     async def _destroy_kernel(self, kernel_id, reason):
@@ -824,10 +899,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             elif e.status == 404:
                 log.warning(f'_destroy_kernel({kernel_id}) kernel missing, '
                             'forgetting this kernel')
-                reg_entry = self.container_registry[kernel_id]
-                self.container_cpu_map.free(
-                    reg_entry['cpu_set'])
-                for dev_type, dev_shares in reg_entry['accelerator_shares'].items():
+                resource_spec = self.container_registry[kernel_id]['resource_spec']
+                self.container_cpu_map.free(resource_spec.cpu_set)
+                for dev_type, dev_shares in resource_spec.shares.items():
+                    if dev_type in KernelResourceSpec.reserved_share_types:
+                        continue
                     self.accelerators[dev_type].alloc_map.free(dev_shares)
                 self.container_registry.pop(kernel_id, None)
                 pass
@@ -1143,10 +1219,11 @@ print(json.dumps(files))''' % {'path': path}
             except FileNotFoundError:
                 pass
             try:
-                reg_entry = self.container_registry[kernel_id]
-                self.container_cpu_map.free(
-                    reg_entry['cpu_set'])
-                for dev_type, dev_shares in reg_entry['accelerator_shares'].items():
+                resource_spec = self.container_registry[kernel_id]['resource_spec']
+                self.container_cpu_map.free(resource_spec.cpu_set)
+                for dev_type, dev_shares in resource_spec.shares.items():
+                    if dev_type in KernelResourceSpec.reserved_share_types:
+                        continue
                     self.accelerators[dev_type].alloc_map.free(dev_shares)
                 self.container_registry.pop(kernel_id, None)
             except KeyError:
