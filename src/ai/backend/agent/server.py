@@ -766,7 +766,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info(f'kernel {kernel_id} starting with resource spec: \n' +
                  pformat(attr.asdict(resource_spec)))
 
-        # TODO: Refactor out as separate "Docker execution driver plugin"
+        # TODO: Refactor out as separate "Docker execution driver plugin" (#68)
         #   - Refactor volumes/binds lists to a plugin "mount" API
         #   - Refactor "/home/work" and "/home/backend.ai" prefixes to be specified
         #     by the plugin implementation.
