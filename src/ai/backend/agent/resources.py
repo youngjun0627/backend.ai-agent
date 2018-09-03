@@ -1,17 +1,137 @@
 from collections import defaultdict
 from decimal import Decimal, Context as DecimalContext, ROUND_DOWN
+import enum
+import io
+import json
 import logging
 import operator
+from pathlib import Path
 import pkg_resources
 import sys
-from typing import Container, Collection, Mapping
+from typing import Container, Collection, Mapping, Sequence
 
+import attr
 import psutil
 
+from ai.backend.common.utils import readable_size_to_bytes
 from .accelerator import AbstractAcceleratorInfo, ProcessorIdType, accelerator_types
 from .vendor.linux import libnuma
 
 log = logging.getLogger('ai.backend.agent.resources')
+
+
+@attr.s(auto_attribs=True, slots=True)
+class Share:
+    device_id: ProcessorIdType
+    share: Decimal
+
+
+class MountPermission(enum.Enum):
+    READ_ONLY = 'ro'
+    READ_WRITE = 'rw'
+
+
+@attr.s(auto_attribs=True, slots=True)
+class Mount:
+    host_path: Path
+    kernel_path: Path
+    permission: MountPermission
+
+    def __str__(self):
+        return f'{self.host_path}:{self.kernel_path}:{self.permission.value}'
+
+    @classmethod
+    def from_str(cls, s):
+        hp, kp, perm = s.split(':')
+        hp = Path(hp)
+        kp = Path(kp)
+        perm = MountPermission(perm)
+        return cls(hp, kp, perm)
+
+
+@attr.s(auto_attribs=True, slots=True)
+class KernelResourceSpec:
+    shares: Mapping[str, Container[Share]]
+    memory_limit: int = None
+    numa_node: int = None
+    cpu_set: Container[int] = attr.Factory(set)
+    mounts: Sequence[str] = attr.Factory(list)
+    scratch_disk_size: int = None
+
+    reserved_share_types = frozenset(['_cpu', '_mem', '_gpu'])
+
+    def write_to_file(self, file: io.TextIOBase):
+        '''
+        Write the current resource specification into a file-like object.
+        '''
+        mega = lambda num_bytes: (
+            f'{num_bytes // (2 ** 20)}M'
+            if num_bytes > (2 ** 20) else f'{num_bytes}')
+        cpu_set_str = ','.join(sorted(map(str, self.cpu_set)))
+        file.write(f'NUMA_NODE={self.numa_node}\n')
+        file.write(f'CPU_CORES={cpu_set_str}\n')
+        file.write(f'MEMORY_LIMIT={mega(self.memory_limit)}\n')
+        file.write(f'SCRATCH_SIZE={mega(self.scratch_disk_size)}\n')
+        for share_type, shares in self.shares.items():
+            if share_type in type(self).reserved_share_types:
+                shares_str = str(shares)
+            else:
+                shares_str = ','.join(
+                    f'{dev_id}:{dev_share}'
+                    for dev_id, dev_share in shares.items())
+            file.write(f'{share_type.upper()}_SHARES={shares_str}\n')
+        mounts_str = ','.join(map(str, self.mounts))
+        file.write(f'MOUNTS={mounts_str}\n')
+
+    @classmethod
+    def read_from_file(cls, file: io.TextIOBase):
+        '''
+        Read resource specification values from a file-like object.
+        '''
+        kvpairs = {}
+        for line in file:
+            key, val = line.strip().split('=', maxsplit=1)
+            kvpairs[key] = val
+        shares = {}
+        for key, val in kvpairs.items():
+            if key.endswith('_SHARES'):
+                share_type = key[:-7].lower()
+                if share_type in cls.reserved_share_types:
+                    share_details = Decimal(val)
+                else:
+                    share_details = {}
+                    for entry in val.split(','):
+                        dev_id, dev_share = entry.split(':')
+                        try:
+                            dev_id = int(dev_id)
+                        except ValueError:
+                            pass
+                        dev_share = Decimal(dev_share)
+                        share_details[dev_id] = dev_share
+                shares[share_type] = share_details
+        mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',')]
+        return cls(
+            numa_node=int(kvpairs['NUMA_NODE']),
+            cpu_set=set(map(int, kvpairs['CPU_CORES'].split(','))),
+            memory_limit=readable_size_to_bytes(kvpairs['MEMORY_LIMIT']),
+            scratch_disk_size=readable_size_to_bytes(kvpairs['SCRATCH_SIZE']),
+            shares=shares,
+            mounts=mounts,
+        )
+
+    def to_json(self):
+        o = attr.asdict(self)
+        o['cpu_set'] = list(sorted(o['cpu_set']))
+        for dev_type, dev_shares in o['shares'].items():
+            if dev_type in type(self).reserved_share_types:
+                o['shares'][dev_type] = str(dev_shares)
+                continue
+            o['shares'][dev_type] = {
+                dev_id: str(dev_share)
+                for dev_id, dev_share in dev_shares.items()
+            }
+        o['mounts'] = list(map(str, self.mounts))
+        return json.dumps(o)
 
 
 class CPUAllocMap:
