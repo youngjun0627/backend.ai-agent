@@ -1,5 +1,5 @@
 from collections import defaultdict
-from decimal import Decimal, Context as DecimalContext, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN
 import enum
 import io
 import json
@@ -199,17 +199,18 @@ class AcceleratorAllocMap:
     def __init__(self,
                  devices: Collection[AbstractAcceleratorInfo],
                  limit_mask: Container[ProcessorIdType]=None):
-        self._ctx = DecimalContext(rounding=ROUND_DOWN)
+        self._quantum = Decimal('.01')
         self.limit_mask = limit_mask
         self.devices = devices
-        zero = self._ctx.create_decimal('0')
+        zero = Decimal('0')
         self.device_shares = {
             p.device_id: zero for p in devices
             if limit_mask is None or p.device_id in limit_mask
         }
 
     def alloc(self, requested_share: Decimal, node: int=None):
-        requested_share = self._ctx.create_decimal(requested_share)
+        requested_share = Decimal(requested_share) \
+                          .quantize(self._quantum, ROUND_DOWN)
         if node is None:
             # try finding a node, but this also may return "None"
             node = self._find_most_free_node()
@@ -246,7 +247,7 @@ class AcceleratorAllocMap:
             self.device_shares[proc] -= share
 
     def _find_most_free_node(self):
-        zero = self._ctx.create_decimal('0')
+        zero = Decimal('0')
         per_node_allocs = defaultdict(lambda: zero)
         for p, s in self.device_shares.items():
             remaining = self.devices[p].max_share() - s
