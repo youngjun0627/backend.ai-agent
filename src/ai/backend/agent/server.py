@@ -678,11 +678,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             else:
                 num_cores = len(cpu_set)
                 numa_node = libnuma.node_of_cpu(next(iter(cpu_set)))
-            if limits['cpu_slot'] < self.container_cpu_map.num_cores and \
-                    limits['cpu_slot'] < num_cores + 1:
-                fnum_cores = limits['cpu_slot']
-            else:
-                fnum_cores = num_cores
             resource_spec.numa_node = numa_node
             resource_spec.cpu_set = cpu_set
 
@@ -808,9 +803,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'HostConfig': {
                 'MemorySwap': 0,
                 'Memory': resource_spec.memory_limit,
-                # 'Cpus': fnum_cores,  # seems not working
-                'CpuPeriod': 100000,  # docker default
-                'CpuQuota': int(100000 * fnum_cores),
+                'CpuPeriod': 100_000,  # docker default
+                'CpuQuota': int(100_000 * resource_spec.shares['_cpu']),
                 'CpusetCpus': ','.join(map(str, sorted(resource_spec.cpu_set))),
                 'CpusetMems': f'{resource_spec.numa_node}',
                 'SecurityOpt': ['seccomp=unconfined'],
