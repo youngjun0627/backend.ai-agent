@@ -1345,7 +1345,7 @@ def main():
                help='The hexademical mask to limit available CPUs '
                     'reported to the manager (default: not limited)')
     parser.add('--limit-gpus', type=str, default=None,
-               help='The hexademical mask to limit available GPUs '
+               help='The hexademical mask to limit available CUDA GPUs '
                     'reported to the manager (default: not limited)')
     parser.add('--scratch-root', type=Path,
                default=Path('/var/cache/scratches'),

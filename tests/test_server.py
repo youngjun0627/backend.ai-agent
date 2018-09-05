@@ -33,6 +33,12 @@ async def agent(request, tmpdir, event_loop):
     config.debug_kernel = None
     config.kernel_aliases = None
     config.scratch_root = Path(tmpdir)
+    config.limit_cpus = None
+    config.limit_gpus = None
+    config.debug_kernel = None
+    config.debug_hook = None
+    config.debug_jail = None
+    config.debug_skip_container_deletion = False
 
     agent = None
 
