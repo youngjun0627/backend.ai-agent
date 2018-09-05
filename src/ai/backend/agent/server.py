@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 import functools
 from ipaddress import ip_address
 import logging, logging.config
@@ -627,9 +628,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             assert 'mem_slot' in limits
             resource_spec = KernelResourceSpec(
                 shares={
-                    '_cpu': limits['cpu_slot'],
-                    '_gpu': limits['gpu_slot'],
-                    '_mem': limits['mem_slot'],
+                    '_cpu': Decimal(limits['cpu_slot']),
+                    '_gpu': Decimal(limits['gpu_slot']),
+                    '_mem': Decimal(limits['mem_slot']),
                 },
                 mounts=[],
                 scratch_disk_size=0,  # TODO: implement (#70)
@@ -681,8 +682,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             resource_spec.numa_node = numa_node
             resource_spec.cpu_set = cpu_set
 
-            # Realize memory share. (the creation-config unit is MiB)
-            resource_spec.memory_limit = limits['mem_slot'] * (2 ** 20)
+            # Realize memory share. (the creation-config unit is 1 GiB)
+            resource_spec.memory_limit = int(limits['mem_slot'] * (2 ** 30))
 
             # Realize accelerator shares.
             if limits['gpu_slot'] > 0:
