@@ -4,6 +4,21 @@ Changes
 1.4.0 (to be released)
 ----------------------
 
+- Generalizes accelerator supports
+
+  - Accelerators such as CUDA GPUs can be installed as a separate plugin (#66)
+
+  - Adds support for nvidia-docker v2 (#64)
+
+  - Adds support for allocation of multiple accelerators for one kernel container as
+    well as partial shares of each accelerator (#66)
+
+- Revamp the agent restart and kernel initialization processes (#35, #73)
+
+- The view of the agent can be limited to specific CPU cores and GPUs
+  using extra CLI arguments: ``--limit-cpus``, ``--limit-gpus`` for
+  debugging and performance benchmarks. (#65)
+
 1.3.7 (2018-04-05)
 ------------------
 
