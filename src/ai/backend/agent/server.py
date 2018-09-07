@@ -946,6 +946,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             self.container_registry[kernel_id]['last_used'] = time.monotonic()
         except KeyError:
+            await self.send_event('kernel_terminated',
+                                  kernel_id, 'self-terminated',
+                                  None)
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
                                '(might be terminated)') from None
 
