@@ -874,6 +874,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.warning(f'_destroy_kernel({kernel_id}) kernel missing '
                         '(already dead?)')
             await self.clean_kernel(kernel_id)
+            await self.send_event('kernel_terminated',
+                                  kernel_id, 'self-terminated',
+                                  None)
             return
         container = self.docker.containers.container(cid)
         await self.clean_runner(kernel_id)
