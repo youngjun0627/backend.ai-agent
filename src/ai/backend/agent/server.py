@@ -626,11 +626,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             assert 'cpu_slot' in limits
             assert 'gpu_slot' in limits
             assert 'mem_slot' in limits
+            limits['cpu_slot'] = Decimal(limits['cpu_slot'])
+            limits['mem_slot'] = Decimal(limits['mem_slot'])
+            limits['gpu_slot'] = Decimal(limits['gpu_slot'])
             resource_spec = KernelResourceSpec(
                 shares={
-                    '_cpu': Decimal(limits['cpu_slot']),
-                    '_gpu': Decimal(limits['gpu_slot']),
-                    '_mem': Decimal(limits['mem_slot']),
+                    '_cpu': limits['cpu_slot'],
+                    '_mem': limits['mem_slot'],
+                    '_gpu': limits['gpu_slot'],
                 },
                 mounts=[],
                 scratch_disk_size=0,  # TODO: implement (#70)
@@ -874,6 +877,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.warning(f'_destroy_kernel({kernel_id}) kernel missing '
                         '(already dead?)')
             await self.clean_kernel(kernel_id)
+            await self.send_event('kernel_terminated',
+                                  kernel_id, 'self-terminated',
+                                  None)
             return
         container = self.docker.containers.container(cid)
         await self.clean_runner(kernel_id)
@@ -943,8 +949,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             self.container_registry[kernel_id]['last_used'] = time.monotonic()
         except KeyError:
+            await self.send_event('kernel_terminated',
+                                  kernel_id, 'self-terminated',
+                                  None)
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
-                               '(might be terminated)') from None
+                               '(might be terminated--try it again)') from None
 
         runner = await self._ensure_runner(kernel_id, api_version=api_version)
 
