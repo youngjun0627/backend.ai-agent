@@ -772,25 +772,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         #     by the plugin implementation.
 
         # Mount the in-kernel packaes/binaries directly from the host for debugging.
+        def _mount(host_path, container_path, perm='ro'):
+            nonlocal volumes, binds
+            binds.append(f'{host_path}:{container_path}:{perm}')
+
         if self.config.debug_kernel is not None:
-            container_pkg_path = ('/usr/local/lib/python3.6/'
-                                  'site-packages/ai/backend/')
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_kernel}:{container_pkg_path}:ro')
+            _mount(self.config.debug_kernel,
+                   '/usr/local/lib/python3.6/site-packages/ai/backend/')
         if self.config.debug_hook is not None:
-            container_pkg_path = '/home/backend.ai/libbaihook.so'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_hook}:{container_pkg_path}:ro')
-            container_pkg_path = '/home/sorna/libbaihook.so'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_hook}:{container_pkg_path}:ro')
+            _mount(self.config.debug_hook, '/home/backend.ai/libbaihook.so')
+            _mount(self.config.debug_hook, '/home/sorna/libbaihook.so')
         if self.config.debug_jail is not None:
-            container_pkg_path = '/home/backend.ai/jail'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_jail}:{container_pkg_path}:ro')
-            container_pkg_path = '/home/sorna/jail'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_jail}:{container_pkg_path}:ro')
+            _mount(self.config.debug_jail, '/home/backend.ai/jail')
+            _mount(self.config.debug_jail, '/home/sorna/jail')
+
         container_config = {
             'Image': image_name,
             'Tty': True,
