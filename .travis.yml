@@ -89,7 +89,7 @@ jobs:
       install: skip
       before_script: skip
       script: skip
-      after_success: skip
+      after_script: skip
       deploy:
         on:
           tags: true
