@@ -90,6 +90,7 @@ jobs:
       before_script: skip
       script: skip
       after_script: skip
+      after_success: true
       deploy:
         on:
           tags: true
