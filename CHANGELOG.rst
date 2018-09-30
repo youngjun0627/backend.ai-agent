@@ -1,8 +1,8 @@
 Changes
 =======
 
-1.4.0 (to be released)
-----------------------
+1.4.0 (2018-09-30)
+------------------
 
 - Generalizes accelerator supports
 
