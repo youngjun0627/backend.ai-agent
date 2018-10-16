@@ -602,7 +602,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         extra_mount_list = await get_extra_volumes(self.docker, lang)
 
         image_name = f'lablup/kernel-{lang}'
-        image_props = await self.docker.images.get(image_name)
+        image_props = await self.docker.images.inspect(image_name)
         image_labels = image_props['ContainerConfig']['Labels']
 
         version        = int(get_label(image_labels, 'version', '1'))
