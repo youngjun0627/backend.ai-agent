@@ -47,6 +47,10 @@ class InputRequestPending(RunEvent):
     pass
 
 
+class CleanFinished(RunEvent):
+    pass
+
+
 class BuildFinished(RunEvent):
     pass
 
@@ -126,6 +130,10 @@ class KernelRunner:
             self.read_task = None
 
     async def feed_batch(self, opts):
+        self.input_stream.write([
+            b'clean',
+            opts.get('clean', '').encode('utf8'),
+        ])
         self.input_stream.write([
             b'build',
             opts.get('build', '').encode('utf8'),
@@ -247,6 +255,9 @@ class KernelRunner:
                     if rec.msg_type == 'finished':
                         data = json.loads(rec.data) if rec.data else {}
                         raise RunFinished(data)
+                    elif rec.msg_type == 'clean-finished':
+                        data = json.loads(rec.data) if rec.data else {}
+                        raise CleanFinished(data)
                     elif rec.msg_type == 'build-finished':
                         data = json.loads(rec.data) if rec.data else {}
                         raise BuildFinished(data)
@@ -260,6 +271,16 @@ class KernelRunner:
                 'runId': self.current_run_id,
                 'status': 'continued',
                 'exitCode': None,
+                'options': None,
+            }
+            type(self).aggregate_console(result, records, api_ver)
+            self.resume_output_queue()
+            return result
+        except CleanFinished as e:
+            result = {
+                'runId': self.current_run_id,
+                'status': 'clean-finished',
+                'exitCode': e.data.get('exitCode'),
                 'options': None,
             }
             type(self).aggregate_console(result, records, api_ver)

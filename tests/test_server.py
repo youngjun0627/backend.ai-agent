@@ -273,6 +273,47 @@ async def test_execute(agent, kernel_info):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_execute_batch_mode(agent, kernel_info):
+    # Test with lua:5.3-alpine image only
+    api_ver = 2
+    kid = kernel_info['id']
+    runid = 'test-run-id'
+    mode = 'batch'
+    code = ''
+    opt = {'clean': '*',
+           'build': '*',
+           'exec': '*'}
+
+    # clean_finished = False
+    build_finished = False
+
+    await agent.upload_file(kid, 'main.lua', b'print(17)')
+    while True:
+        ret = await agent.execute(api_ver, kid, runid, mode, code, opt)
+        if ret['status'] == 'finished':
+            # assert clean_finished and build_finished
+            assert build_finished
+            break
+        # elif ret['status'] == 'clean-finished':
+        #     assert not clean_finished and not build_finished
+        #     clean_finished = True
+        #     mode = 'continue'
+        elif ret['status'] == 'build-finished':
+            # assert clean_finished and not build_finished
+            assert not build_finished
+            build_finished = True
+            mode = 'continue'
+        elif ret['status'] == 'continued':
+            mode = 'continue'
+        else:
+            raise Exception('Invalid execution status')
+
+    assert ret['console'][0][0] == 'stdout'
+    assert ret['console'][0][1] == '17\n'
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_upload_file(agent, kernel_info):
     fname = 'test.txt'
     await agent.upload_file(kernel_info['id'], fname, b'test content')
