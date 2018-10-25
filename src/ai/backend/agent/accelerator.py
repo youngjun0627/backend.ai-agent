@@ -5,6 +5,7 @@ from typing import (
     Mapping, TypeVar, Optional,
 )
 
+import aiodocker
 import attr
 
 ProcessorIdType = TypeVar('ProcessorIdType', int, str, Hashable)
@@ -31,8 +32,8 @@ class AbstractAcceleratorInfo(metaclass=ABCMeta):
     @abstractmethod
     def share_to_spec(self, share: decimal.Decimal) -> (int, int):
         '''
-        Calculates the amount of memory and processing units corresponding to the
-        given share.
+        Calculates the amount of memory and processing units
+        corresponding to the given share.
         '''
         return 0, 0
 
@@ -40,8 +41,9 @@ class AbstractAcceleratorInfo(metaclass=ABCMeta):
     def spec_to_share(self, requested_memory: int,
                       requested_proc_units: int) -> decimal.Decimal:
         '''
-        Calculates the minimum required share to guarantee the given requested
-        resource specification (memory in bytes and the number of processing units).
+        Calculates the minimum required share to guarantee the given
+        requested resource specification (memory in bytes and the number
+        of processing units).
         '''
         return decimal.Decimal('0')
 
@@ -63,6 +65,6 @@ class AbstractAccelerator(metaclass=ABCMeta):
             cls,
             docker: 'aiodocker.docker.Docker',
             numa_node: int,
-            limit_gpus: Container[ProcessorIdType]=None) \
+            limit_gpus: Container[ProcessorIdType] = None) \
             -> Mapping[str, Any]:
         return {}

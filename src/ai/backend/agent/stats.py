@@ -340,8 +340,9 @@ def main(args):
     stats_sock = context.socket(zmq.PUSH)
     stats_sock.setsockopt(zmq.LINGER, 2000)
     stats_sock.connect(args.sockaddr)
-    send_stat = functools.partial(stats_sock.send_serialized,
-                             serialize=lambda v: [msgpack.packb(v)])
+    send_stat = functools.partial(
+        stats_sock.send_serialized,
+        serialize=lambda v: [msgpack.packb(v)])
     stat = ContainerStat()
 
     if args.type == 'cgroup':

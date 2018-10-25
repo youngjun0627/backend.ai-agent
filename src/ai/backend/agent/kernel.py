@@ -74,7 +74,7 @@ class KernelRunner:
         self.finished_at = None
         self.kernel_id = kernel_id
         self.kernel_host = kernel_host
-        self.repl_in_port  = repl_in_port
+        self.repl_in_port = repl_in_port
         self.repl_out_port = repl_out_port
         self.input_stream = None
         self.output_stream = None
@@ -429,6 +429,6 @@ class KernelRunner:
                     self.finished_at = time.monotonic()
             except (asyncio.CancelledError, aiozmq.ZmqStreamClosed, GeneratorExit):
                 break
-            except:
+            except Exception:
                 log.exception('unexpected error')
                 break

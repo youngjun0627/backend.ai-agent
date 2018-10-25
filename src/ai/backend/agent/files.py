@@ -3,9 +3,10 @@ import logging
 import os
 from pathlib import Path
 
+from ai.backend.common.logging import BraceStyleAdapter
 import botocore, aiobotocore
 
-log = logging.getLogger('ai.backend.agent.files')
+log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.files'))
 
 # the names of following AWS variables follow boto3 convention.
 s3_access_key = os.environ.get('AWS_ACCESS_KEY_ID', 'dummy-access-key')
@@ -51,7 +52,7 @@ async def upload_output_files_to_s3(initial_file_stats,
                                         Body=content,
                                         ACL='public-read')
             except botocore.exceptions.ClientError as exc:
-                log.exception('S3 upload error')
+                log.exception('S3 upload error {!r}', exc)
             except IOError:
                 log.exception('Could not read output file')
             else:
