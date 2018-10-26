@@ -66,7 +66,7 @@ async def test_upload_output_files_to_s3(fake_s3_keys, mocker):
 
 @pytest.mark.asyncio
 async def test_s3_access_key_required(mocker):
-    mock_warn = mocker.patch.object(logging.Logger, 'warning')
+    mock_warn = mocker.patch.object(logging.LoggerAdapter, 'warning')
 
     with tempfile.TemporaryDirectory() as tmpdir:
         file1 = Path(tmpdir) / 'test.txt'
