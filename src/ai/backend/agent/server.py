@@ -219,6 +219,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if not hasattr(self.config, 'docker_registry') \
                 or self.config.docker_registry is None:
             docker_registry = await self.etcd.get('nodes/docker_registry')
+            if not docker_registry:
+                docker_registry = 'lablup'
             self.config.docker_registry = docker_registry
         log.info('configured redis_addr: {0}', self.config.redis_addr)
         log.info('configured event_addr: {0}', self.config.event_addr)
