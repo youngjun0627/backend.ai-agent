@@ -216,8 +216,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if not hasattr(self.config, 'event_addr') or self.config.event_addr is None:
             self.config.event_addr = host_port_pair(
                 await self.etcd.get('nodes/manager/event_addr'))
+        if not hasattr(self.config, 'docker_registry') \
+                or self.config.docker_registry is None:
+            docker_registry = await self.etcd.get('nodes/docker_registry')
+            self.config.docker_registry = docker_registry
         log.info('configured redis_addr: {0}', self.config.redis_addr)
         log.info('configured event_addr: {0}', self.config.event_addr)
+        log.info('configured docker_registry: {0}', self.config.docker_registry)
         vfolder_mount = await self.etcd.get('volumes/_mount')
         if vfolder_mount is None:
             vfolder_mount = '/mnt'
@@ -603,7 +608,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         environ: dict = kernel_config.get('environ', {})
         extra_mount_list = await get_extra_volumes(self.docker, lang)
 
-        image_name = f'lablup/kernel-{lang}'
+        image_name = f'{self.config.docker_registry}/kernel-{lang}'
         image_props = await self.docker.images.get(image_name)
         image_labels = image_props['ContainerConfig']['Labels']
 
