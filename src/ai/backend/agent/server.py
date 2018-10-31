@@ -600,6 +600,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     log.exception('reset: destroying {0}', kernel_id)
             await asyncio.gather(*tasks)
 
+    @aiozmq.rpc.method
+    async def clean_all_kernels(self, reason: str, blocking: bool = False):
+        log.debug('rpc::clean_all_kernels({0}, blocking={1})', reason, blocking)
+        async with self.handle_rpc_exception():
+            return await self._clean_all_kernels(reason, blocking=blocking)
+
     async def _create_kernel(self, kernel_id, kernel_config, restarting=False):
 
         await self.send_event('kernel_creating', kernel_id)
@@ -1262,7 +1268,7 @@ print(json.dumps(files))''' % {'path': path}
                 pass
         await asyncio.gather(*tasks)
 
-    async def clean_all_kernels(self, blocking=False):
+    async def _clean_all_kernels(self, reason, blocking=False):
         log.info('cleaning all kernels...')
         kernel_ids = tuple(self.container_registry.keys())
         tasks = []
@@ -1271,7 +1277,7 @@ print(json.dumps(files))''' % {'path': path}
                 self.blocking_cleans[kernel_id] = asyncio.Event()
         for kernel_id in kernel_ids:
             task = asyncio.ensure_future(
-                self._destroy_kernel(kernel_id, 'agent-termination'))
+                self._destroy_kernel(kernel_id, reason))
             tasks.append(task)
         await asyncio.gather(*tasks)
         if blocking:

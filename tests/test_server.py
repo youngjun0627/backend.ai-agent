@@ -371,6 +371,27 @@ async def test_reset(agent, docker):
                 await container.delete(force=True)
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_clean_all_kernels(agent):
+    kernel_id = str(uuid.uuid4())
+    config = {
+        'lang': 'lua:5.3-alpine',
+        'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
+        'mounts': [],
+        'environ': {},
+    }
+
+    await agent.create_kernel(kernel_id, config)
+    container_info = agent.container_registry[kernel_id]
+
+    assert container_info
+
+    await agent.clean_all_kernels('test')
+
+    assert not agent.container_registry
+
+
 '''
 def test_main(mocker, tmpdir):
     import sys
