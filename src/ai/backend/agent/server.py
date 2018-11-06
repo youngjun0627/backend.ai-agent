@@ -42,7 +42,7 @@ except ImportError:
 from ai.backend.common import utils, identity, msgpack
 from ai.backend.common.argparse import (
     port_no, HostPortPair,
-    host_port_pair, positive_int)
+    host_port_pair, non_negative_int)
 from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsd, DummySentry
@@ -218,6 +218,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if not hasattr(self.config, 'event_addr') or self.config.event_addr is None:
             self.config.event_addr = host_port_pair(
                 await self.etcd.get('nodes/manager/event_addr'))
+        if not hasattr(self.config, 'idle_timeout') or \
+                self.config.idle_timeout is None:
+            idle_timeout = await self.etcd.get('nodes/idle_timeout')
+            if idle_timeout is None:
+                idle_timeout = 600  # default: 10 minutes
+            self.config.idle_timeout = idle_timeout
         if not hasattr(self.config, 'docker_registry') \
                 or self.config.docker_registry is None:
             docker_registry = await self.etcd.get('nodes/docker_registry')
@@ -413,7 +419,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Send the first heartbeat.
         self.hb_timer    = aiotools.create_timer(self.heartbeat, 3.0)
-        self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
+        if self.config.idle_timeout != 0:
+            # idle_timeout == 0 means there is no timeout.
+            self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
 
         # Start serving requests.
         agent_addr = f'tcp://*:{self.config.agent_port}'
@@ -1353,7 +1361,7 @@ def main():
                env_var='BACKEND_ETCD_ADDR',
                default=HostPortPair(ip_address('127.0.0.1'), 2379),
                help='The host:port pair of the etcd cluster or its proxy.')
-    parser.add('--idle-timeout', type=positive_int, default=600,
+    parser.add('--idle-timeout', type=non_negative_int, default=None,
                help='The maximum period of time allowed for kernels to wait '
                     'further requests.')
     parser.add('--debug-kernel', type=Path, default=None,

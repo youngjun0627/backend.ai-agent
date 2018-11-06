@@ -89,6 +89,15 @@ def agent(loop, docker, config, events):
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestAgent:
+    async def test_infinite_idle_time(self, loop, docker, config, events, mocker):
+        config.idle_timeout = 0
+        mock_agent_cleanup_task = mocker.patch.object(AgentRPCServer,
+                                                      'clean_old_kernels')
+        agent = AgentRPCServer(docker, config, events, loop=loop)
+        await agent.init(skip_detect_manager=True)
+
+        assert not mock_agent_cleanup_task.called
+
     async def test_too_large_file_not_uploaded(self, agent, tmpdir, mocker):
         from ai.backend.agent import server
         original_max_upload_size = server.max_upload_size

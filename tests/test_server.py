@@ -28,8 +28,8 @@ async def agent(request, tmpdir, event_loop):
     config.etcd_addr = host_port_pair(etcd_addr)
     config.redis_addr = host_port_pair(redis_addr)
     config.event_addr = '127.0.0.1:5000'  # dummy value
+    config.idle_timeout = None
     config.docker_registry = 'lablup'
-    config.idle_timeout = 600
     config.debug = True
     config.debug_kernel = None
     config.kernel_aliases = None
@@ -123,6 +123,11 @@ async def kernel_info(agent, docker):
 def test_ping(agent):
     ret = agent.ping('ping~')
     assert ret == 'ping~'
+
+
+@pytest.mark.integration
+def test_default_idle_timeout(agent):
+    assert agent.config.idle_timeout == 600
 
 
 @pytest.mark.integration
