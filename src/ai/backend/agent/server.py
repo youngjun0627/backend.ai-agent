@@ -184,6 +184,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.rpc_server = None
         self.event_sock = None
+        self.scan_images_timer = None
         self.monitor_fetch_task = None
         self.monitor_handle_task = None
         self.hb_timer = None
@@ -279,7 +280,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await self.send_event('kernel_terminated', kernel_id,
                                       'self-terminated', None)
 
-    async def scan_images(self):
+    async def scan_images(self, interval):
         all_images = await self.docker.images.list()
         self.images.clear()
         for image in all_images:
@@ -382,7 +383,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.detect_manager()
         await self.read_etcd_configs()
         await self.update_status('starting')
-        await self.scan_images()
+        # scan_images task should be done before heartbeat,
+        # so call it here although we spawn a scheduler
+        # for this task below.
+        await self.scan_images(None)
         await self.scan_running_containers()
         await self.check_images()
 
@@ -395,6 +399,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.event_sock = await aiozmq.create_zmq_stream(
             zmq.PUSH, connect=f'tcp://{self.config.event_addr}')
         self.event_sock.transport.setsockopt(zmq.LINGER, 50)
+
+        # Spawn image scanner task.
+        self.scan_images_timer = aiotools.create_timer(self.scan_images, 60.0)
 
         # Spawn stat collector task.
         self.stats = dict()
@@ -435,6 +442,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.clean_runner(kernel_id)
 
         # Stop timers.
+        if self.scan_images_timer is not None:
+            self.scan_images_timer.cancel()
+            await self.scan_images_timer
         if self.hb_timer is not None:
             self.hb_timer.cancel()
             await self.hb_timer
