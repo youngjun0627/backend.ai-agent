@@ -6,6 +6,7 @@ import logging, logging.config
 import os, os.path
 from pathlib import Path
 from pprint import pformat
+import re
 import shlex
 import shutil
 import subprocess
@@ -284,10 +285,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         for image in all_images:
             if image['RepoTags'] is None:
                 continue
+            r_kernel_image = re.compile(r'^.+/kernel-.+$')
             for tag in image['RepoTags']:
-                prefix = 'lablup/kernel-'
-                if tag.startswith(prefix):
-                    self.images.add((tag[len(prefix):], image['Id']))
+                if r_kernel_image.match(tag):
+                    self.images.add((tag, image['Id']))
                     log.debug('found kernel image: {0} {1}', tag, image['Id'])
 
     async def update_status(self, status):
@@ -606,11 +607,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Read image-specific labels and settings
 
-        lang: str = kernel_config['lang']
+        if '/' in kernel_config['lang']:
+            tokens = kernel_config['lang'].split('/')
+            docker_registry = '/'.join(tokens[:-1])
+            lang = tokens[-1]
+        else:
+            # Support for legacy
+            docker_registry = 'lablup'
+            lang = kernel_config['lang']
         environ: dict = kernel_config.get('environ', {})
         extra_mount_list = await get_extra_volumes(self.docker, lang)
 
-        image_name = f'{self.config.docker_registry}/kernel-{lang}'
+        image_name = f'{docker_registry}/kernel-{lang}'
         image_props = await self.docker.images.get(image_name)
         image_labels = image_props['ContainerConfig']['Labels']
 
@@ -851,7 +859,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             kernel_host = self.config.agent_host
 
         self.container_registry[kernel_id] = {
-            'lang': lang,
+            'lang': f'{docker_registry}/{lang}',
             'version': version,
             'container_id': container._id,
             'kernel_host': kernel_host,

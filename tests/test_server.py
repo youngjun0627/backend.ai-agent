@@ -139,7 +139,7 @@ async def test_scan_running_containers(agent, kernel_info, docker):
 async def test_create_kernel(agent, docker):
     kernel_id = str(uuid.uuid4())
     config = {
-        'lang': 'lua:5.3-alpine',
+        'lang': 'lablup/lua:5.3-alpine',
         'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
         'mounts': [],
         'environ': {},
@@ -188,7 +188,7 @@ async def test_restart_kernel(agent, kernel_info):
     kernel_id = kernel_info['id']
     container_id = kernel_info['container_id']
     new_config = {
-        'lang': 'lua:5.3-alpine',
+        'lang': 'lablup/lua:5.3-alpine',
         'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
         'mounts': [],
     }
@@ -231,7 +231,7 @@ async def test_restart_kernel_cancel_code_execution(
         nonlocal kernel_info
         kernel_id = kernel_info['id']
         new_config = {
-            'lang': 'lua:5.3-alpine',
+            'lang': 'lablup/lua:5.3-alpine',
             'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
             'mounts': [],
         }
@@ -328,7 +328,7 @@ async def test_reset(agent, docker):
     kernel_ids = []
     container_ids = []
     config = {
-        'lang': 'lua:5.3-alpine',
+        'lang': 'lablup/lua:5.3-alpine',
         'limits': {'cpu_slot': 1, 'gpu_slot': 0, 'mem_slot': 1},
         'mounts': [],
     }
