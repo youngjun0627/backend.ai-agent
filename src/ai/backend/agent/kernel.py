@@ -105,7 +105,6 @@ class KernelRunner:
         self.output_stream.transport.setsockopt(zmq.LINGER, 50)
 
         self.read_task = asyncio.ensure_future(self.read_output())
-        has_continuation = ClientFeatures.CONTINUATION in self.client_features
         if self.exec_timeout > 0:
             self.watchdog_task = asyncio.ensure_future(self.watchdog())
         else:
@@ -241,11 +240,12 @@ class KernelRunner:
         else:
             raise AssertionError('Unrecognized API version')
 
-    async def get_next_result(self, api_ver=2, flush_timeout=None):
+    async def get_next_result(self, api_ver=2, flush_timeout=2.0):
         # Context: per API request
+        has_continuation = ClientFeatures.CONTINUATION in self.client_features
         try:
             records = []
-            with timeout(flush_timeout):
+            with timeout(flush_timeout if has_continuation else None):
                 while True:
                     rec = await self.output_queue.get()
                     if rec.msg_type in outgoing_msg_types:
