@@ -578,11 +578,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                       run_id: t.String | t.Null,
                       mode: str,
                       code: str,
-                      opts: dict) -> dict:
+                      opts: dict,
+                      flush_timeout: t.Float | t.Null) -> dict:
         log.debug('rpc::execute({0})', kernel_id)
         async with self.handle_rpc_exception():
             result = await self._execute(api_version, kernel_id,
-                                         run_id, mode, code, opts)
+                                         run_id, mode, code, opts,
+                                         flush_timeout)
             return result
 
     @aiozmq.rpc.method
@@ -972,7 +974,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await runner.start()
         return runner
 
-    async def _execute(self, api_version, kernel_id, run_id, mode, text, opts):
+    async def _execute(self, api_version, kernel_id,
+                       run_id, mode, text, opts,
+                       flush_timeout):
         # Save kernel-generated output files in a separate sub-directory
         # (to distinguish from user-uploaded files)
         output_dir = self.config.scratch_root / kernel_id / '.work' / '.output'
@@ -1009,7 +1013,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await runner.feed_input(text)
             elif mode == 'continue':
                 pass
-            result = await runner.get_next_result(api_ver=api_version)
+            result = await runner.get_next_result(
+                api_ver=api_version,
+                flush_timeout=flush_timeout)
 
         except asyncio.CancelledError:
             await runner.close()

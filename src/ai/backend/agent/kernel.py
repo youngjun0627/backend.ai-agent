@@ -106,7 +106,6 @@ class KernelRunner:
 
         self.read_task = asyncio.ensure_future(self.read_output())
         has_continuation = ClientFeatures.CONTINUATION in self.client_features
-        self.flush_timeout = 2.0 if has_continuation else None
         if self.exec_timeout > 0:
             self.watchdog_task = asyncio.ensure_future(self.watchdog())
         else:
@@ -242,11 +241,11 @@ class KernelRunner:
         else:
             raise AssertionError('Unrecognized API version')
 
-    async def get_next_result(self, api_ver=2):
+    async def get_next_result(self, api_ver=2, flush_timeout=None):
         # Context: per API request
         try:
             records = []
-            with timeout(self.flush_timeout):
+            with timeout(flush_timeout):
                 while True:
                     rec = await self.output_queue.get()
                     if rec.msg_type in outgoing_msg_types:
