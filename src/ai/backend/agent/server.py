@@ -1158,6 +1158,7 @@ print(json.dumps(files))''' % {'path': path}
         agent_info = {
             'ip': self.config.agent_host,
             'region': self.config.region,
+            'scaling_group': self.config.scaling_group,
             'addr': f'tcp://{self.config.agent_host}:{self.config.agent_port}',
             'mem_slots': self.slots['mem'],
             'cpu_slots': self.slots['cpu'],
@@ -1314,11 +1315,12 @@ async def server_main(loop, pidx, _args):
     args = _args[0]
     args.instance_id = await identity.get_instance_id()
     args.inst_type = await identity.get_instance_type()
+    args.scaling_group = await identity.get_instance_scaling_group()
     if not args.agent_host:
         args.agent_host = await identity.get_instance_ip()
     args.region = await identity.get_instance_region()
-    log.info('myself: {0} ({1}, host: {2})',
-             args.instance_id, args.inst_type, args.agent_host)
+    log.info('myself: {0} ({1}, scailing group: {2}, host: {3})',
+             args.instance_id, args.inst_type, args.scaling_group, args.agent_host)
 
     # Start RPC server.
     try:
