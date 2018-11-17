@@ -8,6 +8,7 @@ from pathlib import Path
 from pprint import pformat
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -437,7 +438,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Notify the gateway.
         await self.send_event('instance_started')
 
-    async def shutdown(self):
+    async def shutdown(self, stop_signal):
         await self.deregister_myself()
 
         # Stop receiving further requests.
@@ -448,6 +449,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Close all pending kernel runners.
         for kernel_id in self.container_registry.keys():
             await self.clean_runner(kernel_id)
+
+        if stop_signal == signal.SIGTERM:
+            await self.clean_all_kernels(blocking=True)
 
         # Stop timers.
         if self.scan_images_timer is not None:
@@ -809,25 +813,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         #     by the plugin implementation.
 
         # Mount the in-kernel packaes/binaries directly from the host for debugging.
+        def _mount(host_path, container_path, perm='ro'):
+            nonlocal volumes, binds
+            binds.append(f'{host_path}:{container_path}:{perm}')
+
         if self.config.debug_kernel is not None:
-            container_pkg_path = ('/usr/local/lib/python3.6/'
-                                  'site-packages/ai/backend/')
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_kernel}:{container_pkg_path}:ro')
+            _mount(self.config.debug_kernel,
+                   '/usr/local/lib/python3.6/site-packages/ai/backend/')
         if self.config.debug_hook is not None:
-            container_pkg_path = '/home/backend.ai/libbaihook.so'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_hook}:{container_pkg_path}:ro')
-            container_pkg_path = '/home/sorna/libbaihook.so'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_hook}:{container_pkg_path}:ro')
+            _mount(self.config.debug_hook, '/home/backend.ai/libbaihook.so')
+            _mount(self.config.debug_hook, '/home/sorna/libbaihook.so')
         if self.config.debug_jail is not None:
-            container_pkg_path = '/home/backend.ai/jail'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_jail}:{container_pkg_path}:ro')
-            container_pkg_path = '/home/sorna/jail'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_jail}:{container_pkg_path}:ro')
+            _mount(self.config.debug_jail, '/home/backend.ai/jail')
+            _mount(self.config.debug_jail, '/home/sorna/jail')
+
         container_config = {
             'Image': image_name,
             'Tty': True,
@@ -1314,7 +1313,7 @@ print(json.dumps(files))''' % {'path': path}
                 self.blocking_cleans.pop(kernel_id, None)
 
 
-@aiotools.actxmgr
+@aiotools.server
 async def server_main(loop, pidx, _args):
 
     args = _args[0]
@@ -1335,11 +1334,11 @@ async def server_main(loop, pidx, _args):
 
     # Run!
     try:
-        yield
+        stop_signal = yield
     finally:
         # Shutdown.
         log.info('shutting down...')
-        await agent.shutdown()
+        await agent.shutdown(stop_signal)
 
 
 def main():
