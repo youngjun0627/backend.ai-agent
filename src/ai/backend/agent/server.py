@@ -7,6 +7,7 @@ import os, os.path
 from pathlib import Path
 from pprint import pformat
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -412,7 +413,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Notify the gateway.
         await self.send_event('instance_started')
 
-    async def shutdown(self):
+    async def shutdown(self, stop_signal):
         await self.deregister_myself()
 
         # Stop receiving further requests.
@@ -423,6 +424,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Close all pending kernel runners.
         for kernel_id in self.container_registry.keys():
             await self.clean_runner(kernel_id)
+
+        if stop_signal == signal.SIGTERM:
+            await self.clean_all_kernels(blocking=True)
 
         # Stop timers.
         if self.hb_timer is not None:
@@ -1267,7 +1271,7 @@ print(json.dumps(files))''' % {'path': path}
                 self.blocking_cleans.pop(kern_id, None)
 
 
-@aiotools.actxmgr
+@aiotools.server
 async def server_main(loop, pidx, _args):
 
     args = _args[0]
@@ -1288,11 +1292,11 @@ async def server_main(loop, pidx, _args):
 
     # Run!
     try:
-        yield
+        stop_signal = yield
     finally:
         # Shutdown.
         log.info('shutting down...')
-        await agent.shutdown()
+        await agent.shutdown(stop_signal)
 
 
 def main():
