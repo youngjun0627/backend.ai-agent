@@ -198,7 +198,7 @@ class AcceleratorAllocMap:
 
     def __init__(self,
                  devices: Collection[AbstractAcceleratorInfo],
-                 limit_mask: Container[ProcessorIdType]=None):
+                 limit_mask: Container[ProcessorIdType] = None):
         self._quantum = Decimal('.01')
         self.limit_mask = limit_mask
         self.devices = {dev.device_id: dev for dev in devices}
@@ -208,7 +208,7 @@ class AcceleratorAllocMap:
             if limit_mask is None or p.device_id in limit_mask
         }
 
-    def alloc(self, requested_share: Decimal, node: int=None):
+    def alloc(self, requested_share: Decimal, node: int = None):
         requested_share = Decimal(requested_share) \
                           .quantize(self._quantum, ROUND_DOWN)
         if node is None:
@@ -256,7 +256,7 @@ class AcceleratorAllocMap:
             key=operator.itemgetter(1))
         return node
 
-    def _find_largest_free_share(self, node: int=None):
+    def _find_largest_free_share(self, node: int = None):
         shares = [
             (proc, self.devices[proc].max_share() - share)
             for proc, share in self.device_shares.items()

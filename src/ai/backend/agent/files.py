@@ -50,7 +50,7 @@ async def upload_output_files_to_s3(initial_file_stats,
                                         Key=key,
                                         Body=content,
                                         ACL='public-read')
-            except botocore.exceptions.ClientError as exc:
+            except botocore.exceptions.ClientError:
                 log.exception('S3 upload error')
             except IOError:
                 log.exception('Could not read output file')
