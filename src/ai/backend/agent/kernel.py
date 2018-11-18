@@ -14,8 +14,9 @@ import msgpack
 import zmq
 
 from ai.backend.common.utils import StringSetFlag
+from ai.backend.common.logging import BraceStyleAdapter
 
-log = logging.getLogger(__name__)
+log = BraceStyleAdapter(logging.getLogger(__name__))
 
 # msg types visible to the API client.
 # (excluding control signals such as 'finished' and 'waiting-input'
