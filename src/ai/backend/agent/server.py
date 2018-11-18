@@ -699,6 +699,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         ]
         volumes.extend(v.container_path for v in extra_mount_list)
 
+        # Get configurations for the overlay network.
+        network_id = kernel_config.get('network', None)
+        network_ip = kernel_config.get('network_local_ip', None)
+        network_links = kernel_config.get('network_links', [])
+        network_aliases = kernel_config.get('network_aliases', [])
+
         if restarting:
             # Reuse previous CPU share.
             pass
@@ -822,10 +828,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                    '/usr/local/lib/python3.6/site-packages/ai/backend/')
         if self.config.debug_hook is not None:
             _mount(self.config.debug_hook, '/home/backend.ai/libbaihook.so')
-            _mount(self.config.debug_hook, '/home/sorna/libbaihook.so')
         if self.config.debug_jail is not None:
             _mount(self.config.debug_jail, '/home/backend.ai/jail')
-            _mount(self.config.debug_jail, '/home/sorna/jail')
 
         container_config = {
             'Image': image_name,
@@ -854,6 +858,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             },
         }
         update_nested_dict(container_config, accel_docker_args)
+        if network_id is not None:
+            container_config['NetworkingConfig'] = {
+                "EndpointsConfig": {
+                    network_id: {
+                        "IPAMConfig": {
+                            "IPv4Address": network_ip,
+                            "LinkLocalIPs": [],
+                        },
+                        "Links": network_links,
+                        "Aliases": network_aliases,
+                    },
+                },
+            }
         base_name, _, tag = lang.partition(':')
         kernel_name = f'kernel.{base_name}.{kernel_id}'
         container = await self.docker.containers.create(
