@@ -695,7 +695,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                      for v in extra_mount_list)
         volumes = [
             '/home/work/.config',
-            '/home/work/.work',
+            '/home/work/',
         ]
         volumes.extend(v.container_path for v in extra_mount_list)
 
@@ -776,8 +776,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if restarting:
             pass
         else:
-            os.makedirs(work_dir)
-            os.makedirs(config_dir)
+            work_dir.mkdir(parents=True, exist_ok=True)
+            config_dir.mkdir(parents=True, exist_ok=True)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
                 for k, v in environ.items():
@@ -1103,6 +1103,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         def _write_to_disk():
             parent_path.mkdir(parents=True, exist_ok=True)
             dest_path.write_bytes(filedata)
+            log.warning('accept_file written to {0}', dest_path)
 
         try:
             await loop.run_in_executor(None, _write_to_disk)
