@@ -701,8 +701,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Get configurations for the overlay network.
         network_id = kernel_config.get('network', None)
-        network_ip = kernel_config.get('network_local_ip', None)
-        network_links = kernel_config.get('network_links', [])
+        network_ip = kernel_config.get('network_ip', None)
         network_aliases = kernel_config.get('network_aliases', [])
 
         if restarting:
@@ -871,7 +870,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                             "IPv4Address": network_ip,
                             "LinkLocalIPs": [],
                         },
-                        "Links": network_links,
+                        "Links": [],
                         "Aliases": network_aliases,
                     },
                 },
