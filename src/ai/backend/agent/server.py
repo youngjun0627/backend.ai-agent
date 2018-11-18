@@ -783,6 +783,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             with open(config_dir / 'environ.txt', 'w') as f:
                 for k, v in environ.items():
                     f.write(f'{k}={v}\n')
+                if len(network_aliases) == 0:
+                    f.write('BACKEND_HOSTNAME=master\n')
+                else:
+                    f.write(f'BACKEND_HOSTNAME={network_aliases[0]}\n')
+                    f.write(f'BACKEND_LOCAL_IP={network_ip}\n')
             with open(config_dir / 'resource.txt', 'w') as f:
                 resource_spec.write_to_file(f)
 
