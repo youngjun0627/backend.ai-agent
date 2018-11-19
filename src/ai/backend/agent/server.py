@@ -700,7 +700,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         volumes.extend(v.container_path for v in extra_mount_list)
 
         # Get configurations for the overlay network.
-        network_id = kernel_config.get('network', None)
+        network_name = kernel_config.get('network_name', None)
         network_ip = kernel_config.get('network_ip', None)
         network_aliases = kernel_config.get('network_aliases', [])
 
@@ -862,11 +862,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             },
         }
         update_nested_dict(container_config, accel_docker_args)
-        if network_id is not None:
-            container_config['HostConfig']['NetworkMode'] = network_id
+        if network_name is not None:
+            container_config['HostConfig']['NetworkMode'] = network_name
             container_config['NetworkingConfig'] = {
                 "EndpointsConfig": {
-                    network_id: {
+                    network_name: {
                         "IPAMConfig": {
                             "IPv4Address": network_ip,
                             "LinkLocalIPs": [],
