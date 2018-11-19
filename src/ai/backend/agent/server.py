@@ -701,8 +701,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Get configurations for the overlay network.
         network_name = kernel_config.get('network_name', None)
-        network_ip = kernel_config.get('network_ip', None)
-        network_aliases = kernel_config.get('network_aliases', [])
+        network_hostname = kernel_config.get('network_hostname', 'master')
 
         if restarting:
             # Reuse previous CPU share.
@@ -782,11 +781,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             with open(config_dir / 'environ.txt', 'w') as f:
                 for k, v in environ.items():
                     f.write(f'{k}={v}\n')
-                if len(network_aliases) == 0:
-                    f.write('BACKEND_HOSTNAME=master\n')
-                else:
-                    f.write(f'BACKEND_HOSTNAME={network_aliases[0]}\n')
-                    f.write(f'BACKEND_LOCAL_IP={network_ip}\n')
+                f.write(f'BACKEND_HOSTNAME={network_hostname}\n')
             with open(config_dir / 'resource.txt', 'w') as f:
                 resource_spec.write_to_file(f)
 
@@ -862,20 +857,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             },
         }
         update_nested_dict(container_config, accel_docker_args)
+        container_config['Hostname'] = network_hostname
         if network_name is not None:
             container_config['HostConfig']['NetworkMode'] = network_name
-            container_config['NetworkingConfig'] = {
-                "EndpointsConfig": {
-                    network_name: {
-                        "IPAMConfig": {
-                            "IPv4Address": network_ip,
-                            "LinkLocalIPs": [],
-                        },
-                        "Links": [],
-                        "Aliases": network_aliases,
-                    },
-                },
-            }
+            container_config['NetworkingConfig'] = {}
         base_name, _, tag = lang.partition(':')
         kernel_name = f'kernel.{base_name}.{kernel_id}'
         container = await self.docker.containers.create(
