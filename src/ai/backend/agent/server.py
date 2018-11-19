@@ -863,6 +863,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         }
         update_nested_dict(container_config, accel_docker_args)
         if network_id is not None:
+            container_config['HostConfig']['NetworkMode'] = network_id
             container_config['NetworkingConfig'] = {
                 "EndpointsConfig": {
                     network_id: {
