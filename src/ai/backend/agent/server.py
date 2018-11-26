@@ -29,16 +29,6 @@ import trafaret as t
 import uvloop
 import zmq
 import zmq.asyncio
-try:
-    import datadog
-    datadog_available = True
-except ImportError:
-    datadog_available = False
-try:
-    import raven
-    raven_available = True
-except ImportError:
-    raven_available = False
 
 from ai.backend.common import utils, identity, msgpack
 from ai.backend.common.argparse import (
@@ -46,7 +36,8 @@ from ai.backend.common.argparse import (
     host_port_pair, non_negative_int)
 from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import Logger, BraceStyleAdapter
-from ai.backend.common.monitor import DummyStatsd, DummySentry
+from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
+from ai.backend.common.plugin import install_plugins, add_plugin_args
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .accelerator import accelerator_types, AbstractAccelerator
@@ -163,13 +154,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         'rpc_server', 'event_sock',
         'monitor_fetch_task', 'monitor_handle_task', 'stat_collector_task',
         'hb_timer', 'clean_timer',
-        'statsd', 'sentry',
+        'stats_monitor', 'error_monitor',
         'restarting_kernels', 'blocking_cleans',
     )
 
     def __init__(self, config, loop=None):
         self.loop = loop if loop else asyncio.get_event_loop()
         self.config = config
+        self.config.app_name = 'backend.ai-agent'
         self.etcd = None
 
         self.docker = Docker()
@@ -192,14 +184,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = None
         self.stat_collector_task = None
 
-        self.statsd = DummyStatsd()
-        self.sentry = DummySentry()
-        if datadog_available and self.config.datadog_api_key:
-            self.statsd = datadog.statsd
-        if raven_available and self.config.raven_uri:
-            self.sentry = raven.Client(
-                self.config.raven_uri,
-                release=raven.fetch_package_version('backend.ai-agent'))
+        self.stats_monitor = DummyStatsMonitor()
+        self.error_monitor = DummyErrorMonitor()
+
+        plugins = [
+            'stats_monitor',
+            'error_monitor'
+        ]
+        install_plugins(plugins, self, 'attr', self.config)
 
     async def detect_manager(self):
         log.info('detecting the manager...')
@@ -1402,27 +1394,18 @@ def main():
                default=Path('/var/cache/scratches'),
                env_var='BACKEND_SCRATCH_ROOT',
                help='The scratch directory to store container working directories.')
-    if datadog_available:
-        parser.add('--datadog-api-key', env_var='DATADOG_API_KEY',
-                   type=str, default=None,
-                   help='The API key for Datadog monitoring agent.')
-        parser.add('--datadog-app-key', env_var='DATADOG_APP_KEY',
-                   type=str, default=None,
-                   help='The application key for Datadog monitoring agent.')
-    if raven_available:
-        parser.add('--raven-uri', env_var='RAVEN_URI', type=str, default=None,
-                   help='The sentry.io event report URL with DSN.')
+
+    plugins = [
+        'stats_monitor',
+        'error_monitor',
+    ]
+    add_plugin_args(parser, plugins)
+
     Logger.update_log_args(parser)
     args = parser.parse_args()
 
     assert args.scratch_root.exists()
     assert args.scratch_root.is_dir()
-
-    if datadog_available and args.datadog_api_key:
-        datadog.initialize(
-            api_key=args.datadog_api_key,
-            app_key=args.datadog_app_key,
-        )
 
     if args.debug_kernel is not None:
         args.debug_kernel = args.debug_kernel.resolve()
