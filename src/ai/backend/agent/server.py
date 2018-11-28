@@ -491,7 +491,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
         except Exception:
             log.exception('unexpected error')
-            self.sentry.captureException()
+            self.error_monitor.capture_exception()
             raise
 
     @aiozmq.rpc.method
@@ -613,7 +613,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         self._destroy_kernel(kernel_id, 'agent-reset'))
                     tasks.append(task)
                 except Exception:
-                    self.sentry.captureException()
+                    self.error_monitor.capture_exception()
                     log.exception('reset: destroying {0}', kernel_id)
             await asyncio.gather(*tasks)
 
@@ -939,10 +939,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 pass
             else:
                 log.exception('_destroy_kernel({0}) kill error', kernel_id)
-                self.sentry.captureException()
+                self.error_monitor.capture_exception()
         except Exception:
             log.exception('_destroy_kernel({0}) unexpected error', kernel_id)
-            self.sentry.captureException()
+            self.error_monitor.capture_exception()
 
     async def _ensure_runner(self, kernel_id, *, api_version=3):
         # TODO: clean up
@@ -1167,7 +1167,7 @@ print(json.dumps(files))''' % {'path': path}
             log.warning('event dispatch timeout: instance_heartbeat')
         except Exception:
             log.exception('instance_heartbeat failure')
-            self.sentry.captureException()
+            self.error_monitor.capture_exception()
 
     async def fetch_docker_events(self):
         while True:
@@ -1185,7 +1185,7 @@ print(json.dumps(files))''' % {'path': path}
                 break
             except Exception:
                 log.exception('unexpected error')
-                self.sentry.captureException()
+                self.error.capture_exception()
                 break
 
     async def monitor(self):
