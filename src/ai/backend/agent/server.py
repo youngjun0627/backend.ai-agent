@@ -334,7 +334,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         context = zmq.asyncio.Context()
         stats_sock = context.socket(zmq.PULL)
         stats_sock.setsockopt(zmq.LINGER, 1000)
-        stats_sock.bind(f'tcp://{self.config.agent_host}:{self.config.stat_port}')
+        stats_sock.bind(f'tcp://127.0.0.1:{self.config.stat_port}')
+        log.info('collecting stats at port tcp://127.0.0.1:{0}',
+                 self.config.stat_port)
         try:
             recv = functools.partial(stats_sock.recv_serialized,
                                      lambda vs: [msgpack.unpackb(v) for v in vs])
