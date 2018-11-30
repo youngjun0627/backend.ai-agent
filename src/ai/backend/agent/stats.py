@@ -100,8 +100,8 @@ async def spawn_stat_collector(stat_addr, stat_type, cid, *,
     signal_path = 'ipc://' + str(ipc_base_path / f'stat-start-{proc.pid}.sock')
     signal_sock = context.socket(zmq.PAIR)
     signal_sock.connect(signal_path)
-    await signal_sock.recv_multipart()
     try:
+        await signal_sock.recv_multipart()
         yield proc
     finally:
         await signal_sock.send_multipart([b''])
@@ -333,10 +333,11 @@ def main(args):
     mypid = os.getpid()
 
     ipc_base_path = Path('/tmp/backend.ai/ipc')
-    signal_path = 'ipc://' + str(ipc_base_path / f'stat-start-{mypid}.sock')
+    signal_path = str(ipc_base_path / f'stat-start-{mypid}.sock')
+    log.info('creating signal socket at {}', signal_path)
     signal_sock = context.socket(zmq.PAIR)
-    signal_sock.bind(signal_path)
-    with closing(signal_sock):
+    signal_sock.bind('ipc://' + signal_path)
+    try:
 
         stats_sock = context.socket(zmq.PUSH)
         stats_sock.setsockopt(zmq.LINGER, 2000)
@@ -392,6 +393,10 @@ def main(args):
                     time.sleep(1.0)
                 loop.run_until_complete(docker.close())
 
+    finally:
+        signal_sock.close()
+        os.unlink(signal_path)
+        log.info('done using signal socket at {}', signal_path)
     sys.exit(0)
 
 
