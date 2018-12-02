@@ -1158,6 +1158,7 @@ print(json.dumps(files))''' % {'path': path}
         agent_info = {
             'ip': self.config.agent_host,
             'region': self.config.region,
+            'type': self.config.inst_type,
             'scaling_group': self.config.scaling_group,
             'addr': f'tcp://{self.config.agent_host}:{self.config.agent_port}',
             'mem_slots': self.slots['mem'],
