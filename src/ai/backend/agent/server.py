@@ -257,7 +257,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 else:
                     kernel_host = '127.0.0.1'
                 config_dir = (self.config.scratch_root /
-                              kernel_id / '.config').resolve()
+                              kernel_id / 'config').resolve()
                 with open(config_dir / 'resource.txt', 'r') as f:
                     resource_spec = KernelResourceSpec.read_from_file(f)
                 self.container_registry[kernel_id] = {
@@ -334,7 +334,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         context = zmq.asyncio.Context()
         stats_sock = context.socket(zmq.PULL)
         stats_sock.setsockopt(zmq.LINGER, 1000)
-        stats_sock.bind(f'tcp://{self.config.agent_host}:{self.config.stat_port}')
+        stats_sock.bind(f'tcp://127.0.0.1:{self.config.stat_port}')
+        log.info('collecting stats at port tcp://127.0.0.1:{0}',
+                 self.config.stat_port)
         try:
             recv = functools.partial(stats_sock.recv_serialized,
                                      lambda vs: [msgpack.unpackb(v) for v in vs])
@@ -491,7 +493,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
         except Exception:
             log.exception('unexpected error')
-            self.sentry.captureException()
+            self.error_monitor.capture_exception()
             raise
 
     @aiozmq.rpc.method
@@ -613,7 +615,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         self._destroy_kernel(kernel_id, 'agent-reset'))
                     tasks.append(task)
                 except Exception:
-                    self.sentry.captureException()
+                    self.error_monitor.capture_exception()
                     log.exception('reset: destroying {0}', kernel_id)
             await asyncio.gather(*tasks)
 
@@ -645,8 +647,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         kernel_features = set(get_label(image_labels, 'features', '').split())
 
         scratch_dir = self.config.scratch_root / kernel_id
-        work_dir = (scratch_dir / '.work').resolve()
-        config_dir = (scratch_dir / '.config').resolve()
+        config_dir = (scratch_dir / 'config').resolve()
+        work_dir = (scratch_dir / 'work').resolve()
 
         # PHASE 1: Read existing resource spec or devise a new resource spec.
 
@@ -675,19 +677,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # PHASE 2: Apply the resource spec.
 
         # Inject Backend.AI-intrinsic env-variables for gosu
+        # TODO: remove this!
         if KernelFeatures.UID_MATCH in kernel_features:
             environ['LOCAL_USER_ID'] = os.getuid()
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
         binds = [
-            f'{config_dir}:/home/work/.config:ro',
-            f'{work_dir}:/home/work:rw',
+            f'{config_dir}:/home/config:ro',
+            f'{work_dir}:/home/work/:rw',
         ]
         binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
                      for v in extra_mount_list)
         volumes = [
-            '/home/work/.config',
-            '/home/work/',
+            '/home/config',
+            '/home/work',
         ]
         volumes.extend(v.container_path for v in extra_mount_list)
 
@@ -825,6 +828,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         container_config = {
             'Image': image_name,
             'Tty': True,
+            # TODO: 'User': str(os.getuid()),
             'OpenStdin': True,
             'Privileged': False,
             'Volumes': {v: {} for v in volumes},
@@ -946,10 +950,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 pass
             else:
                 log.exception('_destroy_kernel({0}) kill error', kernel_id)
-                self.sentry.captureException()
+                self.error_monitor.capture_exception()
         except Exception:
             log.exception('_destroy_kernel({0}) unexpected error', kernel_id)
-            self.sentry.captureException()
+            self.error_monitor.capture_exception()
 
     async def _ensure_runner(self, kernel_id, *, api_version=3):
         # TODO: clean up
@@ -977,7 +981,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                        flush_timeout):
         # Save kernel-generated output files in a separate sub-directory
         # (to distinguish from user-uploaded files)
-        output_dir = self.config.scratch_root / kernel_id / '.work' / '.output'
+        output_dir = self.config.scratch_root / kernel_id / 'work' / '.output'
 
         restart_tracker = self.restarting_kernels.get(kernel_id)
         if restart_tracker:
@@ -1070,7 +1074,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _accept_file(self, kernel_id, filename, filedata):
         loop = asyncio.get_event_loop()
-        work_dir = self.config.scratch_root / kernel_id / '.work'
+        work_dir = self.config.scratch_root / kernel_id / 'work'
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
@@ -1175,7 +1179,7 @@ print(json.dumps(files))''' % {'path': path}
             log.warning('event dispatch timeout: instance_heartbeat')
         except Exception:
             log.exception('instance_heartbeat failure')
-            self.sentry.captureException()
+            self.error_monitor.capture_exception()
 
     async def fetch_docker_events(self):
         while True:
@@ -1193,7 +1197,7 @@ print(json.dumps(files))''' % {'path': path}
                 break
             except Exception:
                 log.exception('unexpected error')
-                self.sentry.captureException()
+                self.error.capture_exception()
                 break
 
     async def monitor(self):

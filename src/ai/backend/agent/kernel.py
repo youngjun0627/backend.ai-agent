@@ -129,17 +129,26 @@ class KernelRunner:
             self.read_task = None
 
     async def feed_batch(self, opts):
+        clean_cmd = opts.get('clean', '')
+        if clean_cmd is None:
+            clean_cmd = ''
         self.input_stream.write([
             b'clean',
-            opts.get('clean', '').encode('utf8'),
+            clean_cmd.encode('utf8'),
         ])
+        build_cmd = opts.get('build', '')
+        if build_cmd is None:
+            build_cmd = ''
         self.input_stream.write([
             b'build',
-            opts.get('build', '').encode('utf8'),
+            build_cmd.encode('utf8'),
         ])
+        exec_cmd = opts.get('exec', '')
+        if exec_cmd is None:
+            exec_cmd = ''
         self.input_stream.write([
             b'exec',
-            opts.get('exec', '').encode('utf8'),
+            exec_cmd.encode('utf8'),
         ])
 
     async def feed_code(self, text):
