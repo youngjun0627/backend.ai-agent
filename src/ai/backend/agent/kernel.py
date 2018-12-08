@@ -14,8 +14,9 @@ import msgpack
 import zmq
 
 from ai.backend.common.utils import StringSetFlag
+from ai.backend.common.logging import BraceStyleAdapter
 
-log = logging.getLogger(__name__)
+log = BraceStyleAdapter(logging.getLogger(__name__))
 
 # msg types visible to the API client.
 # (excluding control signals such as 'finished' and 'waiting-input'
@@ -105,8 +106,6 @@ class KernelRunner:
         self.output_stream.transport.setsockopt(zmq.LINGER, 50)
 
         self.read_task = asyncio.ensure_future(self.read_output())
-        has_continuation = ClientFeatures.CONTINUATION in self.client_features
-        self.flush_timeout = 2.0 if has_continuation else None
         if self.exec_timeout > 0:
             self.watchdog_task = asyncio.ensure_future(self.watchdog())
         else:
@@ -130,17 +129,26 @@ class KernelRunner:
             self.read_task = None
 
     async def feed_batch(self, opts):
+        clean_cmd = opts.get('clean', '')
+        if clean_cmd is None:
+            clean_cmd = ''
         self.input_stream.write([
             b'clean',
-            opts.get('clean', '').encode('utf8'),
+            clean_cmd.encode('utf8'),
         ])
+        build_cmd = opts.get('build', '')
+        if build_cmd is None:
+            build_cmd = ''
         self.input_stream.write([
             b'build',
-            opts.get('build', '').encode('utf8'),
+            build_cmd.encode('utf8'),
         ])
+        exec_cmd = opts.get('exec', '')
+        if exec_cmd is None:
+            exec_cmd = ''
         self.input_stream.write([
             b'exec',
-            opts.get('exec', '').encode('utf8'),
+            exec_cmd.encode('utf8'),
         ])
 
     async def feed_code(self, text):
@@ -242,11 +250,12 @@ class KernelRunner:
         else:
             raise AssertionError('Unrecognized API version')
 
-    async def get_next_result(self, api_ver=2):
+    async def get_next_result(self, api_ver=2, flush_timeout=2.0):
         # Context: per API request
+        has_continuation = ClientFeatures.CONTINUATION in self.client_features
         try:
             records = []
-            with timeout(self.flush_timeout):
+            with timeout(flush_timeout if has_continuation else None):
                 while True:
                     rec = await self.output_queue.get()
                     if rec.msg_type in outgoing_msg_types:

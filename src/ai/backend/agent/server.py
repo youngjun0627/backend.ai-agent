@@ -8,6 +8,7 @@ from pathlib import Path
 from pprint import pformat
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -28,16 +29,6 @@ import trafaret as t
 import uvloop
 import zmq
 import zmq.asyncio
-try:
-    import datadog
-    datadog_available = True
-except ImportError:
-    datadog_available = False
-try:
-    import raven
-    raven_available = True
-except ImportError:
-    raven_available = False
 
 from ai.backend.common import utils, identity, msgpack
 from ai.backend.common.argparse import (
@@ -45,7 +36,8 @@ from ai.backend.common.argparse import (
     host_port_pair, non_negative_int)
 from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import Logger, BraceStyleAdapter
-from ai.backend.common.monitor import DummyStatsd, DummySentry
+from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
+from ai.backend.common.plugin import install_plugins, add_plugin_args
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .accelerator import accelerator_types, AbstractAccelerator
@@ -162,13 +154,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         'rpc_server', 'event_sock',
         'monitor_fetch_task', 'monitor_handle_task', 'stat_collector_task',
         'hb_timer', 'clean_timer',
-        'statsd', 'sentry',
+        'stats_monitor', 'error_monitor',
         'restarting_kernels', 'blocking_cleans',
     )
 
     def __init__(self, config, loop=None):
         self.loop = loop if loop else asyncio.get_event_loop()
         self.config = config
+        self.config.app_name = 'backend.ai-agent'
         self.etcd = None
 
         self.docker = Docker()
@@ -191,14 +184,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = None
         self.stat_collector_task = None
 
-        self.statsd = DummyStatsd()
-        self.sentry = DummySentry()
-        if datadog_available and self.config.datadog_api_key:
-            self.statsd = datadog.statsd
-        if raven_available and self.config.raven_uri:
-            self.sentry = raven.Client(
-                self.config.raven_uri,
-                release=raven.fetch_package_version('backend.ai-agent'))
+        self.stats_monitor = DummyStatsMonitor()
+        self.error_monitor = DummyErrorMonitor()
+
+        plugins = [
+            'stats_monitor',
+            'error_monitor'
+        ]
+        install_plugins(plugins, self, 'attr', self.config)
 
     async def detect_manager(self):
         log.info('detecting the manager...')
@@ -264,7 +257,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 else:
                     kernel_host = '127.0.0.1'
                 config_dir = (self.config.scratch_root /
-                              kernel_id / '.config').resolve()
+                              kernel_id / 'config').resolve()
                 with open(config_dir / 'resource.txt', 'r') as f:
                     resource_spec = KernelResourceSpec.read_from_file(f)
                 self.container_registry[kernel_id] = {
@@ -341,7 +334,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         context = zmq.asyncio.Context()
         stats_sock = context.socket(zmq.PULL)
         stats_sock.setsockopt(zmq.LINGER, 1000)
-        stats_sock.bind(f'tcp://{self.config.agent_host}:{self.config.stat_port}')
+        stats_sock.bind(f'tcp://127.0.0.1:{self.config.stat_port}')
+        log.info('collecting stats at port tcp://127.0.0.1:{0}',
+                 self.config.stat_port)
         try:
             recv = functools.partial(stats_sock.recv_serialized,
                                      lambda vs: [msgpack.unpackb(v) for v in vs])
@@ -437,7 +432,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Notify the gateway.
         await self.send_event('instance_started')
 
-    async def shutdown(self):
+    async def shutdown(self, stop_signal):
         await self.deregister_myself()
 
         # Stop receiving further requests.
@@ -448,6 +443,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Close all pending kernel runners.
         for kernel_id in self.container_registry.keys():
             await self.clean_runner(kernel_id)
+
+        if stop_signal == signal.SIGTERM:
+            await self.clean_all_kernels(blocking=True)
 
         # Stop timers.
         if self.scan_images_timer is not None:
@@ -495,7 +493,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
         except Exception:
             log.exception('unexpected error')
-            self.sentry.captureException()
+            self.error_monitor.capture_exception()
             raise
 
     @aiozmq.rpc.method
@@ -578,11 +576,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                       run_id: t.String | t.Null,
                       mode: str,
                       code: str,
-                      opts: dict) -> dict:
+                      opts: dict,
+                      flush_timeout: t.Float | t.Null) -> dict:
         log.debug('rpc::execute({0})', kernel_id)
         async with self.handle_rpc_exception():
             result = await self._execute(api_version, kernel_id,
-                                         run_id, mode, code, opts)
+                                         run_id, mode, code, opts,
+                                         flush_timeout)
             return result
 
     @aiozmq.rpc.method
@@ -615,7 +615,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         self._destroy_kernel(kernel_id, 'agent-reset'))
                     tasks.append(task)
                 except Exception:
-                    self.sentry.captureException()
+                    self.error_monitor.capture_exception()
                     log.exception('reset: destroying {0}', kernel_id)
             await asyncio.gather(*tasks)
 
@@ -647,8 +647,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         kernel_features = set(get_label(image_labels, 'features', '').split())
 
         scratch_dir = self.config.scratch_root / kernel_id
-        work_dir = (scratch_dir / '.work').resolve()
-        config_dir = (scratch_dir / '.config').resolve()
+        config_dir = (scratch_dir / 'config').resolve()
+        work_dir = (scratch_dir / 'work').resolve()
 
         # PHASE 1: Read existing resource spec or devise a new resource spec.
 
@@ -677,21 +677,24 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # PHASE 2: Apply the resource spec.
 
         # Inject Backend.AI-intrinsic env-variables for gosu
+        # TODO: remove this!
         if KernelFeatures.UID_MATCH in kernel_features:
             environ['LOCAL_USER_ID'] = os.getuid()
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
         binds = [
-            f'{config_dir}:/home/work/.config:ro',
-            f'{work_dir}:/home/work:rw',
+            f'{config_dir}:/home/config:ro',
+            f'{work_dir}:/home/work/:rw',
         ]
         binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
                      for v in extra_mount_list)
         volumes = [
-            '/home/work/.config',
-            '/home/work/.work',
+            '/home/config',
+            '/home/work',
         ]
         volumes.extend(v.container_path for v in extra_mount_list)
+        print(binds)
+        print(volumes)
 
         if restarting:
             # Reuse previous CPU share.
@@ -807,28 +810,24 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         #     by the plugin implementation.
 
         # Mount the in-kernel packaes/binaries directly from the host for debugging.
+        def _mount(host_path, container_path, perm='ro'):
+            nonlocal volumes, binds
+            binds.append(f'{host_path}:{container_path}:{perm}')
+
         if self.config.debug_kernel is not None:
-            container_pkg_path = ('/usr/local/lib/python3.6/'
-                                  'site-packages/ai/backend/')
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_kernel}:{container_pkg_path}:ro')
+            _mount(self.config.debug_kernel,
+                   '/usr/local/lib/python3.6/site-packages/ai/backend/')
         if self.config.debug_hook is not None:
-            container_pkg_path = '/home/backend.ai/libbaihook.so'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_hook}:{container_pkg_path}:ro')
-            container_pkg_path = '/home/sorna/libbaihook.so'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_hook}:{container_pkg_path}:ro')
+            _mount(self.config.debug_hook, '/home/backend.ai/libbaihook.so')
+            _mount(self.config.debug_hook, '/home/sorna/libbaihook.so')
         if self.config.debug_jail is not None:
-            container_pkg_path = '/home/backend.ai/jail'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_jail}:{container_pkg_path}:ro')
-            container_pkg_path = '/home/sorna/jail'
-            volumes.append(container_pkg_path)
-            binds.append(f'{self.config.debug_jail}:{container_pkg_path}:ro')
+            _mount(self.config.debug_jail, '/home/backend.ai/jail')
+            _mount(self.config.debug_jail, '/home/sorna/jail')
+
         container_config = {
             'Image': image_name,
             'Tty': True,
+            # TODO: 'User': str(os.getuid()),
             'OpenStdin': True,
             'Privileged': False,
             'Volumes': {v: {} for v in volumes},
@@ -946,10 +945,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 pass
             else:
                 log.exception('_destroy_kernel({0}) kill error', kernel_id)
-                self.sentry.captureException()
+                self.error_monitor.capture_exception()
         except Exception:
             log.exception('_destroy_kernel({0}) unexpected error', kernel_id)
-            self.sentry.captureException()
+            self.error_monitor.capture_exception()
 
     async def _ensure_runner(self, kernel_id, *, api_version=3):
         # TODO: clean up
@@ -972,10 +971,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await runner.start()
         return runner
 
-    async def _execute(self, api_version, kernel_id, run_id, mode, text, opts):
+    async def _execute(self, api_version, kernel_id,
+                       run_id, mode, text, opts,
+                       flush_timeout):
         # Save kernel-generated output files in a separate sub-directory
         # (to distinguish from user-uploaded files)
-        output_dir = self.config.scratch_root / kernel_id / '.work' / '.output'
+        output_dir = self.config.scratch_root / kernel_id / 'work' / '.output'
 
         restart_tracker = self.restarting_kernels.get(kernel_id)
         if restart_tracker:
@@ -1009,7 +1010,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await runner.feed_input(text)
             elif mode == 'continue':
                 pass
-            result = await runner.get_next_result(api_ver=api_version)
+            result = await runner.get_next_result(
+                api_ver=api_version,
+                flush_timeout=flush_timeout)
 
         except asyncio.CancelledError:
             await runner.close()
@@ -1066,7 +1069,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _accept_file(self, kernel_id, filename, filedata):
         loop = asyncio.get_event_loop()
-        work_dir = self.config.scratch_root / kernel_id / '.work'
+        work_dir = self.config.scratch_root / kernel_id / 'work'
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
@@ -1172,7 +1175,7 @@ print(json.dumps(files))''' % {'path': path}
             log.warning('event dispatch timeout: instance_heartbeat')
         except Exception:
             log.exception('instance_heartbeat failure')
-            self.sentry.captureException()
+            self.error_monitor.capture_exception()
 
     async def fetch_docker_events(self):
         while True:
@@ -1190,7 +1193,7 @@ print(json.dumps(files))''' % {'path': path}
                 break
             except Exception:
                 log.exception('unexpected error')
-                self.sentry.captureException()
+                self.error.capture_exception()
                 break
 
     async def monitor(self):
@@ -1310,7 +1313,7 @@ print(json.dumps(files))''' % {'path': path}
                 self.blocking_cleans.pop(kernel_id, None)
 
 
-@aiotools.actxmgr
+@aiotools.server
 async def server_main(loop, pidx, _args):
 
     args = _args[0]
@@ -1332,11 +1335,11 @@ async def server_main(loop, pidx, _args):
 
     # Run!
     try:
-        yield
+        stop_signal = yield
     finally:
         # Shutdown.
         log.info('shutting down...')
-        await agent.shutdown()
+        await agent.shutdown(stop_signal)
 
 
 def main():
@@ -1400,27 +1403,18 @@ def main():
                default=Path('/var/cache/scratches'),
                env_var='BACKEND_SCRATCH_ROOT',
                help='The scratch directory to store container working directories.')
-    if datadog_available:
-        parser.add('--datadog-api-key', env_var='DATADOG_API_KEY',
-                   type=str, default=None,
-                   help='The API key for Datadog monitoring agent.')
-        parser.add('--datadog-app-key', env_var='DATADOG_APP_KEY',
-                   type=str, default=None,
-                   help='The application key for Datadog monitoring agent.')
-    if raven_available:
-        parser.add('--raven-uri', env_var='RAVEN_URI', type=str, default=None,
-                   help='The sentry.io event report URL with DSN.')
+
+    plugins = [
+        'stats_monitor',
+        'error_monitor',
+    ]
+    add_plugin_args(parser, plugins)
+
     Logger.update_log_args(parser)
     args = parser.parse_args()
 
     assert args.scratch_root.exists()
     assert args.scratch_root.is_dir()
-
-    if datadog_available and args.datadog_api_key:
-        datadog.initialize(
-            api_key=args.datadog_api_key,
-            app_key=args.datadog_app_key,
-        )
 
     if args.debug_kernel is not None:
         args.debug_kernel = args.debug_kernel.resolve()
