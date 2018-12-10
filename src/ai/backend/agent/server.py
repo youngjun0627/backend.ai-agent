@@ -38,6 +38,7 @@ from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
 from ai.backend.common.plugin import install_plugins, add_plugin_args
+from ai.backend.common.types import ImageRef
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .accelerator import accelerator_types, AbstractAccelerator
@@ -261,7 +262,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 with open(config_dir / 'resource.txt', 'r') as f:
                     resource_spec = KernelResourceSpec.read_from_file(f)
                 self.container_registry[kernel_id] = {
-                    'lang': image[14:],  # len('lablup/kernel-')
+                    'lang': ImageRef(image),
                     'version': int(get_label(labels, 'version', '1')),
                     'container_id': container._id,
                     'kernel_host': kernel_host,
@@ -624,20 +625,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.send_event('kernel_creating', kernel_id)
 
         # Read image-specific labels and settings
+        image_ref = ImageRef(kernel_config['lang'])
+        assert not image_ref.resolve_required(), \
+               'The manager should have resolved the image reference!'
 
-        if '/' in kernel_config['lang']:
-            tokens = kernel_config['lang'].split('/')
-            docker_registry = '/'.join(tokens[:-1])
-            lang = tokens[-1]
-        else:
-            # Support for legacy
-            docker_registry = 'lablup'
-            lang = kernel_config['lang']
         environ: dict = kernel_config.get('environ', {})
-        extra_mount_list = await get_extra_volumes(self.docker, lang)
+        extra_mount_list = await get_extra_volumes(self.docker, image_ref.short)
 
-        image_name = f'{docker_registry}/kernel-{lang}'
-        image_props = await self.docker.images.get(image_name)
+        image_props = await self.docker.images.get(image_ref.canonical)
         image_labels = image_props['ContainerConfig']['Labels']
 
         version        = int(get_label(image_labels, 'version', '1'))
@@ -825,7 +820,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             _mount(self.config.debug_jail, '/home/sorna/jail')
 
         container_config = {
-            'Image': image_name,
+            'Image': image_ref.canonical,
             'Tty': True,
             # TODO: 'User': str(os.getuid()),
             'OpenStdin': True,
@@ -852,8 +847,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             },
         }
         update_nested_dict(container_config, accel_docker_args)
-        base_name, _, tag = lang.partition(':')
-        kernel_name = f'kernel.{base_name}.{kernel_id}'
+        kernel_name = f'kernel.{image_ref.name}.{kernel_id}'
         container = await self.docker.containers.create(
             config=container_config, name=kernel_name)
         cid = container._id
@@ -876,7 +870,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             kernel_host = self.config.agent_host
 
         self.container_registry[kernel_id] = {
-            'lang': f'{docker_registry}/{lang}',
+            'lang': image_ref,
             'version': version,
             'container_id': container._id,
             'kernel_host': kernel_host,
