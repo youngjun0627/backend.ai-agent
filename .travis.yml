@@ -44,7 +44,7 @@ before_install:
   - type -t deactivate && deactivate || true
   - export PATH=/opt/python/3.6/bin:$PATH
 install:
-  - if [[ $TRAVIS_BRANCH == "develop" ]]; then BRANCH="develop"; else BRANCH="master"; fi
+  - if [ -z "$TRAVIS_BRANCH" ]; then BRANCH="master"; else BRANCH="$TRAVIS_BRANCH"; fi
   # install backend.ai-agent
   - |
     python -m venv ~/virtualenv/agent
