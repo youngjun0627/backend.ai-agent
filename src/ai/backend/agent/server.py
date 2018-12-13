@@ -42,7 +42,7 @@ from ai.backend.common.types import ImageRef
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .accelerator import accelerator_types, AbstractAccelerator
-from .stats import spawn_stat_collector, StatCollectorState
+from .stats import collect_agent_live_stats, spawn_stat_collector, StatCollectorState
 from .resources import (
     KernelResourceSpec,
     Mount, MountPermission,
@@ -409,6 +409,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.stats = dict()
         self.stat_collector_task = self.loop.create_task(self.collect_stats())
 
+        # Start container stats collector for existing containers.
+        cgroup_available = (not identity.is_containerized() and
+                            sys.platform.startswith('linux'))
+        stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
+        stat_type = 'cgroup' if cgroup_available else 'api'
+        for kernel_id, info in self.container_registry.items():
+            cid = info['container_id']
+            self.stats[cid] = StatCollectorState(kernel_id)
+            async with spawn_stat_collector(stat_addr, stat_type, cid):
+                pass
+
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
         self.monitor_handle_task = self.loop.create_task(self.monitor())
@@ -688,8 +699,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             '/home/work',
         ]
         volumes.extend(v.container_path for v in extra_mount_list)
-        print(binds)
-        print(volumes)
 
         if restarting:
             # Reuse previous CPU share.
@@ -1152,6 +1161,7 @@ print(json.dumps(files))''' % {'path': path}
         '''
         Send my status information and available kernel images.
         '''
+        await collect_agent_live_stats(self)
         agent_info = {
             'ip': self.config.agent_host,
             'region': self.config.region,

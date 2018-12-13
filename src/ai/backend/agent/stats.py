@@ -47,7 +47,10 @@ def _errcheck(ret, func, args):
 
 @dataclass(frozen=False)
 class ContainerStat:
+    precpu_used: int = 0
     cpu_used: int = 0
+    precpu_system_used: int = 0
+    cpu_system_used: int = 0
     mem_max_bytes: int = 0
     mem_cur_bytes: int = 0
     net_rx_bytes: int = 0
@@ -60,7 +63,10 @@ class ContainerStat:
     def update(self, stat: 'ContainerStat'):
         if stat is None:
             return
+        self.precpu_used = self.cpu_used
         self.cpu_used = stat.cpu_used
+        self.precpu_system_used = self.cpu_system_used
+        self.cpu_system_used = stat.cpu_system_used
         self.mem_max_bytes = stat.mem_max_bytes
         self.mem_cur_bytes = stat.mem_cur_bytes
         self.net_rx_bytes = max(self.net_rx_bytes, stat.net_rx_bytes)
@@ -77,6 +83,38 @@ class StatCollectorState:
     kernel_id: str
     last_stat: ContainerStat = None
     terminated: asyncio.Event = field(default_factory=lambda: asyncio.Event())
+
+
+async def collect_agent_live_stats(agent):
+    """Store agent live stats in redis stats server.
+    """
+    from .server import stat_cache_lifespan
+    num_cores = agent.container_cpu_map.num_cores
+    precpu_used = cpu_used = mem_cur_bytes = 0
+    precpu_sys_used = cpu_sys_used = 0
+    for cid, cstate in agent.stats.items():
+        if not cstate.terminated.is_set() and cstate.last_stat is not None:
+            precpu_used += float(cstate.last_stat['precpu_used'])
+            cpu_used += float(cstate.last_stat['cpu_used'])
+            precpu_sys_used += float(cstate.last_stat['precpu_system_used'])
+            cpu_sys_used += float(cstate.last_stat['cpu_system_used'])
+            mem_cur_bytes += int(cstate.last_stat['mem_cur_bytes'])
+
+    # CPU usage calculation ref: https://bit.ly/2rrfrFF
+    cpu_delta = cpu_used - precpu_used
+    system_delta = cpu_sys_used - precpu_sys_used
+    cpu_pct = 0
+    if system_delta > 0 and cpu_delta > 0:
+        cpu_pct = (cpu_delta / system_delta) * num_cores * 100
+
+    agent_live_info = {
+        'cpu_pct': round(cpu_pct, 1),
+        'mem_cur_bytes': mem_cur_bytes,
+    }
+    pipe = agent.redis_stat_pool.pipeline()
+    pipe.hmset_dict(agent.config.instance_id, agent_live_info)
+    pipe.expire(agent.config.instance_id, stat_cache_lifespan)
+    await pipe.execute()
 
 
 @aiotools.actxmgr
@@ -116,6 +154,7 @@ def _collect_stats_sysfs(container_id):
 
     try:
         cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage') / 1e6
+        cpu_system_used = read_sysfs('/sys/fs/cgroup/cpuacct/cpuacct.usage') / 1e6
         mem_max_bytes = read_sysfs(mem_prefix + 'memory.max_usage_in_bytes')
         mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes')
 
@@ -163,7 +202,10 @@ def _collect_stats_sysfs(container_id):
         return None
 
     return ContainerStat(
+        0,  # precpu_used calculated automatically
         cpu_used,
+        0,  # precpu_system_used calculated autmatically
+        cpu_system_used,
         mem_max_bytes,
         mem_cur_bytes,
         net_rx_bytes,
@@ -189,6 +231,7 @@ async def _collect_stats_api(container):
         if ret['preread'].startswith('0001-01-01'):
             return None
         cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
+        cpu_system_used = nmget(ret, 'cpu_stats.system_cpu_usage', 0) / 1e6
         mem_max_bytes = nmget(ret, 'memory_stats.max_usage', 0)
         mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
 
@@ -208,7 +251,10 @@ async def _collect_stats_api(container):
             net_rx_bytes += dev['rx_bytes']
             net_tx_bytes += dev['tx_bytes']
     return ContainerStat(
+        0,  # precpu_used calculated automatically
         cpu_used,
+        0,  # precpu_system_used calculated autmatically
+        cpu_system_used,
         mem_max_bytes,
         mem_cur_bytes,
         net_rx_bytes,
