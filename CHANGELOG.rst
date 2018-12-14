@@ -1,8 +1,23 @@
 Changes
 =======
 
-1.5.0 (to be released)
+18.12.0 (to be released)
+------------------------
+
+- Version numbers now follow year.month releases like Docker.
+  We plan to release stable versions on every 3 months (e.g., 18.12, 19.03, ...).
+
+18.12.0a1 (2018-12-14)
 ----------------------
+
+- NEW: App service ports!  You can start a compute session and directly connect to a
+  service running inside it, such as Jupyter Notebook! (#89)
+
+- Internal refactoring to clean up and fix bugs related to image name references.
+
+- Fix bugs in statistics collection.
+
+- Monitoring tools are separated as plugins.
 
 1.4.0 (2018-09-30)
 ------------------
