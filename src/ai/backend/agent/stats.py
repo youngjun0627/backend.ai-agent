@@ -45,6 +45,11 @@ def _errcheck(ret, func, args):
         raise OSError(e, os.strerror(e))
 
 
+def check_cgroup_available():
+    return (not is_containerized() and
+            sys.platform.startswith('linux'))
+
+
 @dataclass(frozen=False)
 class ContainerStat:
     precpu_used: int = 0
@@ -267,7 +272,7 @@ async def _collect_stats_api(container):
 
 
 async def collect_stats(containers):
-    if sys.platform == 'linux' and not is_containerized():
+    if check_cgroup_available():
         results = tuple(_collect_stats_sysfs(c._id) for c in containers)
     else:
         tasks = []

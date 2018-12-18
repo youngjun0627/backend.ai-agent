@@ -32,7 +32,7 @@ import zmq.asyncio
 
 from ai.backend.common import utils, identity, msgpack
 from ai.backend.common.argparse import (
-    port_no, HostPortPair,
+    port_no, port_range, HostPortPair,
     host_port_pair, non_negative_int)
 from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import Logger, BraceStyleAdapter
@@ -42,7 +42,10 @@ from ai.backend.common.types import ImageRef
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .accelerator import accelerator_types, AbstractAccelerator
-from .stats import collect_agent_live_stats, spawn_stat_collector, StatCollectorState
+from .stats import (
+    check_cgroup_available, collect_agent_live_stats,
+    spawn_stat_collector, StatCollectorState,
+)
 from .resources import (
     KernelResourceSpec,
     Mount, MountPermission,
@@ -220,6 +223,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = None
         self.stat_collector_task = None
 
+        self.port_pool = set(range(
+            config.container_port_range[0],
+            config.container_port_range[1] + 1,
+        ))
+
         self.stats_monitor = DummyStatsMonitor()
         self.error_monitor = DummyErrorMonitor()
 
@@ -285,7 +293,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 port_map = {}
                 for private_port, host_ports in ports.items():
                     private_port = int(private_port.split('/')[0])
-                    public_port = int(host_ports[0]['HostPort'])
+                    if host_ports is None:
+                        public_port = 0
+                    else:
+                        public_port = int(host_ports[0]['HostPort'])
+                        self.port_pool.discard(public_port)
                     port_map[private_port] = public_port
                 cpu_set = set(
                     map(int, (container['HostConfig']['CpusetCpus']).split(',')))
@@ -303,6 +315,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     if not item:
                         continue
                     service_port = parse_service_port(item)
+                    service_port['host_port'] = \
+                        port_map.get(service_port['container_port'], None)
                     service_ports.append(service_port)
                 self.container_registry[kernel_id] = {
                     'lang': ImageRef(image),
@@ -311,11 +325,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'kernel_host': kernel_host,
                     'repl_in_port': port_map[2000],
                     'repl_out_port': port_map[2001],
-                    'stdin_port': port_map[2002],
-                    'stdout_port': port_map[2003],
+                    'stdin_port': port_map.get(2002, 0),
+                    'stdout_port': port_map.get(2003, 0),
                     'exec_timeout': int(get_label(labels, 'timeout', '10')),
                     'last_used': time.monotonic(),
                     'runner_tasks': set(),
+                    'host_ports': [*port_map.values()],
                     'resource_spec': resource_spec,
                     'service_ports': service_ports,
                 }
@@ -613,7 +628,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await self._destroy_kernel(kernel_id, 'restarting')
                 # clean_kernel() will set tracker.destroy_event
                 try:
-                    with timeout(10):
+                    with timeout(30):
                         await tracker.destroy_event.wait()
                 except asyncio.TimeoutError:
                     log.warning('timeout detected while restarting kernel {0}!',
@@ -909,6 +924,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             exposed_ports.append(2003)
         log.debug('exposed ports: {!r}', exposed_ports)
 
+        if len(exposed_ports) > len(self.port_pool):
+            raise RuntimeError('Container ports are not sufficiently available.')
+        host_ports = []
+        for eport in exposed_ports:
+            hport = self.port_pool.pop()
+            host_ports.append(hport)
+
         container_config = {
             'Image': image_ref.canonical,
             'Tty': True,
@@ -930,7 +952,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'CpusetMems': f'{resource_spec.numa_node}',
                 'SecurityOpt': ['seccomp=unconfined'],
                 'Binds': binds,
-                'PublishAllPorts': True,
+                'PortBindings': {
+                    f'{eport}/tcp': [{'HostPort': str(hport)}]
+                    for eport, hport in zip(exposed_ports, host_ports)
+                },
+                'PublishAllPorts': False,  # we manage port mapping manually!
             },
         }
         update_nested_dict(container_config, accel_docker_args)
@@ -940,22 +966,23 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             config=container_config, name=kernel_name)
         cid = container._id
 
-        cgroup_available = (not identity.is_containerized() and
-                            sys.platform.startswith('linux'))
         stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
-        stat_type = 'cgroup' if cgroup_available else 'api'
+        stat_type = 'cgroup' if check_cgroup_available() else 'api'
         self.stats[cid] = StatCollectorState(kernel_id)
         async with spawn_stat_collector(stat_addr, stat_type, cid):
             await container.start()
 
-        repl_in_port  = int((await container.port(2000))[0]['HostPort'])
-        repl_out_port = int((await container.port(2001))[0]['HostPort'])
         stdin_port = 0
         stdout_port = 0
-        for port in exposed_ports:
+        for idx, port in enumerate(exposed_ports):
             host_port = int((await container.port(port))[0]['HostPort'])
+            assert host_port == host_ports[idx]
             if port in service_ports:
                 service_ports[port]['host_port'] = host_port
+            elif port == 2000:     # intrinsic
+                repl_in_port = host_port
+            elif port == 2001:     # intrinsic
+                repl_out_port = host_port
             elif port == 2002:     # legacy
                 stdin_port = host_port
             elif port == 2003:  # legacy
@@ -975,6 +1002,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'stdin_port': stdin_port,    # legacy
             'stdout_port': stdout_port,  # legacy
             'service_ports': list(service_ports.values()),
+            'host_ports': host_ports,
             'exec_timeout': exec_timeout,
             'last_used': time.monotonic(),
             'runner_tasks': set(),
@@ -1350,19 +1378,31 @@ print(json.dumps(files))''' % {'path': path}
 
     async def clean_kernel(self, kernel_id):
         try:
-            container_id = self.container_registry[kernel_id]['container_id']
+            kernel_info = self.container_registry[kernel_id]
+
+            container_id = kernel_info['container_id']
             container = self.docker.containers.container(container_id)
-            await self.clean_runner(kernel_id)
             try:
-                if not self.config.debug_skip_container_deletion:
-                    await container.delete()
-            except DockerError as e:
-                if e.status == 409 and 'already in progress' in e.message:
-                    pass
-                elif e.status == 404:
-                    pass
-                else:
-                    log.warning('container deletion: {0!r}', e)
+                await self.clean_runner(kernel_id)
+            finally:
+                # When the agent restarts with a different port range, existing
+                # containers' host ports may not belong to the new port range.
+                try:
+                    if not self.config.debug_skip_container_deletion:
+                        await container.delete()
+                except DockerError as e:
+                    if e.status == 409 and 'already in progress' in e.message:
+                        pass
+                    elif e.status == 404:
+                        pass
+                    else:
+                        log.warning('container deletion: {0!r}', e)
+                finally:
+                    port_range = self.config.container_port_range
+                    restored_ports = [*filter(
+                        lambda p: port_range[0] <= p <= port_range[1],
+                        kernel_info['host_ports'])]
+                    self.port_pool.update(restored_ports)
         except KeyError:
             pass
         if kernel_id in self.restarting_kernels:
@@ -1472,6 +1512,10 @@ def main():
                env_var='BACKEND_STAT_PORT',
                help='The port number to receive statistics reports from '
                     'local containers.')
+    parser.add('--container-port-range', type=port_range, default=(33000, 34000),
+               env_var='BACKEND_CONTAINER_PORT_RANGE',
+               help='The range of host public ports to be used by containers '
+                    '(inclusive)')
     parser.add('--etcd-addr', type=host_port_pair,
                env_var='BACKEND_ETCD_ADDR',
                default=HostPortPair(ip_address('127.0.0.1'), 2379),
