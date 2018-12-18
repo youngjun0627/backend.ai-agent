@@ -1512,7 +1512,7 @@ def main():
                env_var='BACKEND_STAT_PORT',
                help='The port number to receive statistics reports from '
                     'local containers.')
-    parser.add('--container-port-range', type=port_range, default=(33000, 34000),
+    parser.add('--container-port-range', type=port_range, default=(30000, 31000),
                env_var='BACKEND_CONTAINER_PORT_RANGE',
                help='The range of host public ports to be used by containers '
                     '(inclusive)')
