@@ -20,21 +20,25 @@ import aiohttp
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
 import aiotools
+from setproctitle import setproctitle
 import zmq
 import zmq.asyncio
 
 from ai.backend.common import msgpack
 from ai.backend.common.utils import nmget
+from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.identity import is_containerized
 
 __all__ = (
     'ContainerStat',
     'StatCollectorState',
+    'check_cgroup_available',
+    'get_preferred_stat_type',
     'spawn_stat_collector',
     'numeric_list', 'read_sysfs',
 )
 
-log = logging.getLogger('ai.backend.agent.stats')
+log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.stats'))
 
 CLONE_NEWNET = 0x40000000
 
@@ -46,8 +50,19 @@ def _errcheck(ret, func, args):
 
 
 def check_cgroup_available():
-    return (not is_containerized() and
-            sys.platform.startswith('linux'))
+    '''
+    Check if the host OS provides cgroups.
+    '''
+    return (not is_containerized() and sys.platform.startswith('linux'))
+
+
+def get_preferred_stat_type():
+    '''
+    Returns the most preferred statistics collector type for the host OS.
+    '''
+    if check_cgroup_available():
+        return 'cgroup'
+    return 'api'
 
 
 @dataclass(frozen=False)
@@ -374,9 +389,13 @@ def join_cgroup_and_namespace(cid, initial_stat, send_stat, signal_sock):
 
 
 def is_cgroup_running(cid):
-    pids = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs').read_text()
-    pids = numeric_list(pids)
-    return (len(pids) > 1)
+    try:
+        pids = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs').read_text()
+        pids = numeric_list(pids)
+    except IOError:
+        return False
+    else:
+        return (len(pids) > 1)
 
 
 def main(args):
@@ -385,7 +404,7 @@ def main(args):
 
     ipc_base_path = Path('/tmp/backend.ai/ipc')
     signal_path = str(ipc_base_path / f'stat-start-{mypid}.sock')
-    log.info('creating signal socket at {}', signal_path)
+    log.debug('creating signal socket at {}', signal_path)
     signal_sock = context.socket(zmq.PAIR)
     signal_sock.bind('ipc://' + signal_path)
     try:
@@ -397,6 +416,7 @@ def main(args):
             stats_sock.send_serialized,
             serialize=lambda v: [msgpack.packb(v)])
         stat = ContainerStat()
+        log.info('started statistics collection for {}', args.cid)
 
         if args.type == 'cgroup':
             with closing(stats_sock), join_cgroup_and_namespace(args.cid, stat,
@@ -444,11 +464,14 @@ def main(args):
                     time.sleep(1.0)
                 loop.run_until_complete(docker.close())
 
+    except (KeyboardInterrupt, SystemExit):
+        sys.exit(1)
+    else:
+        sys.exit(0)
     finally:
         signal_sock.close()
         os.unlink(signal_path)
-        log.info('done using signal socket at {}', signal_path)
-    sys.exit(0)
+        log.info('terminated statistics collection for {}', args.cid)
 
 
 if __name__ == '__main__':
@@ -459,4 +482,11 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--type', choices=['cgroup', 'api'],
                         default='cgroup')
     args = parser.parse_args()
-    main(args)
+    setproctitle(f'backend.ai: stat-collector {args.cid[:7]}')
+
+    log_config = argparse.Namespace()
+    log_config.log_file = None
+    log_config.debug = False
+    logger = Logger(log_config)
+    with logger:
+        main(args)

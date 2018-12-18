@@ -11,7 +11,6 @@ import shlex
 import signal
 import shutil
 import subprocess
-import sys
 import time
 from typing import Collection, Mapping
 
@@ -24,6 +23,7 @@ import aiozmq, aiozmq.rpc
 from async_timeout import timeout
 import attr
 import configargparse
+from setproctitle import setproctitle
 import snappy
 import trafaret as t
 import uvloop
@@ -43,7 +43,7 @@ from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .accelerator import accelerator_types, AbstractAccelerator
 from .stats import (
-    check_cgroup_available, collect_agent_live_stats,
+    get_preferred_stat_type, collect_agent_live_stats,
     spawn_stat_collector, StatCollectorState,
 )
 from .resources import (
@@ -469,10 +469,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.stat_collector_task = self.loop.create_task(self.collect_stats())
 
         # Start container stats collector for existing containers.
-        cgroup_available = (not identity.is_containerized() and
-                            sys.platform.startswith('linux'))
         stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
-        stat_type = 'cgroup' if cgroup_available else 'api'
+        stat_type = get_preferred_stat_type()
         for kernel_id, info in self.container_registry.items():
             cid = info['container_id']
             self.stats[cid] = StatCollectorState(kernel_id)
@@ -967,7 +965,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         cid = container._id
 
         stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
-        stat_type = 'cgroup' if check_cgroup_available() else 'api'
+        stat_type = get_preferred_stat_type()
         self.stats[cid] = StatCollectorState(kernel_id)
         async with spawn_stat_collector(stat_addr, stat_type, cid):
             await container.start()
@@ -1589,6 +1587,7 @@ def main():
     logger.add_pkg('aiodocker')
     logger.add_pkg('aiotools')
     logger.add_pkg('ai.backend')
+    setproctitle(f'backend.ai: agent {args.namespace} *:{args.agent_port}')
 
     with logger:
         log.info('Backend.AI Agent {0}', VERSION)
