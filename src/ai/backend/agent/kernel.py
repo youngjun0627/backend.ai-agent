@@ -87,6 +87,7 @@ class KernelRunner:
         self.exec_timeout = exec_timeout
         self.max_record_size = 10485760  # 10 MBytes
         self.completion_queue = asyncio.Queue(maxsize=128)
+        self.service_queue = asyncio.Queue(maxsize=128)
         self.read_task = None
         self.client_features = client_features or set()
 
@@ -175,6 +176,18 @@ class KernelRunner:
             return json.loads(result)
         except asyncio.CancelledError:
             return []
+
+    async def feed_start_service(self, service_info):
+        self.input_stream.write([
+            b'start-service',
+            json.dumps(service_info).encode('utf8'),
+        ])
+        try:
+            result = await self.service_queue.get()
+            self.service_queue.task_done()
+            return json.loads(result)
+        except asyncio.CancelledError:
+            return {'status': 'failed', 'error': 'cancelled'}
 
     async def watchdog(self):
         try:
@@ -420,6 +433,8 @@ class KernelRunner:
                         # to the main code execution, we directly
                         # put the result into a separate queue.
                         await self.completion_queue.put(msg_data)
+                    elif msg_type == b'service-result':
+                        await self.service_queue.put(msg_data)
                     elif msg_type == b'stdout':
                         if self.output_queue is None:
                             continue
