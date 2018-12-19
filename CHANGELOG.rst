@@ -10,11 +10,17 @@ Changes
 18.12.0a2 (2018-12-19)
 ----------------------
 
-- Improve support for using custom Docker registries.
-
 - NEW: Supports user-specified ranges for the service ports published by containers
-  via the ``--container-port-range`` CLI argument. (#90)
-  (The default range is 30000-31000)
+  via the ``--container-port-range`` CLI argument for firewall-sensitive setups.
+  (The default range is 30000-31000) (#90)
+
+- CHANGE: The agent now automatically pulls the image if not available in the host.
+
+- CHANGE: The process monitoring tools will now show prettified process names for
+  Backend.AI's daemon processes which exhibit the role and key configurations (e.g.,
+  namespace) at a glance.
+
+- Improve support for using custom/private Docker registries.
 
 18.12.0a1 (2018-12-14)
 ----------------------
