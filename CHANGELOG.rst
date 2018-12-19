@@ -7,6 +7,15 @@ Changes
 - Version numbers now follow year.month releases like Docker.
   We plan to release stable versions on every 3 months (e.g., 18.12, 19.03, ...).
 
+18.12.0a2 (2018-12-19)
+----------------------
+
+- Improve support for using custom Docker registries.
+
+- NEW: Supports user-specified ranges for the service ports published by containers
+  via the ``--container-port-range`` CLI argument. (#90)
+  (The default range is 30000-31000)
+
 18.12.0a1 (2018-12-14)
 ----------------------
 
