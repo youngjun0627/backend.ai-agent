@@ -723,7 +723,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         environ: dict = kernel_config.get('environ', {})
         extra_mount_list = await get_extra_volumes(self.docker, image_ref.short)
 
-        image_props = await self.docker.images.get(image_ref.canonical)
+        try:
+            image_props = await self.docker.images.get(image_ref.canonical)
+        except DockerError as e:
+            if e.status == 404:
+                await self.docker.images.pull(image_ref.canonical)
+            else:
+                raise
         image_labels = image_props['ContainerConfig']['Labels']
 
         version        = int(get_label(image_labels, 'version', '1'))
