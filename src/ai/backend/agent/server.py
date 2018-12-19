@@ -960,15 +960,28 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         update_nested_dict(container_config, accel_docker_args)
         kernel_name = f'kernel.{image_ref.name}.{kernel_id}'
         log.debug('container config: {!r}', container_config)
-        container = await self.docker.containers.create(
-            config=container_config, name=kernel_name)
-        cid = container._id
 
-        stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
-        stat_type = get_preferred_stat_type()
-        self.stats[cid] = StatCollectorState(kernel_id)
-        async with spawn_stat_collector(stat_addr, stat_type, cid):
-            await container.start()
+        # We are all set! Create and start the container.
+        try:
+            container = await self.docker.containers.create(
+                config=container_config, name=kernel_name)
+            cid = container._id
+
+            stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
+            stat_type = get_preferred_stat_type()
+            self.stats[cid] = StatCollectorState(kernel_id)
+            async with spawn_stat_collector(stat_addr, stat_type, cid):
+                await container.start()
+        except Exception:
+            # Oops, we have to restore the allocated resources!
+            shutil.rmtree(scratch_dir)
+            self.port_pool.update(host_ports)
+            self.container_cpu_map.free(resource_spec.cpu_set)
+            for dev_type, dev_shares in resource_spec.shares.items():
+                if dev_type in KernelResourceSpec.reserved_share_types:
+                    continue
+                self.accelerators[dev_type].alloc_map.free(dev_shares)
+            raise
 
         stdin_port = 0
         stdout_port = 0
