@@ -7,6 +7,13 @@ Changes
 - Version numbers now follow year.month releases like Docker.
   We plan to release stable versions on every 3 months (e.g., 18.12, 19.03, ...).
 
+18.12.0a4 (2018-12-26)
+----------------------
+
+- NEW: Support specifying credentials for private Docker registries.
+
+- CHANGE: Now it prefers etcd-based docker registry configs over CLI arguments.
+
 18.12.0a3 (2018-12-21)
 ----------------------
 
@@ -15,7 +22,7 @@ Changes
 18.12.0a2 (2018-12-21)
 ----------------------
 
-- NEW: Supports user-specified ranges for the service ports published by containers
+- NEW: Support user-specified ranges for the service ports published by containers
   via the ``--container-port-range`` CLI argument for firewall-sensitive setups.
   (The default range is 30000-31000) (#90)
 
