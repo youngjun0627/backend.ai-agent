@@ -275,7 +275,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         dreg_passwd = await self.etcd.get('nodes/docker_registry/password')
         if dreg_user:
             auth_bytes = f'{dreg_user}:{dreg_passwd}'.encode('utf-8')
-            dreg_auth = base64.b64encode(auth_bytes)
+            dreg_auth = base64.b64encode(auth_bytes).decode('ascii')
             docker_config_path = Path.home() / '.docker' / 'config.json'
             docker_config = json.loads(
                 docker_config_path.read_text(encoding='utf-8'))
