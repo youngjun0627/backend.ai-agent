@@ -1,7 +1,9 @@
 import asyncio
+import base64
 from decimal import Decimal
 import functools
 from ipaddress import ip_address
+import json
 import logging, logging.config
 import os, os.path
 from pathlib import Path
@@ -263,12 +265,28 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if idle_timeout is None:
                 idle_timeout = 600  # default: 10 minutes
             self.config.idle_timeout = idle_timeout
-        if not hasattr(self.config, 'docker_registry') \
-                or self.config.docker_registry is None:
-            docker_registry = await self.etcd.get('nodes/docker_registry')
-            if not docker_registry:
-                docker_registry = 'lablup'
+        docker_registry = await self.etcd.get('nodes/docker_registry')
+        if not docker_registry:
+            if self.config.docker_registry is None:
+                raise RuntimeError('missing configuration for docker registry!')
+        else:
             self.config.docker_registry = docker_registry
+        dreg_user = await self.etcd.get('nodes/docker_registry/user')
+        dreg_passwd = await self.etcd.get('nodes/docker_registry/password')
+        if dreg_user:
+            auth_bytes = f'{dreg_user}:{dreg_passwd}'.encode('utf-8')
+            dreg_auth = base64.b64encode(auth_bytes)
+            docker_config_path = Path.home() / '.docker' / 'config.json'
+            docker_config = json.loads(
+                docker_config_path.read_text(encoding='utf-8'))
+            if 'auths' not in docker_config:
+                docker_config['auths'] = {}
+            docker_config['auths'][docker_registry] = {
+                'auth': dreg_auth,
+            }
+            docker_config_path.write_text(
+                json.dumps(docker_config), encoding='utf-8')
+
         log.info('configured redis_addr: {0}', self.config.redis_addr)
         log.info('configured event_addr: {0}', self.config.event_addr)
         log.info('configured docker_registry: {0}', self.config.docker_registry)
