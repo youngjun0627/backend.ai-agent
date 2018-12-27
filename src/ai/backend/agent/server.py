@@ -294,6 +294,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if vfolder_mount is None:
             vfolder_mount = '/mnt'
         self.config.vfolder_mount = Path(vfolder_mount)
+        vfolder_fsprefix = await self.etcd.get('volumes/_fsprefix')
+        if vfolder_fsprefix is None:
+            vfolder_fsprefix = ''
+        self.config.vfolder_fsprefix = Path(vfolder_fsprefix.lstrip('/'))
 
     async def scan_running_containers(self):
         for container in (await self.docker.containers.list()):
@@ -844,7 +848,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
             # Reallize vfolder mounts.
             for folder_name, folder_host, folder_id in vfolders:
-                host_path = self.config.vfolder_mount / folder_host / folder_id
+                host_path = (self.config.vfolder_mount / folder_host /
+                             self.config.vfolder_fsprefix / folder_id)
                 kernel_path = Path(f'/home/work/{folder_name}')
                 # TODO: apply READ_ONLY for read-only shared vfolders
                 mount = Mount(host_path, kernel_path, MountPermission.READ_WRITE)
