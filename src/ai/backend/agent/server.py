@@ -1371,7 +1371,7 @@ print(json.dumps(files))''' % {'path': path}
                 break
             except Exception:
                 log.exception('unexpected error')
-                self.error.capture_exception()
+                self.error_monitor.capture_exception()
                 break
 
     async def monitor(self):
