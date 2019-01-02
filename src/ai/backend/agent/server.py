@@ -1512,7 +1512,7 @@ async def server_main(loop, pidx, _args):
     if not args.agent_host:
         args.agent_host = await identity.get_instance_ip()
     args.region = await identity.get_instance_region()
-    log.info('myself: {0} ({1}, host: {2})',
+    log.info('Node ID: {0} (machine-type: {1}, host: {2})',
              args.instance_id, args.inst_type, args.agent_host)
 
     # Start RPC server.
