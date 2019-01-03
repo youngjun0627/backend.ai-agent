@@ -775,14 +775,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             assert 'cpu_slot' in limits
             assert 'gpu_slot' in limits
             assert 'mem_slot' in limits
+            assert 'tpu_slot' in limits
             limits['cpu_slot'] = Decimal(limits['cpu_slot'])
             limits['mem_slot'] = Decimal(limits['mem_slot'])
             limits['gpu_slot'] = Decimal(limits['gpu_slot'])
+            limits['tpu_slot'] = Decimal(limits['tpu_slot'])
             resource_spec = KernelResourceSpec(
                 shares={
                     '_cpu': limits['cpu_slot'],
                     '_mem': limits['mem_slot'],
                     '_gpu': limits['gpu_slot'],
+                    '_tpu': limits['tpu_slot'],
                 },
                 mounts=[],
                 scratch_disk_size=0,  # TODO: implement (#70)
@@ -845,8 +848,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 _, cuda_allocated_shares = \
                     accl.alloc_map.alloc(limits['gpu_slot'])
                 resource_spec.shares['cuda'] = cuda_allocated_shares
+            if limits['tpu_slot'] > 0:
+                accl = self.accelerators['tpu']
+                _, tpu_allocated_shares = \
+                    accl.alloc_map.alloc(limits['tpu_slot'])
+                resource_spec.shares['tpu'] = tpu_allocated_shares
 
-            # Reallize vfolder mounts.
+            # Realize vfolder mounts.
             for folder_name, folder_host, folder_id in vfolders:
                 host_path = (self.config.vfolder_mount / folder_host /
                              self.config.vfolder_fsprefix / folder_id)
@@ -887,6 +895,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             with open(config_dir / 'environ.txt', 'w') as f:
                 for k, v in environ.items():
                     f.write(f'{k}={v}\n')
+                accel_envs = accel_docker_args.get('Env', [])
+                for env in accel_envs:
+                    f.write(f'{env}\n')
             with open(config_dir / 'resource.txt', 'w') as f:
                 resource_spec.write_to_file(f)
 
@@ -1345,6 +1356,7 @@ print(json.dumps(files))''' % {'path': path}
             'mem_slots': self.slots['mem'],
             'cpu_slots': self.slots['cpu'],
             'gpu_slots': self.slots['gpu'],  # TODO: generalize
+            'tpu_slots': self.slots['tpu'],  # TODO: generalize
             'images': snappy.compress(msgpack.packb(list(self.images))),
         }
         try:
