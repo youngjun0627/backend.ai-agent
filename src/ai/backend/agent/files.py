@@ -15,6 +15,9 @@ s3_region = os.environ.get('AWS_REGION', 'ap-northeast-1')
 s3_bucket = os.environ.get('AWS_S3_BUCKET', 'codeonweb')
 s3_bucket_path = os.environ.get('AWS_S3_BUCKET_PATH', 'bucket')
 
+if s3_access_key == 'dummy-access-key':
+    log.info('Automatic ~/.output file S3 uploads is disabled.')
+
 
 def relpath(path, base):
     return Path(path).resolve().relative_to(Path(base).resolve())
@@ -27,8 +30,6 @@ async def upload_output_files_to_s3(initial_file_stats,
     output_files = []
     diff_files = diff_file_stats(initial_file_stats, final_file_stats)
     if s3_access_key == 'dummy-access-key':
-        log.warning('skipping upload files due to misconfigured AWS '
-                    'access/secret keys.')
         return [
             {
                 'name': str(relpath(fname, base_dir)),
