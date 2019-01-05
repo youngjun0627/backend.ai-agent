@@ -1,11 +1,15 @@
 Changes
 =======
 
-18.12.0 (to be released)
-------------------------
+18.12.0 (2019-01-06)
+--------------------
 
 - Version numbers now follow year.month releases like Docker.
   We plan to release stable versions on every 3 months (e.g., 18.12, 19.03, ...).
+
+- NEW: Support TPU (Tensor Processing Units) on Google Clouds.
+
+- Clean up log messages for on-premise devops & IT admins.
 
 18.12.0a4 (2018-12-26)
 ----------------------
