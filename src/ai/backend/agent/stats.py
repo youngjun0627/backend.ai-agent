@@ -151,7 +151,7 @@ async def spawn_stat_collector(stat_addr, stat_type, cid, *,
     ipc_base_path.mkdir(parents=True, exist_ok=True)
 
     proc = await asyncio.create_subprocess_exec(*[
-        'python', '-m', 'ai.backend.agent.stats',
+        sys.executable, '-m', 'ai.backend.agent.stats',
         stat_addr, cid, '--type', stat_type,
     ], **exec_opts)
 
