@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 from pprint import pformat
 import pkg_resources
+import pwd
 import re
 import secrets
 import shlex
@@ -815,9 +816,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # PHASE 2: Apply the resource spec.
 
         # Inject Backend.AI-intrinsic env-variables for gosu
-        # TODO: remove this!
         if KernelFeatures.UID_MATCH in kernel_features:
-            environ['LOCAL_USER_ID'] = os.getuid()
+            if self.config.kernel_uid is not None:
+                try:
+                    uid = int(self.config.kernel_uid)
+                    # Note that this uid may not exist in the host
+                    # as it might be only valid in containers
+                    # depending on the user setup.
+                except ValueError:
+                    uid = pwd.getpwnam(self.config.kernel_uid)
+            else:
+                uid = os.getuid()
+            environ['LOCAL_USER_ID'] = str(uid)
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
         binds = [
@@ -948,10 +958,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         else:
             os.makedirs(scratch_dir)
             os.makedirs(tmp_dir)
-            if sys.platform == 'linux':
+            if sys.platform == 'linux' and self.config.scratch_in_memory:
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
             os.makedirs(work_dir)
+            if KernelFeatures.UID_MATCH in kernel_features:
+                uid = int(environ['LOCAL_USER_ID'])
+                os.chown(work_dir, uid, uid)
             os.makedirs(config_dir)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
@@ -1024,6 +1037,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 "/opt/backend.ai/bin/jail",
                 "-policy", "/etc/backend.ai/jail/policy.yml",
             ]
+            if self.config.jail_arg:
+                cmdargs += map(lambda s: s.strip(), self.config.jail_arg)
         cmdargs += [
             "/opt/backend.ai/bin/python",
             "-m", "ai.backend.kernel", runtime_type,
@@ -1033,7 +1048,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         container_config = {
             'Image': image_ref.canonical,
             'Tty': True,
-            # TODO: 'User': str(os.getuid()),
             'OpenStdin': True,
             'Privileged': False,
             'StopSignal': 'SIGINT',
@@ -1083,7 +1097,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await container.start()
         except Exception:
             # Oops, we have to restore the allocated resources!
-            if sys.platform == 'linux':
+            if sys.platform == 'linux' and self.config.scratch_in_memory:
                 await destroy_scratch_filesystem(scratch_dir)
                 await destroy_scratch_filesystem(tmp_dir)
             shutil.rmtree(scratch_dir)
@@ -1541,7 +1555,7 @@ print(json.dumps(files))''' % {'path': path}
             scratch_dir = self.config.scratch_root / kernel_id
             tmp_dir = self.config.scratch_root / f'{kernel_id}_tmp'
             try:
-                if sys.platform == 'linux':
+                if sys.platform == 'linux' and self.config.scratch_in_memory:
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
                 shutil.rmtree(scratch_dir)
@@ -1658,14 +1672,22 @@ def main():
     parser.add('--idle-timeout', type=non_negative_int, default=None,
                help='The maximum period of time allowed for kernels to wait '
                     'further requests.')
+    parser.add('--skip-jail', action='store_true', default=False,
+               help='Do not use jail for debugging.')
+    parser.add('--jail-arg', action='append', default=[],
+               help='Additional arguments to the jail to change its behavior.')
+    parser.add('--kernel-uid', type=str, default=None,
+               help='The username/UID to run kernel containers. '
+                    '(default: the same user where the agent runs)')
+    parser.add('--scratch-in-memory', action='store_true', default=False,
+               help='Keep the scratch and tmp directory in memory '
+                    '(only available at Linux)')
     parser.add('--debug-kernel', type=Path, default=None,
                env_var='DEBUG_KERNEL',
                help='Deprecated.')
     parser.add('--debug-jail', type=Path, default=None,
                env_var='DEBUG_JAIL',
                help='Deprecated.')
-    parser.add('--skip-jail', action='store_true', default=False,
-               help='Do not use jail for debugging.')
     parser.add('--debug-hook', type=Path, default=None,
                env_var='DEBUG_HOOK',
                help='Deprecated.')
