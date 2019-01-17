@@ -1,6 +1,22 @@
 Changes
 =======
 
+19.03.0a1 (2019-01-18)
+----------------------
+
+- NEW: Rewrite the kernel image specification.  Now it is much easier to build
+  your own kernel image by adding just a few more labels in Dockerfiles.
+
+  - We now support official NVIDIA GPU Cloud images in this way.
+
+  - We are now able to support Python 2.x kernels again!
+
+  - Now agent/kernel-runner/jail/hook are all managed together and the kernel
+    images are completely separated from their changes.
+
+- CHANGE: Limit the scratch directory and /tmp in kernel containers to 64 MiB in
+  Linux, also preventing inode exhaustion by malicious containers.
+
 18.12.1 (2019-01-06)
 --------------------
 
