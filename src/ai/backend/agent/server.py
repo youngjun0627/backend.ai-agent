@@ -782,10 +782,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
         kernel_features = set(get_label(image_labels, 'features', '').split())
 
-        scratch_dir = self.config.scratch_root / kernel_id
-        tmp_dir = self.config.scratch_root / f'{kernel_id}_tmp'
-        config_dir = (scratch_dir / 'config').resolve()
-        work_dir = (scratch_dir / 'work').resolve()
+        scratch_dir = (self.config.scratch_root / kernel_id).resolve()
+        tmp_dir = (self.config.scratch_root / f'{kernel_id}_tmp').resolve()
+        config_dir = scratch_dir / 'config'
+        work_dir = scratch_dir / 'work'
 
         # PHASE 1: Read existing resource spec or devise a new resource spec.
 
@@ -827,12 +827,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         ]
         binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
                      for v in extra_mount_list)
-        volumes = [
-            '/home/config',
-            '/home/work',
-            '/tmp',
-        ]
-        volumes.extend(v.container_path for v in extra_mount_list)
 
         if restarting:
             # Reuse previous CPU share.
@@ -846,7 +840,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
             # Reuse previous mounts.
             for mount in resource_spec.mounts:
-                volumes.append(str(mount.kernel_path))
                 binds.append(str(mount))
         else:
             # Realize CPU share.
@@ -885,7 +878,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 # TODO: apply READ_ONLY for read-only shared vfolders
                 mount = Mount(host_path, kernel_path, MountPermission.READ_WRITE)
                 resource_spec.mounts.append(mount)
-                volumes.append(str(kernel_path))
                 binds.append(str(mount))
 
             # should no longer be used!
@@ -898,7 +890,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             for k in envs_corecount})
 
         def _mount(host_path, container_path, perm='ro'):
-            nonlocal volumes, binds
+            nonlocal binds
             binds.append(f'{host_path}:{container_path}:{perm}')
 
         # Inject Backend.AI kernel runner dependencies.
@@ -1044,7 +1036,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             # TODO: 'User': str(os.getuid()),
             'OpenStdin': True,
             'Privileged': False,
-            'Volumes': {v: {} for v in volumes},
             'StopSignal': 'SIGINT',
             'ExposedPorts': {
                 f'{port}/tcp': {} for port in exposed_ports
@@ -1052,6 +1043,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'EntryPoint': ["/opt/backend.ai/bin/entrypoint.sh"],
             'Cmd': cmdargs,
             'Env': [f'{k}={v}' for k, v in environ.items()],
+            'WorkingDir': '/home/work',
             'HostConfig': {
                 'Init': True,
                 'VolumesFrom': [f'kernel-env.{kernel_id}'],
