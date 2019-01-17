@@ -14,6 +14,7 @@ import signal
 import shutil
 import subprocess
 import time
+import sys
 from typing import Collection, Mapping
 
 from aiodocker.docker import Docker, DockerContainer
@@ -57,6 +58,7 @@ from .resources import (
 )
 from .kernel import KernelRunner, KernelFeatures
 from .utils import update_nested_dict
+from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 from .vendor.linux import libnuma
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
@@ -761,6 +763,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         kernel_features = set(get_label(image_labels, 'features', '').split())
 
         scratch_dir = self.config.scratch_root / kernel_id
+        tmp_dir = self.config.scratch_root / f'{kernel_id}_tmp'
         config_dir = (scratch_dir / 'config').resolve()
         work_dir = (scratch_dir / 'work').resolve()
 
@@ -802,12 +805,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         binds = [
             f'{config_dir}:/home/config:ro',
             f'{work_dir}:/home/work/:rw',
+            f'{tmp_dir}:/tmp:rw',
         ]
         binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
                      for v in extra_mount_list)
         volumes = [
             '/home/config',
             '/home/work',
+            '/tmp',
         ]
         volumes.extend(v.container_path for v in extra_mount_list)
 
@@ -889,6 +894,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if restarting:
             pass
         else:
+            os.makedirs(scratch_dir)
+            os.makedirs(tmp_dir)
+            if sys.platform == 'linux':
+                await create_scratch_filesystem(scratch_dir, 64)
+                await create_scratch_filesystem(tmp_dir, 64)
             os.makedirs(work_dir)
             os.makedirs(config_dir)
             # Store custom environment variables for kernel runner.
@@ -1014,7 +1024,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await container.start()
         except Exception:
             # Oops, we have to restore the allocated resources!
+            if sys.platform == 'linux':
+                await destroy_scratch_filesystem(scratch_dir)
+                await destroy_scratch_filesystem(tmp_dir)
             shutil.rmtree(scratch_dir)
+            shutil.rmtree(tmp_dir)
             self.port_pool.update(host_ports)
             self.container_cpu_map.free(resource_spec.cpu_set)
             for dev_type, dev_shares in resource_spec.shares.items():
@@ -1461,8 +1475,13 @@ print(json.dumps(files))''' % {'path': path}
             self.restarting_kernels[kernel_id].destroy_event.set()
         else:
             scratch_dir = self.config.scratch_root / kernel_id
+            tmp_dir = self.config.scratch_root / f'{kernel_id}_tmp'
             try:
+                if sys.platform == 'linux':
+                    await destroy_scratch_filesystem(scratch_dir)
+                    await destroy_scratch_filesystem(tmp_dir)
                 shutil.rmtree(scratch_dir)
+                shutil.rmtree(tmp_dir)
             except FileNotFoundError:
                 pass
             try:
