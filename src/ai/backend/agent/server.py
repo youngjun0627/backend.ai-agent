@@ -1053,7 +1053,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'CpuQuota': int(100_000 * resource_spec.shares['_cpu']),
                 'CpusetCpus': ','.join(map(str, sorted(resource_spec.cpu_set))),
                 'CpusetMems': f'{resource_spec.numa_node}',
-                'SecurityOpt': ['seccomp=unconfined'],
                 'Binds': binds,
                 'PortBindings': {
                     f'{eport}/tcp': [{'HostPort': str(hport)}]
@@ -1062,6 +1061,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'PublishAllPorts': False,  # we manage port mapping manually!
             },
         }
+        if not self.config.skip_jail:
+            container_config['HostConfig']['SecurityOpt'] = ['seccomp=unconfined']
         update_nested_dict(container_config, accel_docker_args)
         kernel_name = f'kernel.{image_ref.name}.{kernel_id}'
         log.debug('container config: {!r}', container_config)
