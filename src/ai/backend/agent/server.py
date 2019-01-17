@@ -7,8 +7,11 @@ import json
 import logging, logging.config
 import os, os.path
 from pathlib import Path
+import platform
 from pprint import pformat
+import pkg_resources
 import re
+import secrets
 import shlex
 import signal
 import shutil
@@ -124,6 +127,15 @@ async def get_extra_volumes(docker, lang):
                         '(volume not found)',
                         vol.name, lang)
     return mount_list
+
+
+async def get_env_cid(container: DockerContainer):
+    if 'Name' not in container._container:
+        await container.show()
+    name = container['Name']
+    if name.startswith('kernel-env.'):
+        return name[11:], container._id
+    return None, None
 
 
 async def get_kernel_id_from_container(val):
@@ -302,6 +314,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.config.vfolder_fsprefix = Path(vfolder_fsprefix.lstrip('/'))
 
     async def scan_running_containers(self):
+        env_containers = {}
+
+        for container in (await self.docker.containers.list()):
+            kernel_id, env_container_id = await get_env_cid(container)
+            if env_container_id is not None:
+                env_containers[kernel_id] = env_container_id
+
         for container in (await self.docker.containers.list()):
             kernel_id = await get_kernel_id_from_container(container)
             if kernel_id is None:
@@ -346,6 +365,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'lang': ImageRef(image),
                     'version': int(get_label(labels, 'version', '1')),
                     'container_id': container._id,
+                    'env_container_id': env_containers.get(kernel_id),
                     'kernel_host': kernel_host,
                     'repl_in_port': port_map[2000],
                     'repl_out_port': port_map[2001],
@@ -776,13 +796,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             limits = kernel_config['limits']
             vfolders = kernel_config['mounts']
             assert 'cpu_slot' in limits
-            assert 'gpu_slot' in limits
             assert 'mem_slot' in limits
-            assert 'tpu_slot' in limits
             limits['cpu_slot'] = Decimal(limits['cpu_slot'])
             limits['mem_slot'] = Decimal(limits['mem_slot'])
-            limits['gpu_slot'] = Decimal(limits['gpu_slot'])
-            limits['tpu_slot'] = Decimal(limits['tpu_slot'])
+            limits['gpu_slot'] = Decimal(limits.get('gpu_slot', 0))
+            limits['tpu_slot'] = Decimal(limits.get('tpu_slot', 0))
             resource_spec = KernelResourceSpec(
                 shares={
                     '_cpu': limits['cpu_slot'],
@@ -878,16 +896,58 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         environ.update({
             k: str(len(resource_spec.cpu_set))
             for k in envs_corecount})
-        environ['LD_PRELOAD'] = '/home/backend.ai/libbaihook.so'
 
-        # Inject accelerator-specific env-variables for libbaihook
+        def _mount(host_path, container_path, perm='ro'):
+            nonlocal volumes, binds
+            binds.append(f'{host_path}:{container_path}:{perm}')
+
+        # Inject Backend.AI kernel runner dependencies.
+        distro = get_label(image_labels, 'base-distro', 'ubuntu16.04')
+        arch = platform.machine()
+        entrypoint_sh_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/entrypoint.sh'))
+        suexec_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/su-exec.{distro}.bin'))
+        jail_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/jail.{distro}.bin'))
+        hook_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/libbaihook.{distro}.{arch}.so'))
+        kernel_pkg_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../kernel'))
+        helpers_pkg_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../helpers'))
+        _mount(entrypoint_sh_path.resolve(),
+               '/opt/backend.ai/bin/entrypoint.sh')
+        _mount(suexec_path.resolve(),
+               '/opt/backend.ai/bin/su-exec')
+        _mount(jail_path.resolve(),
+               '/opt/backend.ai/bin/jail')
+        _mount(hook_path.resolve(),
+               '/opt/backend.ai/hook/libbaihook.so')
+        _mount(kernel_pkg_path.resolve(),
+               '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
+        _mount(helpers_pkg_path.resolve(),
+               '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers')
+        environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
+
+        # Inject accelerator-specific env-varibles and hooks
         accel_docker_args = {}
         for dev_type, dev_share in resource_spec.shares.items():
             if dev_type in KernelResourceSpec.reserved_share_types:
                 continue
             accl = self.accelerators[dev_type]
             accel_docker_args = await accl.klass.generate_docker_args(
-                self.docker, resource_spec.numa_node, dev_share)
+                self.docker, dev_share)
+            hook_paths = accl.klass.get_hooks(distro, arch)
+            log.debug('accelerator {} provides hooks: {}',
+                      accl.klass.__name__,
+                      ', '.join(map(str, hook_paths)))
+            for hook_path in hook_paths:
+                container_hook_path = '/opt/backend.ai/hook/lib{}{}.so'.format(
+                    accl.klass.slot_key, secrets.token_hex(6),
+                )
+                _mount(hook_path, container_hook_path)
+                environ['LD_PRELOAD'] += ':' + container_hook_path
 
         # PHASE 3: Store the resource spec.
 
@@ -940,23 +1000,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # TODO: Refactor out as separate "Docker execution driver plugin" (#68)
         #   - Refactor volumes/binds lists to a plugin "mount" API
-        #   - Refactor "/home/work" and "/home/backend.ai" prefixes to be specified
+        #   - Refactor "/home/work" and "/opt/backend.ai" prefixes to be specified
         #     by the plugin implementation.
-
-        # Mount the in-kernel packaes/binaries directly from the host for debugging.
-        def _mount(host_path, container_path, perm='ro'):
-            nonlocal volumes, binds
-            binds.append(f'{host_path}:{container_path}:{perm}')
-
-        if self.config.debug_kernel is not None:
-            _mount(self.config.debug_kernel,
-                   '/usr/local/lib/python3.6/site-packages/ai/backend/')
-        if self.config.debug_hook is not None:
-            _mount(self.config.debug_hook, '/home/backend.ai/libbaihook.so')
-            _mount(self.config.debug_hook, '/home/sorna/libbaihook.so')
-        if self.config.debug_jail is not None:
-            _mount(self.config.debug_jail, '/home/backend.ai/jail')
-            _mount(self.config.debug_jail, '/home/sorna/jail')
 
         exposed_ports = [2000, 2001]
         service_ports = {}
@@ -979,6 +1024,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             hport = self.port_pool.pop()
             host_ports.append(hport)
 
+        runtime_type = get_label(image_labels, 'runtime-type', 'python')
+        runtime_path = get_label(image_labels, 'runtime-path', None)
+        cmdargs = []
+        if not self.config.skip_jail:
+            cmdargs += [
+                "/opt/backend.ai/bin/jail",
+                "-policy", "/etc/backend.ai/jail/policy.yml",
+            ]
+        cmdargs += [
+            "/opt/backend.ai/bin/python",
+            "-m", "ai.backend.kernel", runtime_type,
+        ]
+        if runtime_path is not None:
+            cmdargs.append(runtime_path)
         container_config = {
             'Image': image_ref.canonical,
             'Tty': True,
@@ -990,8 +1049,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'ExposedPorts': {
                 f'{port}/tcp': {} for port in exposed_ports
             },
+            'EntryPoint': ["/opt/backend.ai/bin/entrypoint.sh"],
+            'Cmd': cmdargs,
             'Env': [f'{k}={v}' for k, v in environ.items()],
             'HostConfig': {
+                'Init': True,
+                'VolumesFrom': [f'kernel-env.{kernel_id}'],
                 'MemorySwap': 0,
                 'Memory': resource_spec.memory_limit,
                 'CpuPeriod': 100_000,  # docker default
@@ -1013,6 +1076,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # We are all set! Create and start the container.
         try:
+            env_container = await self.docker.containers.create(config={
+                'Image': f'lablup/backendai-krunner-env:{VERSION}-{distro}',
+            }, name=f'kernel-env.{kernel_id}')
             container = await self.docker.containers.create(
                 config=container_config, name=kernel_name)
             cid = container._id
@@ -1061,6 +1127,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'lang': image_ref,
             'version': version,
             'container_id': container._id,
+            'env_container_id': env_container._id,
             'kernel_host': kernel_host,
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
@@ -1369,8 +1436,9 @@ print(json.dumps(files))''' % {'path': path}
             'addr': f'tcp://{self.config.agent_host}:{self.config.agent_port}',
             'mem_slots': self.slots['mem'],
             'cpu_slots': self.slots['cpu'],
-            'gpu_slots': self.slots['gpu'],  # TODO: generalize
-            'tpu_slots': self.slots['tpu'],  # TODO: generalize
+            # TODO: dynamic slots
+            'cuda_slots': self.slots.get('cuda', 0),
+            'tpu_slots': self.slots.get('tpu', 0),
             'images': snappy.compress(msgpack.packb(list(self.images))),
         }
         try:
@@ -1447,7 +1515,9 @@ print(json.dumps(files))''' % {'path': path}
             kernel_info = self.container_registry[kernel_id]
 
             container_id = kernel_info['container_id']
+            env_container_id = kernel_info['env_container_id']
             container = self.docker.containers.container(container_id)
+            env_container = self.docker.containers.container(env_container_id)
             try:
                 await self.clean_runner(kernel_id)
             finally:
@@ -1456,6 +1526,7 @@ print(json.dumps(files))''' % {'path': path}
                 try:
                     if not self.config.debug_skip_container_deletion:
                         await container.delete()
+                        await env_container.delete()
                 except DockerError as e:
                     if e.status == 409 and 'already in progress' in e.message:
                         pass
@@ -1596,21 +1667,15 @@ def main():
                     'further requests.')
     parser.add('--debug-kernel', type=Path, default=None,
                env_var='DEBUG_KERNEL',
-               help='If set to a path to backend.ai-kernel-runner clone, '
-                    'mounts it into the containers so that you can test and debug '
-                    'the latest kernel runner code with immediate changes.')
+               help='Deprecated.')
     parser.add('--debug-jail', type=Path, default=None,
                env_var='DEBUG_JAIL',
-               help='The path to the jail binary. '
-                    'If set, the agent mounts it into the containers '
-                    'so that you can test and debug the latest jail code '
-                    'with immediate changes.')
+               help='Deprecated.')
+    parser.add('--skip-jail', action='store_true', default=False,
+               help='Do not use jail for debugging.')
     parser.add('--debug-hook', type=Path, default=None,
                env_var='DEBUG_HOOK',
-               help='The path to the hook binary. '
-                    'If set, the agent mounts it into the containers '
-                    'so that you can test and debug the latest hook code '
-                    'with immediate changes.')
+               help='Deprecated.')
     parser.add('--debug-skip-container-deletion', action='store_true', default=False,
                help='If specified, skips container deletion when container is dead '
                     'or killed.  You may check the container logs for additional '

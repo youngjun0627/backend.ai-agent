@@ -46,6 +46,24 @@ First install the current working copy.
 ~/agent (venv-agent) $ pip install -U -r requirements-dev.txt
 ```
 
+Before running, you first need to prepare "the kernel runner environment", which is
+composed of a dedicated Docker image that is mounted into kernel containers at
+runtime.
+Since our kernel images have two different base Linux distros, Alpine and Ubuntu,
+you need to build/download the krunner-env images twice as follows.
+
+For development:
+```console
+~/agent (venv-agent) $ python -m ai.backend.agent.kernel build-krunner-env alpine3.8
+~/agent (venv-agent) $ python -m ai.backend.agent.kernel build-krunner-env ubuntu16.04
+```
+or you pull the matching version from the Docker Hub (only supported for already
+released versions):
+```console
+~/agent (venv-agent) $ docker pull lablup/backendai-krunner-env:19.03-alpine3.8
+~/agent (venv-agent) $ docker pull lablup/backendai-krunner-env:19.03-ubuntu16.04
+```
+
 With the halfstack, you can run the agent simply like
 (note that you need a working manager running with the halfstack already):
 

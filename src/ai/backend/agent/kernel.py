@@ -6,13 +6,18 @@ import io
 import json
 import logging
 import time
+from pathlib import Path
+import pkg_resources
 import secrets
+import subprocess
 
 from async_timeout import timeout
+import click
 import aiozmq
 import msgpack
 import zmq
 
+from . import __version__ as VERSION
 from ai.backend.common.utils import StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
 
@@ -477,3 +482,48 @@ class KernelRunner:
             except Exception:
                 log.exception('unexpected error')
                 break
+
+
+@click.group()
+def main():
+    '''
+    Commands to manage the kernel runner environment.
+    '''
+    pass
+
+
+@main.command()
+@click.argument('distro', default='ubuntu16.04')
+@click.option('--agent-version', default=None,
+              help='Manually set the agent version tag. '
+                   'If not specified, the current source version is used.')
+def build_krunner_env(distro, agent_version):
+    '''
+    Build the kernel runner environment container which provides the /opt/backend.ai
+    volume to all other kernel contaienrs.
+    '''
+    if agent_version is None:
+        agent_version = VERSION
+    base_path = Path(pkg_resources.resource_filename('ai.backend.agent',
+                                                     '../runner'))
+    dockerfiles = [
+        (base_path / fn, tag)
+        for fn, tag in [
+            (f'python36.{distro}.dockerfile',
+             f'lablup/backendai-krunner-python:{distro}'),
+            (f'env.{distro}.dockerfile',
+             f'lablup/backendai-krunner-env:{agent_version}-{distro}'),
+        ]
+    ]
+    for dockerfile, tag in dockerfiles:
+        click.secho(f'Building image: {tag}', fg='yellow', bold=True)
+        subprocess.run([
+            'docker', 'build',
+            '-f', str(dockerfile),
+            '-t', tag,
+            str(base_path),
+        ], check=True)
+
+
+if __name__ == '__main__':
+    main()

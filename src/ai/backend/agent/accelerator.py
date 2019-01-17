@@ -1,8 +1,9 @@
 from abc import abstractmethod, ABCMeta
 import decimal
+from pathlib import Path
 from typing import (
     Any, Collection, Container, Hashable,
-    Mapping, TypeVar, Optional,
+    Mapping, Sequence, TypeVar, Optional,
 )
 
 import aiodocker
@@ -21,6 +22,10 @@ class AbstractAcceleratorInfo(metaclass=ABCMeta):
     numa_node: Optional[int]    # NUMA node ID (None if not applicable)
     memory_size: int            # bytes of available per-accelerator memory
     processing_units: int       # number of processing units (e.g., cores, SMP)
+
+    @abstractmethod
+    def is_fractional(self) -> bool:
+        return False
 
     @abstractmethod
     def max_share(self) -> decimal.Decimal:
@@ -60,11 +65,22 @@ class AbstractAccelerator(metaclass=ABCMeta):
         '''
         return []
 
+    @classmethod
+    @abstractmethod
+    def get_hooks(cls, distro: str, arch: str) -> Sequence[Path]:
+        '''
+        Return the library hook paths used by the plugin (optional).
+
+        :param str distro: The target Linux distribution such as "ubuntu16.04" or
+                           "alpine3.8"
+        :param str arch: The target CPU architecture such as "amd64"
+        '''
+        return []
+
     @abstractmethod
     async def generate_docker_args(
             cls,
             docker: 'aiodocker.docker.Docker',  # noqa
-            numa_node: int,
             limit_gpus: Container[ProcessorIdType] = None) \
             -> Mapping[str, Any]:
         return {}

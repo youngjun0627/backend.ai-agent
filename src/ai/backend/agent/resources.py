@@ -279,7 +279,7 @@ def bitmask2set(mask):
 
 async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
     '''
-    Detect available resource of the system and calculate mem/cpu/gpu slots.
+    Detect available resource slots of the system.
     '''
 
     mem_bytes = psutil.virtual_memory().total
@@ -289,8 +289,6 @@ async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
     slots = {
         'mem': mem_bytes >> 20,  # MiB
         'cpu': num_cores,        # core count
-        'gpu': '0.0',
-        'tpu': '0.0',
     }
     entry_prefix = 'backendai_accelerator_v10'
     for entrypoint in pkg_resources.iter_entry_points(entry_prefix):
