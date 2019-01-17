@@ -41,6 +41,7 @@ class Runner(BaseRunner):
         ]),
         'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
         'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
+        'PYTHONPATH': site.USER_SITE,
     }
 
     def __init__(self):
@@ -48,10 +49,6 @@ class Runner(BaseRunner):
         self.sentinel = object()
         self.input_queue = None
         self.output_queue = None
-
-        # TODO: Need to make runtime (system) python to recognize and execute
-        # sitecustomize.py. Currently, sitecustomize.py is only detected by kernel
-        # runner python.
 
         # Add sitecustomize.py to site-packages directory.
         # No permission to access global site packages, we use user local directory.
