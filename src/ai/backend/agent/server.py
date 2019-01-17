@@ -818,13 +818,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
             if self.config.kernel_uid is not None:
-                try:
-                    uid = int(self.config.kernel_uid)
-                    # Note that this uid may not exist in the host
-                    # as it might be only valid in containers
-                    # depending on the user setup.
-                except ValueError:
-                    uid = pwd.getpwnam(self.config.kernel_uid)
+                uid = self.config.kernel_uid
             else:
                 uid = os.getuid()
             environ['LOCAL_USER_ID'] = str(uid)
@@ -1735,6 +1729,16 @@ def main():
     if args.limit_gpus is not None:
         args.limit_gpus = int(args.limit_gpus, 16)
         args.limit_gpus = bitmask2set(args.limit_gpus)
+
+    try:
+        args.kernel_uid = int(args.kernel_uid)
+        # Note that this uid may not exist in the host
+        # as it might be only valid in containers
+        # depending on the user setup.
+    except ValueError:
+        # But when the string is given, we must be able
+        # to find it in our host's password db.
+        args.kernel_uid = pwd.getpwnam(args.kernel_uid).pw_uid
 
     logger = Logger(args)
     logger.add_pkg('aiodocker')
