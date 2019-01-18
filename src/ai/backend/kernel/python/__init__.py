@@ -198,3 +198,7 @@ class Runner(BaseRunner):
             return [
                 self.runtime_path, '-m', 'digits',
             ], {}
+        elif service_info['name'] == 'tensorboard':
+            return [
+                self.runtime_path, '-m', 'tensorboard.main',
+            ], {}
