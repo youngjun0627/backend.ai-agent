@@ -1,12 +1,17 @@
-import builtins
+try:
+    import builtins
+except ImportError:
+    builtins = __builtins__
 import socket
+import sys
 
 input_host = '127.0.0.1'
 input_port = 65000
 
 
 def _input(prompt=''):
-    print(prompt, end='', flush=True)
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         try:
             sock.connect((input_host, input_port))
