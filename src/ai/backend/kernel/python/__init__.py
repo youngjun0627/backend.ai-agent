@@ -194,3 +194,7 @@ class Runner(BaseRunner):
             return [
                 self.runtime_path, '-m', 'IPython',
             ], {}
+        elif service_info['name'] == 'digits':
+            return [
+                self.runtime_path, '-m', 'digits',
+            ], {}
