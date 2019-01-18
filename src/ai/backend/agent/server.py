@@ -817,10 +817,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
-            if self.config.kernel_uid is not None:
-                uid = self.config.kernel_uid
-            else:
-                uid = os.getuid()
+            uid = self.config.kernel_uid
             environ['LOCAL_USER_ID'] = str(uid)
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
@@ -1731,7 +1728,10 @@ def main():
         args.limit_gpus = bitmask2set(args.limit_gpus)
 
     try:
-        args.kernel_uid = int(args.kernel_uid)
+        if args.kernel_uid is None:
+            args.kernel_uid = os.getuid()
+        else:
+            args.kernel_uid = int(args.kernel_uid)
         # Note that this uid may not exist in the host
         # as it might be only valid in containers
         # depending on the user setup.
