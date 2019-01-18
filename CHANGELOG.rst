@@ -6,6 +6,7 @@ Changes
 
 - NEW: Rewrite the kernel image specification.  Now it is much easier to build
   your own kernel image by adding just a few more labels in Dockerfiles.
+  (ref: https://github.com/lablup/backend.ai-kernels/#howto-adding-a-new-image)
 
   - We now support official NVIDIA GPU Cloud images in this way.
 
@@ -14,8 +15,27 @@ Changes
   - Now agent/kernel-runner/jail/hook are all managed together and the kernel
     images are completely separated from their changes.
 
+- NEW: New command-line options
+
+  - "--skip-jail": disables our jail and falls back to the Docker's default seccomp
+    filter.  Useful for troubleshotting with our jail.
+
+  - "--jail-arg": when using our jail, add extra command-line arguments to the jail
+    by specifying this option multiple times.
+    Note that options starting with dash must be prepended with an extra space to
+    avoid parsing issues imposed by the Python's standard argparse module.
+
+  - "--kernel-uid": when the agent is executed as root, use this to make the kernel
+    containers to run as specific user/UID.
+
+  - "--scratch-in-memory": moves the scratch and /tmp directories into an in-memory
+    filesystem to avoid inode/quota exahustion issues in multi-tenant setups.
+    Only available at Linux and the agent must be run as root.
+
 - CHANGE: Limit the scratch directory and /tmp in kernel containers to 64 MiB in
   Linux, also preventing inode exhaustion by malicious containers.
+
+- CHANGE: The kernel runner now preserves container-defined environment variables.
 
 18.12.1 (2019-01-06)
 --------------------
