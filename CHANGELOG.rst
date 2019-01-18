@@ -17,23 +17,24 @@ Changes
 
 - NEW: New command-line options
 
-  - "--skip-jail": disables our jail and falls back to the Docker's default seccomp
+  - ``--skip-jail``: disables our jail and falls back to the Docker's default seccomp
     filter.  Useful for troubleshotting with our jail.
 
-  - "--jail-arg": when using our jail, add extra command-line arguments to the jail
+  - ``--jail-arg``: when using our jail, add extra command-line arguments to the jail
     by specifying this option multiple times.
     Note that options starting with dash must be prepended with an extra space to
     avoid parsing issues imposed by the Python's standard argparse module.
 
-  - "--kernel-uid": when the agent is executed as root, use this to make the kernel
+  - ``--kernel-uid``: when the agent is executed as root, use this to make the kernel
     containers to run as specific user/UID.
 
-  - "--scratch-in-memory": moves the scratch and /tmp directories into an in-memory
-    filesystem to avoid inode/quota exahustion issues in multi-tenant setups.
-    Only available at Linux and the agent must be run as root.
+  - ``--scratch-in-memory``: moves the scratch and /tmp directories into a separate
+    in-memory filesystem (tmpfs) to avoid inode/quota exahustion issues in
+    multi-tenant setups.
 
-- CHANGE: Limit the scratch directory and /tmp in kernel containers to 64 MiB in
-  Linux, also preventing inode exhaustion by malicious containers.
+    This option is only available at Linux and the agent must be run as root. When
+    used, the size of each directory is limited to 64 MiB. (In the future this will
+    become configurable.)
 
 - CHANGE: The kernel runner now preserves container-defined environment variables.
 
