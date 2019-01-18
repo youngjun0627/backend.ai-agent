@@ -955,7 +955,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             os.makedirs(work_dir)
             if KernelFeatures.UID_MATCH in kernel_features:
                 uid = int(environ['LOCAL_USER_ID'])
-                os.chown(work_dir, uid, uid)
+                if os.getuid() == 0:  # only possible when I am root.
+                    os.chown(work_dir, uid, uid)
             os.makedirs(config_dir)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
