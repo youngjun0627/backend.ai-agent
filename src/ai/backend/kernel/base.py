@@ -60,7 +60,7 @@ class BaseRunner(ABC):
     }
 
     def __init__(self, loop=None):
-        self.child_env = {**self.default_child_env}
+        self.child_env = {**os.environ, **self.default_child_env}
         self.subproc = None
         self.runtime_path = None
 
