@@ -137,6 +137,11 @@ class Runner(BaseRunner):
                 loop.call_soon_threadsafe(self.outsock.send_multipart,
                                           [content['name'].encode('ascii'),
                                            content['text'].encode('utf-8')])
+            elif msg['msg_type'] == 'error':
+                content = msg['content']
+                loop.call_soon_threadsafe(self.outsock.send_multipart,
+                                          [b'stderr',
+                                           content['traceback'][0].encode('utf-8')])
 
         def stdin_hook(msg):
             if msg['msg_type'] == 'input_request':
