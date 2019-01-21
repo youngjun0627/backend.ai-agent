@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.03.0a2 (2019-01-21)
+----------------------
+
+- Fix missing stderr outputs in the query mode.  Now standard Python exception logs
+  may contain ANSI color codes as ``jupyter_client`` automatically highlights them.
+  (#93)
+
 19.03.0a1 (2019-01-18)
 ----------------------
 
