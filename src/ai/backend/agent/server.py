@@ -1024,7 +1024,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         runtime_type = get_label(image_labels, 'runtime-type', 'python')
         runtime_path = get_label(image_labels, 'runtime-path', None)
         cmdargs = []
-        if not self.config.skip_jail:
+        if self.config.sandbox_type == 'jail':
             cmdargs += [
                 "/opt/backend.ai/bin/jail",
                 "-policy", "/etc/backend.ai/jail/policy.yml",
@@ -1067,7 +1067,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'PublishAllPorts': False,  # we manage port mapping manually!
             },
         }
-        if not self.config.skip_jail:
+        if self.config.sandbox_type == 'jail':
             container_config['HostConfig']['SecurityOpt'] = ['seccomp=unconfined']
         update_nested_dict(container_config, accel_docker_args)
         kernel_name = f'kernel.{image_ref.name}.{kernel_id}'
@@ -1664,8 +1664,10 @@ def main():
     parser.add('--idle-timeout', type=non_negative_int, default=None,
                help='The maximum period of time allowed for kernels to wait '
                     'further requests.')
-    parser.add('--skip-jail', action='store_true', default=False,
-               help='Do not use jail for debugging.')
+    parser.add('--sandbox-type', type=str,
+               choices=['docker', 'jail'], default='docker',
+               env_var='BACKEND_SANDBOX_TYPE',
+               help='Choose the additional security sandboxing layer for contaiers.')
     parser.add('--jail-arg', action='append', default=[],
                help='Additional arguments to the jail to change its behavior.')
     parser.add('--kernel-uid', type=str, default=None,
