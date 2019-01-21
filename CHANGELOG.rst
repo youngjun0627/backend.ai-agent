@@ -1,6 +1,12 @@
 Changes
 =======
 
+19.03.0a3 (2019-01-21)
+----------------------
+
+- Replace "--skip-jail" option with "--sandbox-type", which now defaults to use
+  Docker-provided sandboxing until we get our jail stabilized.
+
 19.03.0a2 (2019-01-21)
 ----------------------
 
