@@ -31,7 +31,6 @@ class Runner(BaseRunner):
 
     def __init__(self):
         super().__init__()
-        self.sentinel = object()
         self.input_queue = None
         self.output_queue = None
 
