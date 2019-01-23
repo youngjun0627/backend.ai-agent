@@ -1,11 +1,6 @@
-import asyncio
-import functools
-import json
 import logging
 import os
 from pathlib import Path
-import shutil
-import site
 import tempfile
 
 import janus
@@ -15,6 +10,7 @@ from jupyter_client.kernelspec import KernelSpecManager
 from .. import BaseRunner
 
 log = logging.getLogger()
+
 
 class Runner(BaseRunner):
 
@@ -89,45 +85,6 @@ class Runner(BaseRunner):
         else:
             log.error('cannot find executable ("main.R").')
             return 127
-
-    async def query(self, code_text) -> int:
-        if self.kernel_mgr is None:
-            log.error('query mode is disabled: '
-                      'failed to start jupyter kernel')
-            return 127
-
-        log.debug('executing in query mode...')
-        loop = asyncio.get_event_loop()
-
-        def output_hook(msg):
-            if msg['msg_type'] == 'stream':
-                content = msg['content']
-                loop.call_soon_threadsafe(self.outsock.send_multipart,
-                                          [content['name'].encode('ascii'),
-                                           content['text'].encode('utf-8')])
-
-        def stdin_hook(msg):
-            if msg['msg_type'] == 'input_request':
-                prompt = msg['content']['prompt']
-                password = msg['content']['password']
-                if prompt:
-                    loop.call_soon_threadsafe(self.outsock.send_multipart,
-                                              [b'stdout', prompt.encode('utf-8')])
-                loop.call_soon_threadsafe(
-                    self.outsock.send_multipart,
-                    [b'waiting-input',
-                     json.dumps({'is_password': password}).encode('utf-8')])
-                user_input = self._user_input_queue.sync_q.get()
-                self.kernel_client.input(user_input)
-
-        # Run jupyter kernel's blocking execution method in an executor pool.
-        await loop.run_in_executor(
-            None,
-            functools.partial(self.kernel_client.execute_interactive,
-                              code_text, allow_stdin=True, timeout=2,
-                              output_hook=output_hook, stdin_hook=stdin_hook)
-        )
-        return 0
 
     async def complete(self, data):
         # TODO: implement with jupyter_client
