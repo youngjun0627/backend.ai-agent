@@ -1068,7 +1068,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             },
         }
         if self.config.sandbox_type == 'jail':
-            container_config['HostConfig']['SecurityOpt'] = ['seccomp=unconfined']
+            container_config['HostConfig']['SecurityOpt'] = [
+                'seccomp=unconfined',
+                'apparmor=unconfined',
+            ]
         update_nested_dict(container_config, accel_docker_args)
         kernel_name = f'kernel.{image_ref.name}.{kernel_id}'
         log.debug('container config: {!r}', container_config)
