@@ -215,17 +215,46 @@ class BaseRunner(ABC):
         loop = asyncio.get_event_loop()
 
         def output_hook(msg):
+            content = msg.get('content', '')
             if msg['msg_type'] == 'stream':
                 # content['name'] will be 'stdout' or 'stderr'.
-                content = msg['content']
                 loop.call_soon_threadsafe(self.outsock.send_multipart,
                                           [content['name'].encode('ascii'),
                                            content['text'].encode('utf-8')])
             elif msg['msg_type'] == 'error':
-                content = msg['content']
                 tbs = '\n'.join(content['traceback'])
                 loop.call_soon_threadsafe(self.outsock.send_multipart,
                                           [b'stderr', tbs.encode('utf-8')])
+            elif msg['msg_type'] in ['execute_result', 'display_data']:
+                dt = content['data']
+                dtype = list(dt.keys())[1] if len(dt) > 1 else list(dt.keys())[0]
+                dval = dt[dtype]
+
+                if dtype == 'text/plain':
+                    loop.call_soon_threadsafe(self.outsock.send_multipart,
+                                              [b'stdout', dval.encode('utf-8')])
+                elif dtype == 'text/html':
+                    loop.call_soon_threadsafe(self.outsock.send_multipart,
+                                              [b'media', dval.encode('utf-8')])
+                # elif dtype == 'text/markdown':
+                #     NotImplementedError
+                # elif dtype == 'text/latex':
+                #     NotImplementedError
+                # elif dtype in ['application/json', 'application/javascript']:
+                #     NotImplementedError
+                elif dtype in ['image/png', 'image/jpeg']:
+                    loop.call_soon_threadsafe(
+                        self.outsock.send_multipart,
+                        [b'media',
+                         json.dumps({
+                             'type': dtype,
+                             'data': f'data:{dtype};base64,{dval}',
+                         }).encode('utf8')])
+                elif dtype == 'image/svg+xml':
+                    loop.call_soon_threadsafe(
+                        self.outsock.send_multipart,
+                        [b'media',
+                         json.dumps({'type': dtype, 'data': dval}).encode('utf8')])
 
         def stdin_hook(msg):
             if msg['msg_type'] == 'input_request':
