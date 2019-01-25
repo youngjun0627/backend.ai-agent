@@ -130,6 +130,7 @@ class BaseRunner(ABC):
         kconfig_file.write_text("c.InteractiveShellApp.matplotlib = 'inline'")
 
         kernelspec_mgr = KernelSpecManager()
+        kernelspec_mgr.ensure_native_kernel = False
         kspecs = kernelspec_mgr.get_all_specs()
         for kname in kspecs:
             if self.jupyter_kspec_name in kname:
@@ -271,9 +272,12 @@ class BaseRunner(ABC):
                 loop.call_soon_threadsafe(self.outsock.send_multipart,
                                           [b'stderr', tbs.encode('utf-8')])
             elif msg['msg_type'] in ['execute_result', 'display_data']:
-                dt = content['data']
-                dtype = list(dt.keys())[1] if len(dt) > 1 else list(dt.keys())[0]
-                dval = dt[dtype]
+                data = content['data']
+                if len(data) < 1:
+                    return
+                if len(data) > 1:
+                    data.pop('text/plain', None)
+                dtype, dval = list(data.items())[0]
 
                 if dtype == 'text/plain':
                     loop.call_soon_threadsafe(self.outsock.send_multipart,
@@ -348,7 +352,11 @@ class BaseRunner(ABC):
             json.dumps(matches).encode('utf8'),
         ])
         '''
-        # self.kernel_mgr.complete(data, len(data))
+        # if hasattr(self, 'kernel_mgr') and self.kernel_mgr is not None:
+        #     self.kernel_mgr.complete(data, len(data))
+        # else:
+        #     return []
+        return []
 
     async def _interrupt(self):
         try:
