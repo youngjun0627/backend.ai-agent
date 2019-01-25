@@ -11,6 +11,8 @@ import sys
 import time
 
 import janus
+from jupyter_client import KernelManager
+from jupyter_client.kernelspec import KernelSpecManager
 import msgpack
 import zmq
 
@@ -58,6 +60,9 @@ class BaseRunner(ABC):
         'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
         'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
     }
+    jupyter_kspec_name = ''
+    kernel_mgr = None
+    kernel_client = None
 
     def __init__(self, loop=None):
         self.child_env = {**os.environ, **self.default_child_env}
@@ -111,6 +116,39 @@ class BaseRunner(ABC):
     @abstractmethod
     async def init_with_loop(self):
         """Initialize after the event loop is created."""
+
+    async def _init_jupyter_kernel(self):
+        """Detect ipython kernel spec for backend.ai and start it if found.
+
+        Called after `init_with_loop`. `jupyter_kspec_name` should be defined to
+        initialize jupyter kernel.
+        """
+        kernelspec_mgr = KernelSpecManager()
+        kspecs = kernelspec_mgr.get_all_specs()
+        for kname in kspecs:
+            if self.jupyter_kspec_name in kname:
+                log.debug('starting ' + kname + ' kernel...')
+                self.kernel_mgr = KernelManager(kernel_name=kname)
+                self.kernel_mgr.start_kernel()
+                if not self.kernel_mgr.is_alive():
+                    log.error('jupyter query mode is disabled: '
+                              'failed to start jupyter kernel')
+                else:
+                    self.kernel_client = self.kernel_mgr.client()
+                    self.kernel_client.start_channels(shell=True, iopub=True,
+                                                      stdin=True, hb=True)
+                    try:
+                        self.kernel_client.wait_for_ready(timeout=5)
+                        # self.init_jupyter_kernel()
+                    except RuntimeError:
+                        # Clean up for client and kernel will be done in `shutdown`.
+                        log.error('jupyter channel is not active!')
+                        self.kernel_mgr = None
+                break
+        else:
+            log.debug('jupyter query mode is not available: '
+                      'no jupyter kernelspec found')
+            self.kernel_mgr = None
 
     async def _clean(self, clean_cmd):
         ret = 0
@@ -204,8 +242,9 @@ class BaseRunner(ABC):
     async def query(self, code_text) -> int:
         """Run user's code in query mode.
 
-        The default interface for the query mode is jupyter kernel. If a kernel uses
-        different interface, `Runner` subclass should implemente `query` method."""
+        The default interface is jupyter kernel. To use different interface,
+        `Runner` subclass should override this method.
+        """
         if not hasattr(self, 'kernel_mgr') or self.kernel_mgr is None:
             log.error('query mode is disabled: '
                       'failed to start jupyter kernel')
@@ -289,9 +328,21 @@ class BaseRunner(ABC):
         finally:
             pass  # no need to "finished" signal
 
-    @abstractmethod
     async def complete(self, completion_data):
-        """Return the list of strings to be shown in the auto-complete list."""
+        """Return the list of strings to be shown in the auto-complete list.
+
+        The default interface is jupyter kernel. To use different interface,
+        `Runner` subclass should override this method.
+        """
+        # TODO: implement with jupyter_client
+        '''
+        matches = []
+        self.outsock.send_multipart([
+            b'completion',
+            json.dumps(matches).encode('utf8'),
+        ])
+        '''
+        # self.kernel_mgr.complete(data, len(data))
 
     async def _interrupt(self):
         try:
@@ -305,10 +356,14 @@ class BaseRunner(ABC):
             # this is a unidirectional command -- no explicit finish!
             pass
 
-    @abstractmethod
     async def interrupt(self):
-        """Interrupt the running user code (only called for query-mode)."""
-        pass
+        """Interrupt the running user code (only called for query-mode).
+
+        The default interface is jupyter kernel. To use different interface,
+        `Runner` subclass should implement its own `complete` method.
+        """
+        if hasattr(self, 'kernel_mgr') and self.kernel_mgr is not None:
+            self.kernel_mgr.interrupt_kernel()
 
     async def _send_status(self):
         data = {
@@ -441,6 +496,7 @@ class BaseRunner(ABC):
             await asyncio.start_server(self.handle_user_input,
                                        '127.0.0.1', 65000)
         await self._init_with_loop()
+        await self._init_jupyter_kernel()
         log.debug('start serving...')
         while True:
             try:
@@ -523,6 +579,14 @@ class BaseRunner(ABC):
             await self._log_task
             if self.outsock:
                 self.outsock.close()
+            await self._shutdown_jupyter_kernel()
+
+    async def _shutdown_jupyter_kernel(self):
+        if self.kernel_mgr and self.kernel_mgr.is_alive():
+            log.info('shutting down ' + self.jupyter_kspec_name + ' kernel...')
+            self.kernel_client.stop_channels()
+            self.kernel_mgr.shutdown_kernel()
+            assert not self.kernel_mgr.is_alive(), 'ipykernel failed to shutdown'
 
     def run(self, cmdargs):
         if cmdargs.runtime_path is None:

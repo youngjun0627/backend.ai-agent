@@ -6,8 +6,6 @@ import site
 import tempfile
 
 import janus
-from jupyter_client import KernelManager
-from jupyter_client.kernelspec import KernelSpecManager
 
 from .. import BaseRunner
 
@@ -40,6 +38,7 @@ class Runner(BaseRunner):
         'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
         'PYTHONPATH': site.USER_SITE,
     }
+    jupyter_kspec_name = 'backendai-python'
 
     def __init__(self):
         super().__init__()
@@ -54,32 +53,10 @@ class Runner(BaseRunner):
         pkgdir.mkdir(parents=True, exist_ok=True)
         shutil.copy(str(input_src), str(pkgdir / 'sitecustomize.py'))
 
-        # Detect ipython kernel spec for backend.ai and start it.
-        kernelspec_mgr = KernelSpecManager()
-        kspecs = kernelspec_mgr.get_all_specs()
-        for kname in kspecs:
-            if kname.startswith('backendai-python'):
-                log.info('starting ipykernel...')
-                self.kernel_mgr = KernelManager(kernel_name=kname)
-                self.kernel_mgr.start_kernel()
-                if not self.kernel_mgr.is_alive():
-                    log.error('query mode is disabled: '
-                              'failed to start jupyter kernel')
-                else:
-                    self.kernel_client = self.kernel_mgr.client()
-                    self.kernel_client.start_channels(shell=True, iopub=True,
-                                                      stdin=True, hb=True)
-                    try:
-                        self.kernel_client.wait_for_ready(timeout=5)
-                    except RuntimeError:
-                        # Clean up for client and kernel will be done in `shutdown`.
-                        log.error('jupyter channel is not active!')
-                        self.kernel_mgr = None
-                break
-        else:
-            log.info('query mode is disabled: '
-                     'no jupyter kernelspec found')
-            self.kernel_mgr = None
+        # kconfigdir = Path('/home/work/.ipython/profile_default/')
+        # kconfigdir.mkdir(parents=True, exist_ok=True)
+        # kconfig_file = kconfigdir / 'ipython_kernel_config.py'
+        # kconfig_file.write_text("c.InteractiveShellApp.matplotlib = 'inline'")
 
     async def init_with_loop(self):
         self.input_queue = janus.Queue(loop=self.loop)
@@ -88,13 +65,6 @@ class Runner(BaseRunner):
         # We have interactive input functionality!
         self._user_input_queue = janus.Queue(loop=self.loop)
         self.user_input_queue = self._user_input_queue.async_q
-
-    async def shutdown(self):
-        if self.kernel_mgr and self.kernel_mgr.is_alive():
-            log.info('shutting down ipykernel...')
-            self.kernel_client.stop_channels()
-            self.kernel_mgr.shutdown_kernel()
-            assert not self.kernel_mgr.is_alive(), 'ipykernel failed to shutdown'
 
     async def build_heuristic(self) -> int:
         if Path('setup.py').is_file():
@@ -117,21 +87,6 @@ class Runner(BaseRunner):
         else:
             log.error('cannot find the main script ("main.py").')
             return 127
-
-    async def complete(self, data):
-        # TODO: implement with jupyter_client
-        '''
-        matches = []
-        self.outsock.send_multipart([
-            b'completion',
-            json.dumps(matches).encode('utf8'),
-        ])
-        '''
-        # self.kernel_mgr.complete(data, len(data))
-
-    async def interrupt(self):
-        # TODO: implement with jupyter_client
-        self.kernel_mgr.interrupt_kernel()
 
     async def start_service(self, service_info):
         if service_info['name'] == 'jupyter':
