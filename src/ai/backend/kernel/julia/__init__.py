@@ -42,7 +42,7 @@ class Runner(BaseRunner):
 
         # Preparation to initialize ijulia kernel.
         cmd = '/usr/local/bin/movecompiled.sh'
-        self.loop.run_until_complete(self.run_subproc(cmd))
+        await self.run_subproc(cmd)
 
     async def build_heuristic(self) -> int:
         log.info('no build process for julia language')
