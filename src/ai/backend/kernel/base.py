@@ -123,6 +123,12 @@ class BaseRunner(ABC):
         Called after `init_with_loop`. `jupyter_kspec_name` should be defined to
         initialize jupyter kernel.
         """
+        # Make inline backend defaults in Matplotlib.
+        kconfigdir = Path('/home/work/.ipython/profile_default/')
+        kconfigdir.mkdir(parents=True, exist_ok=True)
+        kconfig_file = kconfigdir / 'ipython_kernel_config.py'
+        kconfig_file.write_text("c.InteractiveShellApp.matplotlib = 'inline'")
+
         kernelspec_mgr = KernelSpecManager()
         kspecs = kernelspec_mgr.get_all_specs()
         for kname in kspecs:

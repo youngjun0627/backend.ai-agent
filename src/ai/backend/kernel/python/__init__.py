@@ -53,11 +53,6 @@ class Runner(BaseRunner):
         pkgdir.mkdir(parents=True, exist_ok=True)
         shutil.copy(str(input_src), str(pkgdir / 'sitecustomize.py'))
 
-        # kconfigdir = Path('/home/work/.ipython/profile_default/')
-        # kconfigdir.mkdir(parents=True, exist_ok=True)
-        # kconfig_file = kconfigdir / 'ipython_kernel_config.py'
-        # kconfig_file.write_text("c.InteractiveShellApp.matplotlib = 'inline'")
-
     async def init_with_loop(self):
         self.input_queue = janus.Queue(loop=self.loop)
         self.output_queue = janus.Queue(loop=self.loop)
