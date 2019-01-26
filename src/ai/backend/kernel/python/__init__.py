@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -36,7 +37,6 @@ class Runner(BaseRunner):
         ]),
         'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
         'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
-        'PYTHONPATH': site.USER_SITE,
     }
     jupyter_kspec_name = 'python'
 
@@ -45,21 +45,30 @@ class Runner(BaseRunner):
         self.input_queue = None
         self.output_queue = None
 
-        # Add sitecustomize.py to site-packages directory.
-        # No permission to access global site packages, we use user local directory.
-        input_src = Path(os.path.dirname(__file__)) / 'sitecustomize.py'
-        # pkgdir = Path(site.getsitepackages()[0])
-        pkgdir = Path(site.USER_SITE)
-        pkgdir.mkdir(parents=True, exist_ok=True)
-        shutil.copy(str(input_src), str(pkgdir / 'sitecustomize.py'))
-
     async def init_with_loop(self):
         self.input_queue = janus.Queue(loop=self.loop)
         self.output_queue = janus.Queue(loop=self.loop)
 
-        # We have interactive input functionality!
+        # We have interactive input functionality for query mode!
         self._user_input_queue = janus.Queue(loop=self.loop)
         self.user_input_queue = self._user_input_queue.async_q
+
+        # Get USER_SITE for runtime python.
+        cmd = [self.runtime_path, *DEFAULT_PYFLAGS,
+               '-c', 'import site; print(site.USER_SITE)']
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, env=self.child_env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        user_site = stdout.decode('utf8').strip()
+        self.child_env['PYTHONPATH'] = user_site
+
+        # Add support for interactive input in batch mode by copying
+        # sitecustomize.py to USER_SITE of runtime python.
+        sitecustomize_path = Path(os.path.dirname(__file__)) / 'sitecustomize.py'
+        user_site = Path(user_site)
+        user_site.mkdir(parents=True, exist_ok=True)
+        shutil.copy(str(sitecustomize_path), str(user_site / 'sitecustomize.py'))
 
     async def build_heuristic(self) -> int:
         if Path('setup.py').is_file():
