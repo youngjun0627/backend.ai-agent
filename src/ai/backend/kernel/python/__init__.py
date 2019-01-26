@@ -38,7 +38,7 @@ class Runner(BaseRunner):
         'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
         'PYTHONPATH': site.USER_SITE,
     }
-    jupyter_kspec_name = 'backendai-python'
+    jupyter_kspec_name = 'python'
 
     def __init__(self):
         super().__init__()
