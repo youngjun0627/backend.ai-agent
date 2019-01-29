@@ -51,7 +51,11 @@ class Runner(BaseRunner):
             return 127
 
     async def start_service(self, service_info):
+<<<<<<< HEAD
         if service_info['name'] == 'jupyter' or service_info['name'] == 'jupyterlab':
+=======
+        if service_info['name'] in ['jupyter', 'jupyterlab']:
+>>>>>>> a525ebb39aa5da76d2d9c01b34f08c22d63a6b63
             with tempfile.NamedTemporaryFile(
                     'w', encoding='utf-8', suffix='.py', delete=False) as config:
                 print('c.NotebookApp.allow_root = True', file=config)
