@@ -1,34 +1,108 @@
+from abc import ABCMeta, abstractmethod
 from collections import defaultdict
-from decimal import Decimal, ROUND_DOWN
-import enum
+from decimal import Decimal
 import io
 import json
 import logging
-import operator
 from pathlib import Path
 import pkg_resources
-import sys
-from typing import Container, Collection, Mapping, Sequence
+from typing import (
+    Any, Container, Collection, Mapping, Sequence, Optional,
+)
 
 import attr
-import psutil
 
-from ai.backend.common.utils import readable_size_to_bytes
-from .accelerator import AbstractAcceleratorInfo, ProcessorIdType, accelerator_types
-from .vendor.linux import libnuma
-
-log = logging.getLogger('ai.backend.agent.resources')
-
-
-@attr.s(auto_attribs=True, slots=True)
-class Share:
-    device_id: ProcessorIdType
-    share: Decimal
+from ai.backend.common.types import (
+    BinarySize,
+    ResourceSlot, MountPermission,
+    DeviceId, SlotType, Allocation, ResourceAllocations,
+)
+from ai.backend.common.logging import BraceStyleAdapter
 
 
-class MountPermission(enum.Enum):
-    READ_ONLY = 'ro'
-    READ_WRITE = 'rw'
+log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
+
+compute_device_types = {}
+
+known_slot_types = {}
+
+
+class InsufficientResource(Exception):
+    pass
+
+
+@attr.s(auto_attribs=True)
+class AbstractComputeDevice(metaclass=ABCMeta):
+    device_id: DeviceId
+    hw_location: str            # either PCI bus ID or arbitrary string
+    numa_node: Optional[int]    # NUMA node ID (None if not applicable)
+    memory_size: int            # bytes of available per-accelerator memory
+    processing_units: int       # number of processing units (e.g., cores, SMP)
+
+
+class AbstractComputePlugin(metaclass=ABCMeta):
+
+    key = 'accelerator'
+    slot_types = []
+
+    @classmethod
+    @abstractmethod
+    async def list_devices(cls) -> Collection[AbstractComputeDevice]:
+        '''
+        Return the list of accelerator devices, as read as physically
+        on the host.
+        '''
+        return []
+
+    @classmethod
+    @abstractmethod
+    async def available_slots(cls) -> Mapping[str, str]:
+        '''
+        Return available slot amounts for each slot key.
+        '''
+        return []
+
+    @classmethod
+    @abstractmethod
+    def create_alloc_map(cls) -> 'AbstractAllocMap':
+        '''
+        Create and return an allocation map for this plugin.
+        '''
+        return None
+
+    @classmethod
+    @abstractmethod
+    def get_hooks(cls, distro: str, arch: str) -> Sequence[Path]:
+        '''
+        Return the library hook paths used by the plugin (optional).
+
+        :param str distro: The target Linux distribution such as "ubuntu16.04" or
+                           "alpine3.8"
+        :param str arch: The target CPU architecture such as "amd64"
+        '''
+        return []
+
+    @classmethod
+    @abstractmethod
+    async def generate_docker_args(cls,
+                                   docker: 'aiodocker.docker.Docker',  # noqa
+                                   per_device_alloc,
+                                  ) -> Mapping[str, Any]:
+        '''
+        When starting a new container, generate device-specific options for the
+        docker container create API as a dictionary, referring the given allocation
+        map.  The agent will merge it with its own options.
+        '''
+        return {}
+
+    @classmethod
+    @abstractmethod
+    async def restore_from_container(cls, container, alloc_map):
+        '''
+        When the agent restarts, retore the allocation map from the container
+        metadata dictionary fetched from aiodocker.
+        '''
+        pass
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -51,37 +125,54 @@ class Mount:
 
 @attr.s(auto_attribs=True, slots=True)
 class KernelResourceSpec:
-    shares: Mapping[str, Container[Share]]
-    memory_limit: int = None
-    numa_node: int = None
-    cpu_set: Container[int] = attr.Factory(set)
+    '''
+    This struct-like object stores the kernel resoucre allocation information
+    with serialization and deserialization.
+
+    It allows seamless reconstruction of allocations even when the agent restarts
+    while kernel containers are running.
+    '''
+
+    '''Stores the original user-requested resource slots.'''
+    slots: ResourceSlot
+
+    '''
+    Represents the resource allocations for each slot (device) type and devices.
+    '''
+    allocations: ResourceAllocations
+
+    '''The mounted vfolder list.'''
     mounts: Sequence[str] = attr.Factory(list)
+
+    '''The size of scratch disk. (not implemented yet)'''
     scratch_disk_size: int = None
 
-    reserved_share_types = frozenset(['_cpu', '_mem', '_gpu', '_tpu'])
+    # '''Intrinsic allocations'''
+    # numa_node: int = None
+    # cpu_set: Container[int] = None
 
     def write_to_file(self, file: io.TextIOBase):
         '''
         Write the current resource specification into a file-like object.
         '''
-        mega = lambda num_bytes: (
-            f'{num_bytes // (2 ** 20)}M'
-            if num_bytes > (2 ** 20) else f'{num_bytes}')
-        cpu_set_str = ','.join(sorted(map(str, self.cpu_set)))
-        file.write(f'NUMA_NODE={self.numa_node}\n')
-        file.write(f'CPU_CORES={cpu_set_str}\n')
-        file.write(f'MEMORY_LIMIT={mega(self.memory_limit)}\n')
-        file.write(f'SCRATCH_SIZE={mega(self.scratch_disk_size)}\n')
-        for share_type, shares in self.shares.items():
-            if share_type in type(self).reserved_share_types:
-                shares_str = str(shares)
-            else:
-                shares_str = ','.join(
-                    f'{dev_id}:{dev_share}'
-                    for dev_id, dev_share in shares.items())
-            file.write(f'{share_type.upper()}_SHARES={shares_str}\n')
+        file.write(f'SCRATCH_SIZE={BinarySize(self.scratch_disk_size):m}\n')
         mounts_str = ','.join(map(str, self.mounts))
         file.write(f'MOUNTS={mounts_str}\n')
+        slots_str = json.dumps({
+            k: str(v) for k, v in self.slots.items()
+        })
+        file.write(f'SLOTS={slots_str}\n')
+        for device_type, slots in self.allocations.items():
+            for slot_type, per_device_alloc in slots.items():
+                pieces = []
+                for dev_id, alloc in per_device_alloc.items():
+                    if known_slot_types[slot_type] == 'bytes':
+                        pieces.append(f'{dev_id}:{BinarySize(alloc):s}')
+                    else:
+                        pieces.append(f'{dev_id}:{alloc}')
+                alloc_str = ','.join(pieces)
+                print(alloc_str)
+                file.write(f'{slot_type.upper()}_SHARES={alloc_str}\n')
 
     @classmethod
     def read_from_file(cls, file: io.TextIOBase):
@@ -92,178 +183,129 @@ class KernelResourceSpec:
         for line in file:
             key, val = line.strip().split('=', maxsplit=1)
             kvpairs[key] = val
-        shares = {}
+        allocations = defaultdict(dict)
         for key, val in kvpairs.items():
             if key.endswith('_SHARES'):
-                share_type = key[:-7].lower()
-                if share_type in cls.reserved_share_types:
-                    share_details = Decimal(val)
-                else:
-                    share_details = {}
-                    for entry in val.split(','):
-                        dev_id, dev_share = entry.split(':')
-                        try:
-                            dev_id = int(dev_id)
-                        except ValueError:
-                            pass
-                        dev_share = Decimal(dev_share)
-                        share_details[dev_id] = dev_share
-                shares[share_type] = share_details
+                slot_type = key[:-7].lower()
+                device_type = slot_type.split('.')[0]
+                per_device_alloc = {}
+                for entry in val.split(','):
+                    dev_id, alloc = entry.split(':')
+                    if known_slot_types[slot_type] == 'bytes':
+                        value = BinarySize.from_str(alloc)
+                    else:
+                        value = Decimal(alloc)
+                    per_device_alloc[dev_id] = value
+                allocations[device_type][slot_type] = per_device_alloc
         mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',') if m]
         return cls(
-            numa_node=int(kvpairs['NUMA_NODE']),
-            cpu_set=set(map(int, kvpairs['CPU_CORES'].split(','))),
-            memory_limit=readable_size_to_bytes(kvpairs['MEMORY_LIMIT']),
-            scratch_disk_size=readable_size_to_bytes(kvpairs['SCRATCH_SIZE']),
-            shares=shares,
+            scratch_disk_size=BinarySize.from_str(kvpairs['SCRATCH_SIZE']),
+            allocations=dict(allocations),
+            slots=ResourceSlot(json.loads(kvpairs['SLOTS'])),
             mounts=mounts,
         )
 
-    def to_json(self):
+    def to_json(self) -> str:
         o = attr.asdict(self)
-        o['cpu_set'] = list(sorted(o['cpu_set']))
-        for dev_type, dev_shares in o['shares'].items():
-            if dev_type in type(self).reserved_share_types:
-                o['shares'][dev_type] = str(dev_shares)
-                continue
-            o['shares'][dev_type] = {
-                dev_id: str(dev_share)
-                for dev_id, dev_share in dev_shares.items()
-            }
+        for slot_type, alloc in o['slots'].items():
+            if known_slot_types[slot_type] == 'bytes':
+                o['slots'] = f'{BinarySize(alloc):s}'
+            else:
+                o['slots'] = str(alloc)
+        for dev_type, dev_alloc in o['allocations'].items():
+            for slot_type, per_device_alloc in dev_alloc.items():
+                for dev_id, alloc in per_device_alloc.items():
+                    if known_slot_types[slot_type] == 'bytes':
+                        alloc = f'{BinarySize(alloc):s}'
+                    else:
+                        alloc = str(alloc)
+                    o['allocations'][dev_type][slot_type][dev_id] = alloc
         o['mounts'] = list(map(str, self.mounts))
         return json.dumps(o)
 
 
-class CPUAllocMap:
+class AbstractAllocMap(metaclass=ABCMeta):
 
-    def __init__(self, limit_cpus=None):
-        self.limit_cpus = limit_cpus
-        self.core_topo = libnuma.get_core_topology(limit_cpus)
-        self.num_cores = len(libnuma.get_available_cores())
-        if limit_cpus is not None:
-            self.num_cores = min(self.num_cores, len(limit_cpus))
-        assert sum(len(node) for node in self.core_topo) == self.num_cores
-        self.num_nodes = libnuma.num_nodes()
-        self.core_shares = tuple({c: 0 for c in self.core_topo[node]
-                                 if limit_cpus is None or c in limit_cpus}
-                                 for node in range(self.num_nodes))
-        self.alloc_per_node = {n: 0 for n in range(self.num_nodes)
-                               if len(self.core_shares[n]) > 0}
-
-    def alloc(self, num_cores):
-        '''
-        Find a most free set of CPU cores and return a tuple of the NUMA node
-        index and the set of integers indicating the found cores.
-        This method guarantees that all cores are alloacted within the same
-        NUMA node.
-        '''
-        node, current_alloc = min(
-            ((n, alloc) for n, alloc in self.alloc_per_node.items()),
-            key=operator.itemgetter(1))
-        self.alloc_per_node[node] = current_alloc + num_cores
-
-        shares = self.core_shares[node].copy()
-        allocated_cores = set()
-        for _ in range(num_cores):
-            core, share = min(((core, share) for core, share in shares.items()),
-                              key=operator.itemgetter(1))
-            allocated_cores.add(core)
-            shares[core] = sys.maxsize   # prune allocated one
-            self.core_shares[node][core] += 1  # update the original share
-        return node, allocated_cores
-
-    def update(self, core_set):
-        '''
-        Manually add a given core set as if it is allocated by us.
-        '''
-        any_core = next(iter(core_set))
-        node = libnuma.node_of_cpu(any_core)
-        self.alloc_per_node[node] += len(core_set)
-        for c in core_set:
-            self.core_shares[node][c] += 1
-
-    def free(self, core_set):
-        '''
-        Remove the given set of CPU cores from the allocated shares.
-        It assumes that all cores are in the same NUMA node.
-        '''
-        any_core = next(iter(core_set))
-        node = libnuma.node_of_cpu(any_core)
-        self.alloc_per_node[node] -= len(core_set)
-        for c in core_set:
-            self.core_shares[node][c] -= 1
-
-
-class AcceleratorAllocMap:
-
-    def __init__(self,
-                 devices: Collection[AbstractAcceleratorInfo],
-                 limit_mask: Container[ProcessorIdType] = None):
-        self._quantum = Decimal('.01')
-        self.limit_mask = limit_mask
+    def __init__(self, *, devices: Container[AbstractComputeDevice] = None,
+                 device_mask: Container[DeviceId] = None):
         self.devices = {dev.device_id: dev for dev in devices}
-        zero = Decimal('0')
-        self.device_shares = {
-            p.device_id: zero for p in devices
-            if limit_mask is None or p.device_id in limit_mask
-        }
+        self.device_mask = device_mask
 
-    def alloc(self, requested_share: Decimal, node: int = None):
-        requested_share = Decimal(requested_share) \
-                          .quantize(self._quantum, ROUND_DOWN)
-        if node is None:
-            # try finding a node, but this also may return "None"
-            node = self._find_most_free_node()
-        remaining_share = requested_share
-        zero = Decimal('0')
-        assert requested_share > zero, \
-               'You cannot allocate zero share of devices.'
-        allocated_shares = defaultdict(lambda: zero)
-        try:
-            # try filling up beginning from largest free shares
-            # TODO: apply advanced scheduling and make it replacible
-            while remaining_share > zero:
-                p, s = self._find_largest_free_share(node)
-                if s >= remaining_share:  # shortcut
-                    self.device_shares[p] += remaining_share
-                    allocated_shares[p] += remaining_share
-                    remaining_share = zero
-                elif s == 0:
-                    raise RuntimeError('Cannot allocate requested shares '
-                                       f'in NUMA node {node}')
-                else:  # s < remaining_share
-                    self.device_shares[p] += s
-                    allocated_shares[p] += s
-                    remaining_share -= s
-        except RuntimeError:
-            # revert back
-            for p, s in allocated_shares.items():
-                self.device_shares[p] -= s
-            raise
-        return node, allocated_shares
+    @abstractmethod
+    def allocate(self, slots: Mapping[SlotType, Allocation]) -> ResourceAllocations:
+        '''
+        Allocate the given amount of resources.
 
-    def free(self, allocated_shares: Mapping[ProcessorIdType, Decimal]):
-        for proc, share in allocated_shares.items():
-            self.device_shares[proc] -= share
+        Returns a token that can be used to free the exact resources allocated in the
+        current allocation.
+        '''
+        pass
 
-    def _find_most_free_node(self):
-        zero = Decimal('0')
-        per_node_allocs = defaultdict(lambda: zero)
-        for p, s in self.device_shares.items():
-            per_node_allocs[self.devices[p].numa_node] += s
-        node, _ = min(
-            ((n, alloc) for n, alloc in per_node_allocs.items()),
-            key=operator.itemgetter(1))
-        return node
+    @abstractmethod
+    def free(self, existing_alloc: ResourceAllocations):
+        '''
+        Free the allocated resources using the token returned when the allocation
+        occurred.
+        '''
+        pass
 
-    def _find_largest_free_share(self, node: int = None):
-        shares = [
-            (proc, self.devices[proc].max_share() - share)
-            for proc, share in self.device_shares.items()
-            if node is None or self.devices[proc].numa_node == node
-        ]
-        largest_proc_share = max(shares, key=operator.itemgetter(1))
-        return largest_proc_share
+
+class DiscretePropertyAllocMap(AbstractAllocMap):
+    '''
+    An allocation map using discrete property.
+    The user must pass a "property function" which returns a desired resource
+    property from the device object.
+
+    e.g., 1.0 means 1 device, 2.0 means 2 devices, etc.
+    (no fractions allowed)
+    '''
+
+    def __init__(self, *args, **kwargs):
+        self.property_func = kwargs.pop('prop_func')
+        super().__init__(*args, **kwargs)
+        assert callable(self.property_func)
+        self.allocations = defaultdict(lambda: {
+            dev_id: 0 for dev_id in self.devices.keys()
+        })
+
+    def allocate(self, slots: Mapping[SlotType, Allocation]) -> ResourceAllocations:
+        allocation = {}
+        for slot_type, alloc in slots.items():
+            slot_allocation = {}
+            remaining_alloc = int(alloc)
+
+            # fill up starting from the most free devices
+            sorted_dev_allocs = sorted(
+                self.allocations[slot_type].items(),
+                key=lambda pair: self.property_func(self.devices[pair[0]]) - pair[1],
+                reverse=True)
+
+            total_allocatable = 0
+            for dev_id, current_alloc in sorted_dev_allocs:
+                current_alloc = self.allocations[slot_type][dev_id]
+                total_allocatable += (self.property_func(self.devices[dev_id]) -
+                                      current_alloc)
+            if total_allocatable < alloc:
+                raise InsufficientResource(
+                    'DiscretePropertyAllocMap: insufficient allocatable amount!')
+
+            slot_allocation = {}
+            for dev_id, current_alloc in sorted_dev_allocs:
+                current_alloc = self.allocations[slot_type][dev_id]
+                allocatable = (self.property_func(self.devices[dev_id]) -
+                               current_alloc)
+                if allocatable > 0:
+                    allocated = min(remaining_alloc, allocatable)
+                    slot_allocation[dev_id] = allocated
+                    self.allocations[slot_type][dev_id] += allocated
+                    remaining_alloc -= allocated
+            allocation[slot_type] = slot_allocation
+        return allocation
+
+    def free(self, existing_alloc: ResourceAllocations):
+        for slot_type, per_device_alloc in existing_alloc.items():
+            for dev_id, alloc in per_device_alloc.items():
+                self.allocations[slot_type][dev_id] -= alloc
 
 
 def bitmask2set(mask):
@@ -280,25 +322,38 @@ def bitmask2set(mask):
 async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
     '''
     Detect available resource slots of the system.
+
+    limit_cpus, limit_gpus are deprecated.
     '''
 
-    mem_bytes = psutil.virtual_memory().total
-    num_cores = len(libnuma.get_available_cores())
-    if limit_cpus is not None:
-        num_cores = min(num_cores, len(limit_cpus))
-    slots = {
-        'mem': mem_bytes >> 20,  # MiB
-        'cpu': num_cores,        # core count
-    }
-    entry_prefix = 'backendai_accelerator_v10'
+    slots = {}
+
+    from .intrinsic import CPUPlugin, MemoryPlugin
+
+    compute_device_types[CPUPlugin.key] = CPUPlugin
+    compute_device_types[MemoryPlugin.key] = MemoryPlugin
+
+    entry_prefix = 'backendai_accelerator_v11'
     for entrypoint in pkg_resources.iter_entry_points(entry_prefix):
-        log.info(f'loading accelerator plugin: {entrypoint.module_name}')
+        log.info('loading accelerator plugin: {}', entrypoint.module_name)
         plugin = entrypoint.load()
-        await plugin.init(etcd)
-    for accel_type, accel in accelerator_types.items():
-        total_share = sum(
-            dev.max_share() for dev in accel.list_devices()
-            if limit_gpus is None or dev.device_id not in limit_gpus)
-        slots[accel.slot_key] = str(total_share)
-    log.info(f'Resource slots: {slots!r}')
+        accel_klass = await plugin.init(etcd)
+        assert all(skey.startswith(f'{accel_klass.key}.')
+                   for skey, _ in accel_klass.slot_types), \
+               "Slot types defined by an accelerator plugin must be prefixed " \
+               "by the plugin's key."
+        if accel_klass.key in compute_device_types:
+            raise RuntimeError(
+                "A plugin defining the same key already exists. "
+                "You may need to uninstall it first.")
+        compute_device_types[accel_klass.key] = accel_klass
+
+    for key, klass in compute_device_types.items():
+        known_slot_types.update(klass.slot_types)
+        accel_slots = await klass.available_slots()
+        for skey, sval in accel_slots.items():
+            slots[skey] = sval
+
+    log.info('Resource slots: {!r}', slots)
+    log.info('Slot types: {!r}', known_slot_types)
     return slots

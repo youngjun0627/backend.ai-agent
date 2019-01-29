@@ -28,6 +28,7 @@ from ai.backend.common import msgpack
 from ai.backend.common.utils import nmget
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.identity import is_containerized
+from .vendor.linux import libnuma
 
 __all__ = (
     'ContainerStat',
@@ -109,7 +110,7 @@ async def collect_agent_live_stats(agent):
     """Store agent live stats in redis stats server.
     """
     from .server import stat_cache_lifespan
-    num_cores = agent.container_cpu_map.num_cores
+    num_cores = len(libnuma.get_available_cores())
     precpu_used = cpu_used = mem_cur_bytes = 0
     precpu_sys_used = cpu_sys_used = 0
     for cid, cstate in agent.stats.items():
