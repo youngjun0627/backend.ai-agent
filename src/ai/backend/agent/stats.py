@@ -105,6 +105,93 @@ class StatCollectorState:
     terminated: asyncio.Event = field(default_factory=lambda: asyncio.Event())
 
 
+@dataclass(frozen=False)
+class AgentLiveStat:
+    precpu_used: int = 0
+    cpu_used: int = 0
+    mem_cur_bytes: int = 0
+
+    async def update(self, stat: 'AgentLiveStat'):
+        if stat is None:
+            return
+        self.precpu_used = self.cpu_used
+        self.cpu_used = stat.cpu_used
+        self.mem_cur_bytes = stat.mem_cur_bytes
+
+
+
+async def collect_agent_live_stats_sysfs(stat, container_ids):
+    from .server import stat_cache_lifespan
+    stat = 
+    new_stat = _collect_agent_live_stats_sysfs(container_ids)
+    stat.update(new_stat)
+    cpu_pct = float(stat.cpu_used - stat.precpu_used) / 2000 * 100
+    mem_cur_bytes = stat.mem_cur_bytes
+    agent_live_info = {
+        'cpu_pct': round(cpu_pct, 2),
+        'mem_cur_bytes': mem_cur_bytes
+    }
+    pipe = agent.redis_stat_pool.pipeline()
+    pipe.hmset_dict(agent.config.instance_id, agent_live_info)
+    pipe.expire(agent.config.instance_id, stat_cache_lifespan)
+    await pipe.execute()
+
+
+async def _collect_agent_live_stats_sysfs(container_ids):
+    results = tuple(_each_container_live_stats_sysfs(cid) for cid in container_ids)
+    cpu_used = sum([stat[0] for stat in results])
+    mem_cur_bytes = sum([stat[1] for stat in results])
+    return AgentLiveStat(
+        0,
+        cpu_used,
+        mem_cur_bytes
+    )
+
+async def _collect_agent_live_stats_api(containers):
+    tasks = []
+    for c in containers:
+        tasks.append(asyncio.ensure_future(_each_container_live_stats_api(c)))
+    results = await asyncio.gather(*tasks)
+    cpu_used = sum([stat[0] for stat in results])
+    mem_cur_bytes = sum([stat[1] for stat in results])
+    return AgentLiveStat(
+        0,
+        cpu_used,
+        mem_cur_bytes
+    )
+
+def _each_container_live_stats_sysfs(container_id):
+    cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
+    mem_prefix = f'/sys/fs/cgroup/memory/docker/{container_id}/'
+    try:
+        cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage') / 1e6
+        mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes')
+    except IOError as e:
+        short_cid = container_id[:7]
+        log.warning('cannot read stats: '
+                    f'sysfs unreadable for container {short_cid}!'
+                    f'\n{e!r}')
+        return None
+    return (cpu_used, mem_cur_bytes)
+
+async def _each_container_live_stats_api(container):
+    try:
+        ret = await container.stats(stream=False)
+    except (DockerError, aiohttp.ClientResponseError):
+        short_cid = container._id[:7]
+        log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')
+        return None
+    else:
+        # API returned successfully but actually the result may be empty!
+        if ret is None:
+            return None
+        if ret['preread'].startswith('0001-01-01'):
+            return None
+    cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
+    mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
+    return (cpu_used, mem_cur_bytes)
+
+
 async def collect_agent_live_stats(agent):
     """Store agent live stats in redis stats server.
     """

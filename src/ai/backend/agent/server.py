@@ -52,6 +52,7 @@ from .accelerator import accelerator_types, AbstractAccelerator
 from .stats import (
     get_preferred_stat_type, collect_agent_live_stats,
     spawn_stat_collector, StatCollectorState,
+    AgentLiveStat
 )
 from .resources import (
     KernelResourceSpec,
@@ -209,6 +210,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         'etcd', 'config', 'slots', 'images',
         'rpc_server', 'event_sock',
         'monitor_fetch_task', 'monitor_handle_task', 'stat_collector_task',
+        'live_stat', 'ls_timer',
         'hb_timer', 'clean_timer',
         'stats_monitor', 'error_monitor',
         'restarting_kernels', 'blocking_cleans',
@@ -240,6 +242,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = None
         self.stat_collector_task = None
 
+        self.live_stat = None
+
         self.port_pool = set(range(
             config.container_port_range[0],
             config.container_port_range[1] + 1,
@@ -255,6 +259,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'error_monitor'
         ]
         install_plugins(plugins, self, 'attr', self.config)
+
+    async def collect_live_stat(self, stat_type):
+        if stat_type == 'cgroup':
+            new_stat = _collect_agent_live_stats_sysfs(self.)
 
     async def detect_manager(self):
         log.info('detecting the manager...')
@@ -521,6 +529,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             self.stats[cid] = StatCollectorState(kernel_id)
             async with spawn_stat_collector(stat_addr, stat_type, cid):
                 pass
+
+        # Start collecting agent live stat.
+        self.live_stat = AgentLiveStat()
 
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
@@ -1020,7 +1031,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         for eport in exposed_ports:
             hport = self.port_pool.pop()
             host_ports.append(hport)
-
+            
         runtime_type = get_label(image_labels, 'runtime-type', 'python')
         runtime_path = get_label(image_labels, 'runtime-path', None)
         cmdargs = []
