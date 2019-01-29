@@ -910,10 +910,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args = {}
-        for dev_type, per_device_alloc in resource_spec.allocations.items():
+        for dev_type, device_alloc in resource_spec.allocations.items():
             computer_set = self.computers[dev_type]
             computer_docker_args = await computer_set.klass.generate_docker_args(
-                self.docker, per_device_alloc)
+                self.docker, device_alloc)
             hook_paths = await computer_set.klass.get_hooks(distro, arch)
             if hook_paths:
                 log.debug('accelerator {} provides hooks: {}',
@@ -953,7 +953,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 resource_spec.write_to_file(f)
 
                 # TODO: Store accelerator-specific resource-share preparation
-                # for dev_type, per_device_alloc in resource_spec.allocations.items():
+                # for dev_type, device_alloc in resource_spec.allocations.items():
                 #     mem_limits = []
                 #     proc_limits = []
                 #     accl = self.computers[dev_type]
@@ -1075,8 +1075,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             shutil.rmtree(scratch_dir)
             shutil.rmtree(tmp_dir)
             self.port_pool.update(host_ports)
-            for dev_type, per_device_alloc in resource_spec.allocations.items():
-                self.computers[dev_type].alloc_map.free(per_device_alloc)
+            for dev_type, device_alloc in resource_spec.allocations.items():
+                self.computers[dev_type].alloc_map.free(device_alloc)
             raise
 
         stdin_port = 0

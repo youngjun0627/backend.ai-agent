@@ -86,7 +86,7 @@ class AbstractComputePlugin(metaclass=ABCMeta):
     @abstractmethod
     async def generate_docker_args(cls,
                                    docker: 'aiodocker.docker.Docker',  # noqa
-                                   per_device_alloc,
+                                   device_alloc,
                                   ) -> Mapping[str, Any]:
         '''
         When starting a new container, generate device-specific options for the
@@ -171,7 +171,6 @@ class KernelResourceSpec:
                     else:
                         pieces.append(f'{dev_id}:{alloc}')
                 alloc_str = ','.join(pieces)
-                print(alloc_str)
                 file.write(f'{slot_type.upper()}_SHARES={alloc_str}\n')
 
     @classmethod
@@ -299,6 +298,8 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
                     slot_allocation[dev_id] = allocated
                     self.allocations[slot_type][dev_id] += allocated
                     remaining_alloc -= allocated
+                if remaining_alloc == 0:
+                    break
             allocation[slot_type] = slot_allocation
         return allocation
 

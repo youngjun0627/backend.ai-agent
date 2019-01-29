@@ -64,10 +64,9 @@ class CPUPlugin(AbstractComputePlugin):
     @classmethod
     async def generate_docker_args(cls,
                                    docker: 'aiodocker.docker.Docker',  # noqa
-                                   per_device_alloc,
+                                   device_alloc,
                                   ) -> Mapping[str, Any]:
-        cores = [*per_device_alloc.keys()]
-        print('gen-docker-args', cores)
+        cores = [*device_alloc['cpu'].keys()]
         return {
             'HostConfig': {
                 'CpuPeriod': 100_000,  # docker default
@@ -137,12 +136,12 @@ class MemoryPlugin(AbstractComputePlugin):
     @classmethod
     async def generate_docker_args(cls,
                                    docker: 'aiodocker.docker.Docker',  # noqa
-                                   per_device_alloc,
+                                   device_alloc,
                                   ) -> Mapping[str, Any]:
         return {
             'HostConfig': {
                 'MemorySwap': 0,
-                'Memory': sum(per_device_alloc['mem'].values()),
+                'Memory': sum(device_alloc['mem'].values()),
             }
         }
 
