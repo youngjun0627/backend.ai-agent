@@ -50,7 +50,7 @@ from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
 from .accelerator import accelerator_types, AbstractAccelerator
 from .stats import (
-    get_preferred_stat_type, collect_agent_live_stats,
+    get_preferred_stat_type, collect_agent_live_stat,
     spawn_stat_collector, StatCollectorState,
     AgentLiveStat
 )
@@ -210,7 +210,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         'etcd', 'config', 'slots', 'images',
         'rpc_server', 'event_sock',
         'monitor_fetch_task', 'monitor_handle_task', 'stat_collector_task',
-        'live_stat', 'ls_timer',
+        'stat_type', 'live_stat', 'ls_timer',
         'hb_timer', 'clean_timer',
         'stats_monitor', 'error_monitor',
         'restarting_kernels', 'blocking_cleans',
@@ -242,7 +242,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = None
         self.stat_collector_task = None
 
+        self.stat_type = get_preferred_stat_type()
         self.live_stat = None
+        self.ls_timer = None
 
         self.port_pool = set(range(
             config.container_port_range[0],
@@ -260,9 +262,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         ]
         install_plugins(plugins, self, 'attr', self.config)
 
-    async def collect_live_stat(self, stat_type):
-        if stat_type == 'cgroup':
-            new_stat = _collect_agent_live_stats_sysfs(self.)
 
     async def detect_manager(self):
         log.info('detecting the manager...')
@@ -475,6 +474,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             stats_sock.close()
             context.term()
 
+    async def collect_live_stat(self, interval):
+        await collect_agent_live_stat(self, self.stat_type)
+
     async def init(self, *, skip_detect_manager=False):
         # Show Docker version info.
         docker_version = await self.docker.version()
@@ -532,6 +534,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Start collecting agent live stat.
         self.live_stat = AgentLiveStat()
+        self.ls_timer = aiotools.create_timer(self.collect_live_stat, 2.0)
 
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
@@ -579,6 +582,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if self.hb_timer is not None:
             self.hb_timer.cancel()
             await self.hb_timer
+        if self.ls_timer is not None:
+            self.ls_timer.cancel()
+            await self.ls_timer
         if self.clean_timer is not None:
             self.clean_timer.cancel()
             await self.clean_timer
@@ -1442,7 +1448,6 @@ print(json.dumps(files))''' % {'path': path}
         '''
         Send my status information and available kernel images.
         '''
-        await collect_agent_live_stats(self)
         agent_info = {
             'ip': self.config.agent_host,
             'region': self.config.region,

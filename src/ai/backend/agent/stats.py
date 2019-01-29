@@ -111,19 +111,25 @@ class AgentLiveStat:
     cpu_used: int = 0
     mem_cur_bytes: int = 0
 
-    async def update(self, stat: 'AgentLiveStat'):
+    def update(self, stat: 'AgentLiveStat'):
         if stat is None:
             return
         self.precpu_used = self.cpu_used
         self.cpu_used = stat.cpu_used
         self.mem_cur_bytes = stat.mem_cur_bytes
 
-
-
-async def collect_agent_live_stats_sysfs(stat, container_ids):
+async def collect_agent_live_stat(agent, stat_type):
     from .server import stat_cache_lifespan
-    stat = 
-    new_stat = _collect_agent_live_stats_sysfs(container_ids)
+    stat = agent.live_stat
+    if stat_type == 'cgroup':
+        container_ids = [info[1]['container_id'] for info in agent.container_registry.items()]
+        new_stat = _collect_agent_live_stats_sysfs(container_ids)
+    elif stat_type == 'api':
+        containers = await agent.docker.containers.list()   #overhead might be big?
+        new_stat = _collect_agent_live_stats_api(containers)
+    else:
+        log.error("stat_type is neither cgroup nor api")
+        return
     stat.update(new_stat)
     cpu_pct = float(stat.cpu_used - stat.precpu_used) / 2000 * 100
     mem_cur_bytes = stat.mem_cur_bytes
@@ -137,7 +143,7 @@ async def collect_agent_live_stats_sysfs(stat, container_ids):
     await pipe.execute()
 
 
-async def _collect_agent_live_stats_sysfs(container_ids):
+def _collect_agent_live_stats_sysfs(container_ids):
     results = tuple(_each_container_live_stats_sysfs(cid) for cid in container_ids)
     cpu_used = sum([stat[0] for stat in results])
     mem_cur_bytes = sum([stat[1] for stat in results])
