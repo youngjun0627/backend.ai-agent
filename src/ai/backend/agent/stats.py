@@ -107,32 +107,38 @@ class StatCollectorState:
 
 @dataclass(frozen=False)
 class AgentLiveStat:
-    precpu_used: int = 0
-    cpu_used: int = 0
-    mem_cur_bytes: int = 0
+    precpu_used_sum: int = 0
+    cpu_used_sum: int = 0
+    mem_cur_bytes_sum: int = 0
+    cpu_dict: dict = field(default_factory=dict)
 
     def update(self, stat: 'AgentLiveStat'):
-        if stat is None:
-            return
-        self.precpu_used = self.cpu_used
-        self.cpu_used = stat.cpu_used
-        self.mem_cur_bytes = stat.mem_cur_bytes
+        self.precpu_used_sum = stat.precpu_used_sum
+        self.cpu_used_sum = stat.cpu_used_sum
+        self.mem_cur_bytes_sum = stat.mem_cur_bytes_sum
+        self.cpu_dict = stat.cpu_dict
+
+@dataclass(frozen=False)
+class EachContainerLiveStat:
+    container_id: str
+    cpu_used: int = 0
+    mem_cur_bytes: int = 0
 
 async def collect_agent_live_stat(agent, stat_type):
     from .server import stat_cache_lifespan
     stat = agent.live_stat
+    container_ids = [info[1]['container_id'] for info in agent.container_registry.items()]
     if stat_type == 'cgroup':
-        container_ids = [info[1]['container_id'] for info in agent.container_registry.items()]
-        new_stat = _collect_agent_live_stats_sysfs(container_ids)
+        new_stat = _collect_agent_live_stats_sysfs(container_ids, stat)
     elif stat_type == 'api':
-        containers = await agent.docker.containers.list()   #overhead might be big?
-        new_stat = _collect_agent_live_stats_api(containers)
+        containers = [DockerContainer(agent.docker, cid) for cid in container_ids]
+        new_stat = _collect_agent_live_stats_api(containers, stat)
     else:
         log.error("stat_type is neither cgroup nor api")
         return
     stat.update(new_stat)
-    cpu_pct = float(stat.cpu_used - stat.precpu_used) / 2000 * 100
-    mem_cur_bytes = stat.mem_cur_bytes
+    cpu_pct = float(stat.cpu_used_sum - stat.precpu_used_sum) / 2000 * 100
+    mem_cur_bytes = stat.mem_cur_bytes_sum
     agent_live_info = {
         'cpu_pct': round(cpu_pct, 2),
         'mem_cur_bytes': mem_cur_bytes
@@ -143,30 +149,55 @@ async def collect_agent_live_stat(agent, stat_type):
     await pipe.execute()
 
 
-def _collect_agent_live_stats_sysfs(container_ids):
-    results = tuple(_each_container_live_stats_sysfs(cid) for cid in container_ids)
-    cpu_used = sum([stat[0] for stat in results])
-    mem_cur_bytes = sum([stat[1] for stat in results])
+def _collect_agent_live_stats_sysfs(container_ids, prev_stat):
+    precpu_used_sum = prev_stat.cpu_used_sum
+    for cid, cpu_used in prev_stat.cpu_dict.items():
+        if cid not in container_ids:
+            precpu_used_sum -= cpu_used
+
+    cpu_used_sum = 0
+    mem_cur_bytes_sum = 0
+    cpu_dict = {}
+    results = [_each_container_live_stat_sysfs(cid) for cid in container_ids]
+    for each_stat in results:
+        cpu_used_sum += each_stat.cpu_used
+        mem_cur_bytes_sum += each_stat.mem_cur_bytes
+        cpu_dict[each_stat.container_id] = each_stat.cpu_used
+
     return AgentLiveStat(
-        0,
-        cpu_used,
-        mem_cur_bytes
+        precpu_used_sum,
+        cpu_used_sum,
+        mem_cur_bytes_sum,
+        cpu_dict
     )
 
-async def _collect_agent_live_stats_api(containers):
+async def _collect_agent_live_stats_api(containers, prev_stat):
+    container_ids = [c._id for c in containers]
+    precpu_used_sum = prev_stat.cpu_used_sum
+    for cid, cpu_used in prev_stat.cpu_dict:
+        if cid not in container_ids:
+            precpu_used_sum -= cpu_used
+
+    cpu_used_sum = 0
+    mem_cur_bytes_sum = 0
+    cpu_dict = {}
     tasks = []
     for c in containers:
-        tasks.append(asyncio.ensure_future(_each_container_live_stats_api(c)))
+        tasks.append(asyncio.ensure_future(_each_container_live_stat_api(c)))
     results = await asyncio.gather(*tasks)
-    cpu_used = sum([stat[0] for stat in results])
-    mem_cur_bytes = sum([stat[1] for stat in results])
+    for each_stat in results:
+        cpu_used_sum += each_stat.cpu_used
+        mem_cur_bytes_sum += each_stat.mem_cur_bytes
+        cpu_dict[each_stat.container_id] = each_stat.cpu_used
+
     return AgentLiveStat(
-        0,
-        cpu_used,
-        mem_cur_bytes
+        precpu_used_sum,
+        cpu_used_sum,
+        mem_cur_bytes_sum,
+        cpu_dict
     )
 
-def _each_container_live_stats_sysfs(container_id):
+def _each_container_live_stat_sysfs(container_id):
     cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
     mem_prefix = f'/sys/fs/cgroup/memory/docker/{container_id}/'
     try:
@@ -178,9 +209,14 @@ def _each_container_live_stats_sysfs(container_id):
                     f'sysfs unreadable for container {short_cid}!'
                     f'\n{e!r}')
         return None
-    return (cpu_used, mem_cur_bytes)
 
-async def _each_container_live_stats_api(container):
+    return EachContainerLiveStat(
+        container_id,
+        cpu_used,
+        mem_cur_bytes
+    )
+
+async def _each_container_live_stat_api(container):
     try:
         ret = await container.stats(stream=False)
     except (DockerError, aiohttp.ClientResponseError):
@@ -195,39 +231,12 @@ async def _each_container_live_stats_api(container):
             return None
     cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
     mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
-    return (cpu_used, mem_cur_bytes)
 
-
-async def collect_agent_live_stats(agent):
-    """Store agent live stats in redis stats server.
-    """
-    from .server import stat_cache_lifespan
-    num_cores = agent.container_cpu_map.num_cores
-    precpu_used = cpu_used = mem_cur_bytes = 0
-    precpu_sys_used = cpu_sys_used = 0
-    for cid, cstate in agent.stats.items():
-        if not cstate.terminated.is_set() and cstate.last_stat is not None:
-            precpu_used += float(cstate.last_stat['precpu_used'])
-            cpu_used += float(cstate.last_stat['cpu_used'])
-            precpu_sys_used += float(cstate.last_stat['precpu_system_used'])
-            cpu_sys_used += float(cstate.last_stat['cpu_system_used'])
-            mem_cur_bytes += int(cstate.last_stat['mem_cur_bytes'])
-
-    # CPU usage calculation ref: https://bit.ly/2rrfrFF
-    cpu_delta = cpu_used - precpu_used
-    system_delta = cpu_sys_used - precpu_sys_used
-    cpu_pct = 0
-    if system_delta > 0 and cpu_delta > 0:
-        cpu_pct = (cpu_delta / system_delta) * num_cores * 100
-
-    agent_live_info = {
-        'cpu_pct': round(cpu_pct, 1),
-        'mem_cur_bytes': mem_cur_bytes,
-    }
-    pipe = agent.redis_stat_pool.pipeline()
-    pipe.hmset_dict(agent.config.instance_id, agent_live_info)
-    pipe.expire(agent.config.instance_id, stat_cache_lifespan)
-    await pipe.execute()
+    return EachContainerLiveStat(
+        container._id,
+        cpu_used,
+        mem_cur_bytes
+    )
 
 
 @aiotools.actxmgr
