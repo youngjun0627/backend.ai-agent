@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.03.0b1 (2019-01-30)
+----------------------
+
+- BIG: Support dynamic resource slots and full private Docker registries. (#98)
+
+- Expand support for various kernel environments: Python 2, R, Julia, JupyterHub
+
 19.03.0a3 (2019-01-21)
 ----------------------
 
