@@ -118,16 +118,20 @@ class AgentLiveStat:
         self.mem_cur_bytes_sum = stat.mem_cur_bytes_sum
         self.cpu_dict = stat.cpu_dict
 
+
 @dataclass(frozen=False)
 class EachContainerLiveStat:
     container_id: str
     cpu_used: int = 0
     mem_cur_bytes: int = 0
 
+
 async def collect_agent_live_stat(agent, stat_type):
     from .server import stat_cache_lifespan
     stat = agent.live_stat
-    container_ids = [info[1]['container_id'] for info in agent.container_registry.items()]
+    container_ids = []
+    for info in agent.container_registry.items():
+        container_ids.append(info[1]['container_id'])
     if stat_type == 'cgroup':
         new_stat = _collect_agent_live_stats_sysfs(container_ids, stat)
     elif stat_type == 'api':
@@ -138,6 +142,7 @@ async def collect_agent_live_stat(agent, stat_type):
         return
     stat.update(new_stat)
     cpu_pct = float(stat.cpu_used_sum - stat.precpu_used_sum) / 2000 * 100
+    # cpu_used_sum(ms), interval = 2s, cpu_pct(%)
     mem_cur_bytes = stat.mem_cur_bytes_sum
     agent_live_info = {
         'cpu_pct': round(cpu_pct, 2),
@@ -171,6 +176,7 @@ def _collect_agent_live_stats_sysfs(container_ids, prev_stat):
         cpu_dict
     )
 
+
 async def _collect_agent_live_stats_api(containers, prev_stat):
     container_ids = [c._id for c in containers]
     precpu_used_sum = prev_stat.cpu_used_sum
@@ -197,6 +203,7 @@ async def _collect_agent_live_stats_api(containers, prev_stat):
         cpu_dict
     )
 
+
 def _each_container_live_stat_sysfs(container_id):
     cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
     mem_prefix = f'/sys/fs/cgroup/memory/docker/{container_id}/'
@@ -215,6 +222,7 @@ def _each_container_live_stat_sysfs(container_id):
         cpu_used,
         mem_cur_bytes
     )
+
 
 async def _each_container_live_stat_api(container):
     try:
