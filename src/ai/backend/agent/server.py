@@ -768,7 +768,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 digest_ref = image_ref.canonical
                 log.info('pulling image {} from registry', digest_ref)
                 await self.docker.images.pull(digest_ref, auth=auth_config)
-                del dreg_user, dreg_passwd, encoded_creds, auth_config
             else:
                 raise
         await self.send_event('kernel_creating', kernel_id)
