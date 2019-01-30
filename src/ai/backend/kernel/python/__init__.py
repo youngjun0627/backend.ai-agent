@@ -3,7 +3,6 @@ import logging
 import os
 from pathlib import Path
 import shutil
-import site
 import tempfile
 
 import janus
@@ -101,7 +100,8 @@ class Runner(BaseRunner):
                 print('c.NotebookApp.port = {}'.format(service_info['port']),
                       file=config)
                 print('c.NotebookApp.token = ""', file=config)
-            jupyter_service_type = 'lab' if service_info['name'] == 'jupyterlab' else 'notebook' 
+            jupyter_service_type = 'lab' \
+                if service_info['name'] == 'jupyterlab' else 'notebook'
             return [
                 self.runtime_path, '-m', 'jupyter', jupyter_service_type,
                 '--no-browser',
