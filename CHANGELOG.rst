@@ -1,6 +1,14 @@
 Changes
 =======
 
+19.03.0b3 (2018-01-30)
+----------------------
+
+- Restore support for fractionally scaled accelerators and a reusable
+  FractionAllocMap class for them.
+
+- Fix a bug after automatically pull-updating kernel images from registries.
+
 19.03.0b2 (2018-01-30)
 ----------------------
 

@@ -1381,7 +1381,12 @@ print(json.dumps(files))''' % {'path': path}
         res_slots = {}
         for klass in compute_device_types.values():
             for slot_key, slot_type in klass.slot_types:
-                res_slots[slot_key] = (slot_type, self.slots.get(slot_key, 0))
+                res_slots[slot_key] = (
+                    slot_type,
+                    str(ResourceSlot.value_as_numeric(
+                        self.slots.get(slot_key, 0),
+                        slot_type)),
+                )
         agent_info = {
             'ip': self.config.agent_host,
             'region': self.config.region,
