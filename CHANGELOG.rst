@@ -1,6 +1,12 @@
 Changes
 =======
 
+19.03.0b2 (2018-01-30)
+----------------------
+
+- Add missing implementation for authenticated image pulls from private docker
+  registries.
+
 19.03.0b1 (2019-01-30)
 ----------------------
 
