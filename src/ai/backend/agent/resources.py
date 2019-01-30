@@ -317,6 +317,57 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
                 self.allocations[slot_type][dev_id] -= alloc
 
 
+class FractionAllocMap(AbstractAllocMap):
+
+    def __init__(self, *args, **kwargs):
+        self.shares_per_device = kwargs.pop('shares_per_device')
+        super().__init__(*args, **kwargs)
+        self.allocations = defaultdict(lambda: {
+            dev_id: Decimal(0) for dev_id in self.devices.keys()
+        })
+
+    def allocate(self, slots: Mapping[SlotType, Allocation]) -> ResourceAllocations:
+        allocation = {}
+        for slot_type, alloc in slots.items():
+            slot_allocation = {}
+            remaining_alloc = int(alloc)
+
+            # fill up starting from the most free devices
+            sorted_dev_allocs = sorted(
+                self.allocations[slot_type].items(),
+                key=lambda pair: self.shares_per_device[pair[0]] - pair[1],
+                reverse=True)
+
+            total_allocatable = 0
+            for dev_id, current_alloc in sorted_dev_allocs:
+                current_alloc = self.allocations[slot_type][dev_id]
+                total_allocatable += (self.shares_per_device[dev_id] -
+                                      current_alloc)
+            if total_allocatable < alloc:
+                raise InsufficientResource(
+                    'FractionAllocMap: insufficient allocatable amount!')
+
+            slot_allocation = {}
+            for dev_id, current_alloc in sorted_dev_allocs:
+                current_alloc = self.allocations[slot_type][dev_id]
+                allocatable = (self.shares_per_device[dev_id] -
+                               current_alloc)
+                if allocatable > 0:
+                    allocated = min(remaining_alloc, allocatable)
+                    slot_allocation[dev_id] = allocated
+                    self.allocations[slot_type][dev_id] += allocated
+                    remaining_alloc -= allocated
+                if remaining_alloc <= 0:
+                    break
+            allocation[slot_type] = slot_allocation
+        return allocation
+
+    def free(self, existing_alloc: ResourceAllocations):
+        for slot_type, per_device_alloc in existing_alloc.items():
+            for dev_id, alloc in per_device_alloc.items():
+                self.allocations[slot_type][dev_id] -= alloc
+
+
 def bitmask2set(mask):
     bpos = 0
     bset = []
