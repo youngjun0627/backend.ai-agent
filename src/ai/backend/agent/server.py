@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import functools
 from ipaddress import ip_address
 import logging, logging.config
@@ -270,31 +271,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if idle_timeout is None:
                 idle_timeout = 600  # default: 10 minutes
             self.config.idle_timeout = idle_timeout
-
-        # TODO: rewrite to use manager-provided credentials
-        '''
-        docker_registry = await self.etcd.get('nodes/docker_registry')
-        if not docker_registry:
-            if self.config.docker_registry is None:
-                raise RuntimeError('missing configuration for docker registry!')
-        else:
-            self.config.docker_registry = docker_registry
-        dreg_user = await self.etcd.get('nodes/docker_registry/user')
-        dreg_passwd = await self.etcd.get('nodes/docker_registry/password')
-        if dreg_user:
-            auth_bytes = f'{dreg_user}:{dreg_passwd}'.encode('utf-8')
-            dreg_auth = base64.b64encode(auth_bytes).decode('ascii')
-            docker_config_path = Path.home() / '.docker' / 'config.json'
-            docker_config = json.loads(
-                docker_config_path.read_text(encoding='utf-8'))
-            if 'auths' not in docker_config:
-                docker_config['auths'] = {}
-            docker_config['auths'][docker_registry] = {
-                'auth': dreg_auth,
-            }
-            docker_config_path.write_text(
-                json.dumps(docker_config), encoding='utf-8')
-        '''
 
         log.info('configured redis_addr: {0}', self.config.redis_addr)
         log.info('configured event_addr: {0}', self.config.event_addr)
@@ -776,7 +752,23 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if e.status == 404:
                 await self.send_event('kernel_pulling',
                                       kernel_id, image_ref.canonical)
-                await self.docker.images.pull(image_ref.canonical)
+                auth_config = None
+                dreg_user = kernel_config['image']['registry'].get('username')
+                dreg_passwd = kernel_config['image']['registry'].get('password')
+                if dreg_user and dreg_passwd:
+                    encoded_creds = base64.b64encode(
+                        f'{dreg_user}:{dreg_passwd}'.encode('utf-8')) \
+                        .decode('ascii')
+                    auth_config = {
+                        'auth': encoded_creds,
+                    }
+                # TODO: digest refs are not working as expected...
+                # digest_ref = f"{image_ref.registry}/{image_ref.name}@" \
+                #              f"{kernel_config['image']['digest']}"
+                digest_ref = image_ref.canonical
+                log.info('pulling image {} from registry', digest_ref)
+                await self.docker.images.pull(digest_ref, auth=auth_config)
+                del encoded_creds, auth_config
             else:
                 raise
         await self.send_event('kernel_creating', kernel_id)
