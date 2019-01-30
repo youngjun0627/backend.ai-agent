@@ -9,6 +9,8 @@ Changes
 
 - Fix a bug after automatically pull-updating kernel images from registries.
 
+- Fix heartbeat serialization error.
+
 19.03.0b2 (2018-01-30)
 ----------------------
 
