@@ -942,28 +942,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     f.write(f'{env}\n')
             with open(config_dir / 'resource.txt', 'w') as f:
                 resource_spec.write_to_file(f)
-
-                # TODO: Store accelerator-specific resource-share preparation
-                # for dev_type, device_alloc in resource_spec.allocations.items():
-                #     mem_limits = []
-                #     proc_limits = []
-                #     accl = self.computers[dev_type]
-                #     for dev_id, dev_share in per_device_alloc.items():
-                #         device = accl.devices[dev_id]
-                #         mem, proc = device.share_to_spec(dev_share)
-                #         mem_limits.append((dev_id, mem))
-                #         proc_limits.append((dev_id, proc))
-                #     mlim_str = ','.join(
-                #         f'{dev_id}:{mem}' for dev_id, mem in
-                #         mem_limits
-                #     )
-                #     plim_str = ','.join(
-                #         f'{dev_id}:{proc}' for dev_id, proc in
-                #         proc_limits
-                #     )
-                #     f.write(f'{dev_type.upper()}_MEMORY_LIMITS={mlim_str}\n')
-                #     f.write(f'{dev_type.upper()}_PROCESSOR_LIMITS={plim_str}\n')
-                #     pass
+                for dev_type, device_alloc in resource_spec.allocations.items():
+                    computer_set = self.computers[dev_type]
+                    kvpairs = \
+                        await computer_set.klass.generate_resource_data(device_alloc)
+                    for k, v in kvpairs.items():
+                        f.write(f'{k}={v}\n')
 
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',

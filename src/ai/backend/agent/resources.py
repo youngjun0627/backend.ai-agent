@@ -96,6 +96,14 @@ class AbstractComputePlugin(metaclass=ABCMeta):
         return {}
 
     @classmethod
+    async def generate_resource_data(cls, device_alloc) -> Mapping[str, str]:
+        '''
+        Generate extra resource.txt key-value pair sets to be used by the plugin's
+        own hook libraries in containers.
+        '''
+        return {}
+
+    @classmethod
     @abstractmethod
     async def restore_from_container(cls, container, alloc_map):
         '''
