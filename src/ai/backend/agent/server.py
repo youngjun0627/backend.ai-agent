@@ -835,10 +835,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             assert 'mem' in slots
 
             # Realize ComputeDevice (including accelerators) allocations.
-            dev_types = []
+            dev_types = set()
             for slot_type in slots.keys():
                 dev_type = slot_type.split('.', maxsplit=1)[0]
-                dev_types.append(dev_type)
+                dev_types.add(dev_type)
 
             for dev_type in dev_types:
                 computer_set = self.computers[dev_type]
@@ -1025,7 +1025,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'seccomp=unconfined',
                 'apparmor=unconfined',
             ]
-        print(computer_docker_args)
         update_nested_dict(container_config, computer_docker_args)
         kernel_name = f"kernel.{image_ref.name.split('/')[-1]}.{kernel_id}"
         log.debug('container config: {!r}', container_config)
