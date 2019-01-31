@@ -398,6 +398,9 @@ async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
         log.info('loading accelerator plugin: {}', entrypoint.module_name)
         plugin = entrypoint.load()
         accel_klass = await plugin.init(etcd)
+        if accel_klass is None:
+            # plugin init failed. skip!
+            continue
         assert all(skey.startswith(f'{accel_klass.key}.')
                    for skey, _ in accel_klass.slot_types), \
                "Slot types defined by an accelerator plugin must be prefixed " \
