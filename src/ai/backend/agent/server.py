@@ -903,8 +903,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         computer_docker_args = {}
         for dev_type, device_alloc in resource_spec.allocations.items():
             computer_set = self.computers[dev_type]
-            computer_docker_args = await computer_set.klass.generate_docker_args(
-                self.docker, device_alloc)
+            update_nested_dict(computer_docker_args,
+                               await computer_set.klass.generate_docker_args(
+                                   self.docker, device_alloc))
             hook_paths = await computer_set.klass.get_hooks(distro, arch)
             if hook_paths:
                 log.debug('accelerator {} provides hooks: {}',
@@ -1024,6 +1025,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'seccomp=unconfined',
                 'apparmor=unconfined',
             ]
+        print(computer_docker_args)
         update_nested_dict(container_config, computer_docker_args)
         kernel_name = f"kernel.{image_ref.name.split('/')[-1]}.{kernel_id}"
         log.debug('container config: {!r}', container_config)
