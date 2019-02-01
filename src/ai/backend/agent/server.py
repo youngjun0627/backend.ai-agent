@@ -996,15 +996,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         for eport in exposed_ports:
             hport = self.port_pool.pop()
             host_ports.append(hport)
-<<<<<<< HEAD
-            
-        runtime_type = get_label(image_labels, 'runtime-type', 'python')
-        runtime_path = get_label(image_labels, 'runtime-path', None)
-=======
 
         runtime_type = image_labels.get('ai.backend.runtime-type', 'python')
         runtime_path = image_labels.get('ai.backend.runtime-path', None)
->>>>>>> 877e226586472317ef05947873b14263f1b505d8
         cmdargs = []
         if self.config.sandbox_type == 'jail':
             cmdargs += [
