@@ -1,9 +1,7 @@
 import asyncio
 import base64
-from decimal import Decimal
 import functools
 from ipaddress import ip_address
-import json
 import logging, logging.config
 import os, os.path
 from pathlib import Path
@@ -11,7 +9,6 @@ import platform
 from pprint import pformat
 import pkg_resources
 import pwd
-import re
 import secrets
 import shlex
 import signal
@@ -45,26 +42,31 @@ from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
 from ai.backend.common.plugin import install_plugins, add_plugin_args
-from ai.backend.common.types import ImageRef
+from ai.backend.common.types import (
+    ImageRef, ResourceSlot,
+    MountPermission,
+)
 from . import __version__ as VERSION
 from .files import scandir, upload_output_files_to_s3
-from .accelerator import accelerator_types, AbstractAccelerator
 from .stats import (
     get_preferred_stat_type, collect_agent_live_stat,
     spawn_stat_collector, StatCollectorState,
     AgentLiveStat
 )
 from .resources import (
+    known_slot_types,
+    compute_device_types,
+    AbstractComputeDevice,
+    AbstractComputePlugin,
     KernelResourceSpec,
-    Mount, MountPermission,
-    bitmask2set, detect_slots,
-    CPUAllocMap,
-    AcceleratorAllocMap,
+    Mount,
+    bitmask2set,
+    AbstractAllocMap,
+    detect_slots,
 )
 from .kernel import KernelRunner, KernelFeatures
 from .utils import update_nested_dict
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
-from .vendor.linux import libnuma
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
 
@@ -87,10 +89,10 @@ class RestartTracker:
 
 
 @attr.s(auto_attribs=True, slots=True)
-class AcceleratorSet:
-    klass: AbstractAccelerator
-    devices: Collection[AbstractAccelerator]
-    alloc_map: AcceleratorAllocMap
+class ComputerSet:
+    klass: AbstractComputePlugin
+    devices: Collection[AbstractComputeDevice]
+    alloc_map: AbstractAllocMap
 
 
 deeplearning_image_keys = {
@@ -156,16 +158,6 @@ async def get_kernel_id_from_container(val):
         return None
 
 
-def get_label(labels: Mapping[str, str], name, default):
-    sentinel = object()
-    v = labels.get(f'ai.backend.{name}', sentinel)
-    if v is sentinel:
-        v = labels.get(f'io.sorna.{name}', sentinel)
-        if v is sentinel:
-            return default
-    return v
-
-
 def parse_service_port(s: str) -> dict:
     try:
         name, protocol, port = s.split(':')
@@ -229,9 +221,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.restarting_kernels = {}
         self.blocking_cleans = {}
 
-        self.container_cpu_map = CPUAllocMap(config.limit_cpus)
-        self.accelerators = {}
-        self.images = set()
+        self.computers: Mapping[str, ComputerSet] = {}
+        self.images: Mapping[str, str] = {}  # repoTag -> digest
 
         self.rpc_server = None
         self.event_sock = None
@@ -287,31 +278,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if idle_timeout is None:
                 idle_timeout = 600  # default: 10 minutes
             self.config.idle_timeout = idle_timeout
-        docker_registry = await self.etcd.get('nodes/docker_registry')
-        if not docker_registry:
-            if self.config.docker_registry is None:
-                raise RuntimeError('missing configuration for docker registry!')
-        else:
-            self.config.docker_registry = docker_registry
-        dreg_user = await self.etcd.get('nodes/docker_registry/user')
-        dreg_passwd = await self.etcd.get('nodes/docker_registry/password')
-        if dreg_user:
-            auth_bytes = f'{dreg_user}:{dreg_passwd}'.encode('utf-8')
-            dreg_auth = base64.b64encode(auth_bytes).decode('ascii')
-            docker_config_path = Path.home() / '.docker' / 'config.json'
-            docker_config = json.loads(
-                docker_config_path.read_text(encoding='utf-8'))
-            if 'auths' not in docker_config:
-                docker_config['auths'] = {}
-            docker_config['auths'][docker_registry] = {
-                'auth': dreg_auth,
-            }
-            docker_config_path.write_text(
-                json.dumps(docker_config), encoding='utf-8')
 
         log.info('configured redis_addr: {0}', self.config.redis_addr)
         log.info('configured event_addr: {0}', self.config.event_addr)
-        log.info('configured docker_registry: {0}', self.config.docker_registry)
         vfolder_mount = await self.etcd.get('volumes/_mount')
         if vfolder_mount is None:
             vfolder_mount = '/mnt'
@@ -338,6 +307,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             status = container['State']['Status']
             if status in {'running', 'restarting', 'paused'}:
                 log.info('detected running kernel: {0}', kernel_id)
+                await container.show()
                 image = container['Config']['Image']
                 labels = container['Config']['Labels']
                 ports = container['NetworkSettings']['Ports']
@@ -350,9 +320,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         public_port = int(host_ports[0]['HostPort'])
                         self.port_pool.discard(public_port)
                     port_map[private_port] = public_port
-                cpu_set = set(
-                    map(int, (container['HostConfig']['CpusetCpus']).split(',')))
-                self.container_cpu_map.update(cpu_set)
+                for computer_set in self.computers.values():
+                    await computer_set.klass.restore_from_container(
+                        container, computer_set.alloc_map)
                 if self.config.kernel_host_override:
                     kernel_host = self.config.kernel_host_override
                 else:
@@ -362,7 +332,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 with open(config_dir / 'resource.txt', 'r') as f:
                     resource_spec = KernelResourceSpec.read_from_file(f)
                 service_ports = []
-                for item in get_label(labels, 'service-ports', '').split(','):
+                for item in labels.get('ai.backend.service-ports', '').split(','):
                     if not item:
                         continue
                     service_port = parse_service_port(item)
@@ -371,7 +341,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     service_ports.append(service_port)
                 self.container_registry[kernel_id] = {
                     'lang': ImageRef(image),
-                    'version': int(get_label(labels, 'version', '1')),
+                    'version': int(labels.get('ai.backend.kernelspec', '1')),
                     'container_id': container._id,
                     'env_container_id': env_containers.get(kernel_id),
                     'kernel_host': kernel_host,
@@ -379,7 +349,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'repl_out_port': port_map[2001],
                     'stdin_port': port_map.get(2002, 0),
                     'stdout_port': port_map.get(2003, 0),
-                    'exec_timeout': int(get_label(labels, 'timeout', '10')),
                     'last_used': time.monotonic(),
                     'runner_tasks': set(),
                     'host_ports': [*port_map.values()],
@@ -393,15 +362,22 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def scan_images(self, interval):
         all_images = await self.docker.images.list()
-        self.images.clear()
+        updated_images = {}
         for image in all_images:
             if image['RepoTags'] is None:
                 continue
-            r_kernel_image = re.compile(r'^.+/kernel-.+$')
-            for tag in image['RepoTags']:
-                if r_kernel_image.match(tag):
-                    self.images.add((tag, image['Id']))
-                    log.debug('found kernel image: {0} {1}', tag, image['Id'])
+            for repo_tag in image['RepoTags']:
+                if repo_tag.endswith('<none>'):
+                    continue
+                img_detail = await self.docker.images.get(repo_tag)
+                labels = img_detail['Config']['Labels']
+                if labels and 'ai.backend.kernelspec' in labels:
+                    updated_images[repo_tag] = img_detail['Id']
+        for added_image in (updated_images.keys() - self.images.keys()):
+            log.debug('found kernel image: {0}', added_image)
+        for removed_image in (self.images.keys() - updated_images.keys()):
+            log.debug('removed kernel image: {0}', removed_image)
+        self.images = updated_images
 
     async def update_status(self, status):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
@@ -485,16 +461,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.etcd = AsyncEtcd(self.config.etcd_addr,
                               self.config.namespace)
-        # detect_slots() loads accelerator plugins
+
+        # detect_slots() loads accelerator plugins and updates compute_device_types
         self.slots = await detect_slots(
             self.etcd,
             self.config.limit_cpus,
             self.config.limit_gpus)
-        for name, klass in accelerator_types.items():
-            devices = klass.list_devices()
-            alloc_map = AcceleratorAllocMap(devices,
-                                            limit_mask=self.config.limit_gpus)
-            self.accelerators[name] = AcceleratorSet(klass, devices, alloc_map)
+        for name, klass in compute_device_types.items():
+            devices = await klass.list_devices()
+            alloc_map = await klass.create_alloc_map()
+            self.computers[name] = ComputerSet(klass, devices, alloc_map)
+
         if not skip_detect_manager:
             await self.detect_manager()
         await self.read_etcd_configs()
@@ -639,7 +616,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     @aiozmq.rpc.method
     @update_last_used
     async def create_kernel(self, kernel_id: str, config: dict) -> dict:
-        log.debug('rpc::create_kernel({0}, {1})', kernel_id, config['lang'])
+        log.debug('rpc::create_kernel({0}, {1})', kernel_id, config['image'])
         async with self.handle_rpc_exception():
             return await self._create_kernel(kernel_id, config)
 
@@ -775,30 +752,48 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _create_kernel(self, kernel_id, kernel_config, restarting=False):
 
-        await self.send_event('kernel_creating', kernel_id)
+        await self.send_event('kernel_preparing', kernel_id)
 
         # Read image-specific labels and settings
-        image_ref = ImageRef(kernel_config['lang'])
-        assert not image_ref.resolve_required(), \
-               'The manager should have resolved the image reference!'
-
+        image_ref = ImageRef(
+            kernel_config['image']['canonical'],
+            kernel_config['image']['registry']['name'])
         environ: dict = kernel_config.get('environ', {})
         extra_mount_list = await get_extra_volumes(self.docker, image_ref.short)
 
         try:
-            image_props = await self.docker.images.get(image_ref.canonical)
+            # Find the exact image using a digest reference
+            digest_ref = f"{image_ref.name}@{kernel_config['image']['digest']}"
+            await self.docker.images.get(digest_ref)
         except DockerError as e:
             if e.status == 404:
-                await self.docker.images.pull(image_ref.canonical)
+                await self.send_event('kernel_pulling',
+                                      kernel_id, image_ref.canonical)
+                auth_config = None
+                dreg_user = kernel_config['image']['registry'].get('username')
+                dreg_passwd = kernel_config['image']['registry'].get('password')
+                if dreg_user and dreg_passwd:
+                    encoded_creds = base64.b64encode(
+                        f'{dreg_user}:{dreg_passwd}'.encode('utf-8')) \
+                        .decode('ascii')
+                    auth_config = {
+                        'auth': encoded_creds,
+                    }
+                # TODO: digest refs are not working as expected...
+                # digest_ref = f"{image_ref.registry}/{image_ref.name}@" \
+                #              f"{kernel_config['image']['digest']}"
+                digest_ref = image_ref.canonical
+                log.info('pulling image {} from registry', digest_ref)
+                await self.docker.images.pull(digest_ref, auth=auth_config)
             else:
                 raise
-        image_labels = image_props['ContainerConfig']['Labels']
+        await self.send_event('kernel_creating', kernel_id)
+        image_labels = kernel_config['image']['labels']
 
-        version        = int(get_label(image_labels, 'version', '1'))
-        exec_timeout   = int(get_label(image_labels, 'timeout', '10'))
-        envs_corecount = get_label(image_labels, 'envs.corecount', '')
+        version        = int(image_labels.get('ai.backend.kernelspec', '1'))
+        envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
-        kernel_features = set(get_label(image_labels, 'features', '').split())
+        kernel_features = set(image_labels.get('ai.backend.features', '').split())
 
         scratch_dir = (self.config.scratch_root / kernel_id).resolve()
         tmp_dir = (self.config.scratch_root / f'{kernel_id}_tmp').resolve()
@@ -811,21 +806,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             with open(config_dir / 'resource.txt', 'r') as f:
                 resource_spec = KernelResourceSpec.read_from_file(f)
         else:
-            limits = kernel_config['limits']
+            slots = ResourceSlot(kernel_config['resource_slots'])
             vfolders = kernel_config['mounts']
-            assert 'cpu_slot' in limits
-            assert 'mem_slot' in limits
-            limits['cpu_slot'] = Decimal(limits['cpu_slot'])
-            limits['mem_slot'] = Decimal(limits['mem_slot'])
-            limits['gpu_slot'] = Decimal(limits.get('gpu_slot', 0))
-            limits['tpu_slot'] = Decimal(limits.get('tpu_slot', 0))
+            slots = slots.as_numeric(known_slot_types)
             resource_spec = KernelResourceSpec(
-                shares={
-                    '_cpu': limits['cpu_slot'],
-                    '_mem': limits['mem_slot'],
-                    '_gpu': limits['gpu_slot'],
-                    '_tpu': limits['tpu_slot'],
-                },
+                allocations={},
+                slots={**slots},  # copy
                 mounts=[],
                 scratch_disk_size=0,  # TODO: implement (#70)
             )
@@ -860,33 +846,25 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             for mount in resource_spec.mounts:
                 binds.append(str(mount))
         else:
-            # Realize CPU share.
-            cpu_set = kernel_config.get('cpu_set')
-            if cpu_set is None:
-                requested_cores = int(limits['cpu_slot'])
-                num_cores = min(self.container_cpu_map.num_cores, requested_cores)
-                numa_node, cpu_set = self.container_cpu_map.alloc(num_cores)
-            else:
-                num_cores = len(cpu_set)
-                numa_node = libnuma.node_of_cpu(next(iter(cpu_set)))
-            resource_spec.numa_node = numa_node
-            resource_spec.cpu_set = cpu_set
+            # Ensure that we already converted all values to absolute real values.
+            assert slots.numeric
+            assert 'cpu' in slots
+            assert 'mem' in slots
 
-            # Realize memory share. (the creation-config unit is 1 GiB)
-            resource_spec.memory_limit = int(limits['mem_slot'] * (2 ** 30))
+            # Realize ComputeDevice (including accelerators) allocations.
+            dev_types = set()
+            for slot_type in slots.keys():
+                dev_type = slot_type.split('.', maxsplit=1)[0]
+                dev_types.add(dev_type)
 
-            # Realize accelerator shares.
-            if limits['gpu_slot'] > 0:
-                # TODO: generalize gpu_slot
-                accl = self.accelerators['cuda']
-                _, cuda_allocated_shares = \
-                    accl.alloc_map.alloc(limits['gpu_slot'])
-                resource_spec.shares['cuda'] = cuda_allocated_shares
-            if limits['tpu_slot'] > 0:
-                accl = self.accelerators['tpu']
-                _, tpu_allocated_shares = \
-                    accl.alloc_map.alloc(limits['tpu_slot'])
-                resource_spec.shares['tpu'] = tpu_allocated_shares
+            for dev_type in dev_types:
+                computer_set = self.computers[dev_type]
+                device_specific_slots = {
+                    slot_type: amount for slot_type, amount in slots.items()
+                    if slot_type.startswith(dev_type)
+                }
+                resource_spec.allocations[dev_type] = \
+                    computer_set.alloc_map.allocate(device_specific_slots)
 
             # Realize vfolder mounts.
             for folder_name, folder_host, folder_id in vfolders:
@@ -899,20 +877,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 binds.append(str(mount))
 
             # should no longer be used!
-            del limits
             del vfolders
 
         # Inject Backend.AI-intrinsic env-variables for libbaihook and gosu
-        environ.update({
-            k: str(len(resource_spec.cpu_set))
-            for k in envs_corecount})
+        cpu_core_count = len(resource_spec.allocations['cpu']['cpu'])
+        environ.update({k: str(cpu_core_count) for k in envs_corecount})
 
         def _mount(host_path, container_path, perm='ro'):
             nonlocal binds
             binds.append(f'{host_path}:{container_path}:{perm}')
 
         # Inject Backend.AI kernel runner dependencies.
-        distro = get_label(image_labels, 'base-distro', 'ubuntu16.04')
+        distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         arch = platform.machine()
         entrypoint_sh_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/entrypoint.sh'))
@@ -940,21 +916,21 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers')
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
-        # Inject accelerator-specific env-varibles and hooks
-        accel_docker_args = {}
-        for dev_type, dev_share in resource_spec.shares.items():
-            if dev_type in KernelResourceSpec.reserved_share_types:
-                continue
-            accl = self.accelerators[dev_type]
-            accel_docker_args = await accl.klass.generate_docker_args(
-                self.docker, dev_share)
-            hook_paths = accl.klass.get_hooks(distro, arch)
-            log.debug('accelerator {} provides hooks: {}',
-                      accl.klass.__name__,
-                      ', '.join(map(str, hook_paths)))
+        # Inject ComputeDevice-specific env-varibles and hooks
+        computer_docker_args = {}
+        for dev_type, device_alloc in resource_spec.allocations.items():
+            computer_set = self.computers[dev_type]
+            update_nested_dict(computer_docker_args,
+                               await computer_set.klass.generate_docker_args(
+                                   self.docker, device_alloc))
+            hook_paths = await computer_set.klass.get_hooks(distro, arch)
+            if hook_paths:
+                log.debug('accelerator {} provides hooks: {}',
+                          computer_set.klass.__name__,
+                          ', '.join(map(str, hook_paths)))
             for hook_path in hook_paths:
                 container_hook_path = '/opt/backend.ai/hook/lib{}{}.so'.format(
-                    accl.klass.slot_key, secrets.token_hex(6),
+                    computer_set.klass.key, secrets.token_hex(6),
                 )
                 _mount(hook_path, container_hook_path)
                 environ['LD_PRELOAD'] += ':' + container_hook_path
@@ -979,34 +955,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             with open(config_dir / 'environ.txt', 'w') as f:
                 for k, v in environ.items():
                     f.write(f'{k}={v}\n')
-                accel_envs = accel_docker_args.get('Env', [])
+                accel_envs = computer_docker_args.get('Env', [])
                 for env in accel_envs:
                     f.write(f'{env}\n')
             with open(config_dir / 'resource.txt', 'w') as f:
                 resource_spec.write_to_file(f)
-
-                # Store accelerator-specific resource-share preparation
-                for dev_type, dev_shares in resource_spec.shares.items():
-                    if dev_type in KernelResourceSpec.reserved_share_types:
-                        continue
-                    mem_limits = []
-                    proc_limits = []
-                    accl = self.accelerators[dev_type]
-                    for dev_id, dev_share in dev_shares.items():
-                        device = accl.devices[dev_id]
-                        mem, proc = device.share_to_spec(dev_share)
-                        mem_limits.append((dev_id, mem))
-                        proc_limits.append((dev_id, proc))
-                    mlim_str = ','.join(
-                        f'{dev_id}:{mem}' for dev_id, mem in
-                        mem_limits
-                    )
-                    plim_str = ','.join(
-                        f'{dev_id}:{proc}' for dev_id, proc in
-                        proc_limits
-                    )
-                    f.write(f'{dev_type.upper()}_MEMORY_LIMITS={mlim_str}\n')
-                    f.write(f'{dev_type.upper()}_PROCESSOR_LIMITS={plim_str}\n')
+                for dev_type, device_alloc in resource_spec.allocations.items():
+                    computer_set = self.computers[dev_type]
+                    kvpairs = \
+                        await computer_set.klass.generate_resource_data(device_alloc)
+                    for k, v in kvpairs.items():
+                        f.write(f'{k}={v}\n')
 
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
@@ -1019,7 +978,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         exposed_ports = [2000, 2001]
         service_ports = {}
-        for item in get_label(image_labels, 'service-ports', '').split(','):
+        for item in image_labels.get('ai.backend.service-ports', '').split(','):
             if not item:
                 continue
             service_port = parse_service_port(item)
@@ -1037,9 +996,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         for eport in exposed_ports:
             hport = self.port_pool.pop()
             host_ports.append(hport)
+<<<<<<< HEAD
             
         runtime_type = get_label(image_labels, 'runtime-type', 'python')
         runtime_path = get_label(image_labels, 'runtime-path', None)
+=======
+
+        runtime_type = image_labels.get('ai.backend.runtime-type', 'python')
+        runtime_path = image_labels.get('ai.backend.runtime-path', None)
+>>>>>>> 877e226586472317ef05947873b14263f1b505d8
         cmdargs = []
         if self.config.sandbox_type == 'jail':
             cmdargs += [
@@ -1070,12 +1035,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'HostConfig': {
                 'Init': True,
                 'VolumesFrom': [f'kernel-env.{kernel_id}'],
-                'MemorySwap': 0,
-                'Memory': resource_spec.memory_limit,
-                'CpuPeriod': 100_000,  # docker default
-                'CpuQuota': int(100_000 * resource_spec.shares['_cpu']),
-                'CpusetCpus': ','.join(map(str, sorted(resource_spec.cpu_set))),
-                'CpusetMems': f'{resource_spec.numa_node}',
                 'Binds': binds,
                 'PortBindings': {
                     f'{eport}/tcp': [{'HostPort': str(hport)}]
@@ -1089,8 +1048,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'seccomp=unconfined',
                 'apparmor=unconfined',
             ]
-        update_nested_dict(container_config, accel_docker_args)
-        kernel_name = f'kernel.{image_ref.name}.{kernel_id}'
+        update_nested_dict(container_config, computer_docker_args)
+        kernel_name = f"kernel.{image_ref.name.split('/')[-1]}.{kernel_id}"
         log.debug('container config: {!r}', container_config)
 
         # We are all set! Create and start the container.
@@ -1115,11 +1074,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             shutil.rmtree(scratch_dir)
             shutil.rmtree(tmp_dir)
             self.port_pool.update(host_ports)
-            self.container_cpu_map.free(resource_spec.cpu_set)
-            for dev_type, dev_shares in resource_spec.shares.items():
-                if dev_type in KernelResourceSpec.reserved_share_types:
-                    continue
-                self.accelerators[dev_type].alloc_map.free(dev_shares)
+            for dev_type, device_alloc in resource_spec.allocations.items():
+                self.computers[dev_type].alloc_map.free(device_alloc)
             raise
 
         stdin_port = 0
@@ -1154,7 +1110,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'stdout_port': stdout_port,  # legacy
             'service_ports': list(service_ports.values()),
             'host_ports': host_ports,
-            'exec_timeout': exec_timeout,
             'last_used': time.monotonic(),
             'runner_tasks': set(),
             'resource_spec': resource_spec,
@@ -1163,6 +1118,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
         for service_port in service_ports.values():
             log.debug('service port: {!r}', service_port)
+        await self.send_event('kernel_started', kernel_id)
         return {
             'id': kernel_id,
             'kernel_host': kernel_host,
@@ -1207,11 +1163,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 log.warning('_destroy_kernel({0}) kernel missing, '
                             'forgetting this kernel', kernel_id)
                 resource_spec = self.container_registry[kernel_id]['resource_spec']
-                self.container_cpu_map.free(resource_spec.cpu_set)
-                for dev_type, dev_shares in resource_spec.shares.items():
-                    if dev_type in KernelResourceSpec.reserved_share_types:
-                        continue
-                    self.accelerators[dev_type].alloc_map.free(dev_shares)
+                for accel_key, accel_alloc in resource_spec.allocations.items():
+                    self.computers[accel_key].alloc_map.free(accel_alloc)
                 self.container_registry.pop(kernel_id, None)
                 pass
             else:
@@ -1235,7 +1188,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     self.container_registry[kernel_id]['kernel_host'],
                     self.container_registry[kernel_id]['repl_in_port'],
                     self.container_registry[kernel_id]['repl_out_port'],
-                    self.container_registry[kernel_id]['exec_timeout'],
+                    0,
                     client_features)
                 log.debug('_execute:v{0}({1}) start new runner',
                           api_version, kernel_id)
@@ -1448,16 +1401,23 @@ print(json.dumps(files))''' % {'path': path}
         '''
         Send my status information and available kernel images.
         '''
+        res_slots = {}
+        for klass in compute_device_types.values():
+            for slot_key, slot_type in klass.slot_types:
+                res_slots[slot_key] = (
+                    slot_type,
+                    str(ResourceSlot.value_as_numeric(
+                        self.slots.get(slot_key, 0),
+                        slot_type)),
+                )
         agent_info = {
             'ip': self.config.agent_host,
             'region': self.config.region,
             'addr': f'tcp://{self.config.agent_host}:{self.config.agent_port}',
-            'mem_slots': self.slots['mem'],
-            'cpu_slots': self.slots['cpu'],
-            # TODO: dynamic slots
-            'cuda_slots': self.slots.get('cuda', 0),
-            'tpu_slots': self.slots.get('tpu', 0),
-            'images': snappy.compress(msgpack.packb(list(self.images))),
+            'resource_slots': res_slots,
+            'images': snappy.compress(msgpack.packb([
+                (repo_tag, digest) for repo_tag, digest in self.images.items()
+            ])),
         }
         try:
             await self.send_event('instance_heartbeat', agent_info)
@@ -1575,11 +1535,8 @@ print(json.dumps(files))''' % {'path': path}
                 pass
             try:
                 resource_spec = self.container_registry[kernel_id]['resource_spec']
-                self.container_cpu_map.free(resource_spec.cpu_set)
-                for dev_type, dev_shares in resource_spec.shares.items():
-                    if dev_type in KernelResourceSpec.reserved_share_types:
-                        continue
-                    self.accelerators[dev_type].alloc_map.free(dev_shares)
+                for accel_key, accel_alloc in resource_spec.allocations.items():
+                    self.computers[accel_key].alloc_map.free(accel_alloc)
                 self.container_registry.pop(kernel_id, None)
             except KeyError:
                 pass
