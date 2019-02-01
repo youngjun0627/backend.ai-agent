@@ -1,6 +1,11 @@
 Changes
 =======
 
+19.03.0b5 (2018-02-01)
+----------------------
+
+- Handle failures of accelerator plugin initialization more gracefully.
+
 19.03.0b4 (2018-01-31)
 ----------------------
 
