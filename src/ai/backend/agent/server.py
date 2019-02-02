@@ -888,7 +888,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         jupyter_custom_css_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/jupyter-custom.css'))
         logo_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/log.svg'))
+            'ai.backend.agent', '../runner/logo.svg'))
         _mount(entrypoint_sh_path.resolve(),
                '/opt/backend.ai/bin/entrypoint.sh')
         _mount(suexec_path.resolve(),
