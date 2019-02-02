@@ -166,7 +166,7 @@ def _collect_agent_live_stats_sysfs(container_ids, prev_stat):
     cpu_dict = {}
     results = [_each_container_live_stat_sysfs(cid) for cid in container_ids]
     for each_stat in results:
-        if results is not None:
+        if each_stat is not None:
             cpu_used_sum += each_stat.cpu_used
             mem_cur_bytes_sum += each_stat.mem_cur_bytes
             cpu_dict[each_stat.container_id] = each_stat.cpu_used
@@ -194,7 +194,7 @@ async def _collect_agent_live_stats_api(containers, prev_stat):
         tasks.append(asyncio.ensure_future(_each_container_live_stat_api(c)))
     results = await asyncio.gather(*tasks)
     for each_stat in results:
-        if results is not None:
+        if each_stat is not None:
             cpu_used_sum += each_stat.cpu_used
             mem_cur_bytes_sum += each_stat.mem_cur_bytes
             cpu_dict[each_stat.container_id] = each_stat.cpu_used
