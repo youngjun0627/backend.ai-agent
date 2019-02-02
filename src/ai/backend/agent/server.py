@@ -396,9 +396,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         for distro in ['ubuntu16.04', 'alpine3.8']:
             try:
                 image_name = f'lablup/backendai-krunner-env:{VERSION}-{distro}'
-                await self.docker.images.inspect({
-                    'Image': image_name,
-                })
+                await self.docker.images.inspect(image_name)
             except DockerError:
                 raise InitializationError(
                     f'A required docker image {image_name} is missing! '
