@@ -198,10 +198,16 @@ class KernelResourceSpec:
                 per_device_alloc = {}
                 for entry in val.split(','):
                     dev_id, alloc = entry.split(':')
-                    if known_slot_types[slot_type] == 'bytes':
-                        value = BinarySize.from_str(alloc)
-                    else:
-                        value = Decimal(alloc)
+                    try:
+                        if known_slot_types[slot_type] == 'bytes':
+                            value = BinarySize.from_str(alloc)
+                        else:
+                            value = Decimal(alloc)
+                    except KeyError as e:
+                        log.warning('A previously launched container has '
+                                    'unknown slot type: {}. Ignoring it.',
+                                    e.args[0])
+                        continue
                     per_device_alloc[dev_id] = value
                 allocations[device_type][slot_type] = per_device_alloc
         mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',') if m]
