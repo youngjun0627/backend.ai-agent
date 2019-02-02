@@ -885,6 +885,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'ai.backend.agent', '../kernel'))
         helpers_pkg_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../helpers'))
+        jupyter_custom_css_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/jupyter-custom.css'))
+        logo_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/log.svg'))
         _mount(entrypoint_sh_path.resolve(),
                '/opt/backend.ai/bin/entrypoint.sh')
         _mount(suexec_path.resolve(),
@@ -897,6 +901,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
         _mount(helpers_pkg_path.resolve(),
                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers')
+        _mount(jupyter_custom_css_path.resolve(),
+               '/home/work/.jupyter/custom.css')
+        _mount(logo_path.resolve(),
+               '/home/work/.jupyter/logo.svg')
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
         # Inject ComputeDevice-specific env-varibles and hooks
