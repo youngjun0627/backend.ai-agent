@@ -47,6 +47,7 @@ from ai.backend.common.types import (
     MountPermission,
 )
 from . import __version__ as VERSION
+from .exception import InitializationError
 from .files import scandir, upload_output_files_to_s3
 from .stats import (
     get_preferred_stat_type, collect_agent_live_stats,
@@ -376,6 +377,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
 
     async def deregister_myself(self):
+        if self.etcd is None:
+            # maybe there was an error during initialization
+            return
         await self.etcd.delete_prefix(f'nodes/agents/{self.config.instance_id}')
 
     async def send_event(self, event_name, *args):
@@ -389,13 +393,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         ))
 
     async def check_images(self):
-        # Read desired image versions from etcd.
-        for key, value in (await self.etcd.get_prefix('images')):
-            # TODO: implement
-            pass
-
-        # If there are newer images, pull them.
-        # TODO: implement
+        for distro in ['ubuntu16.04', 'alpine3.8']:
+            try:
+                image_name = f'lablup/backendai-krunner-env:{VERSION}-{distro}'
+                await self.docker.images.inspect({
+                    'Image': image_name,
+                })
+            except DockerError:
+                raise InitializationError(
+                    f'A required docker image {image_name} is missing! '
+                    'Install or build it first.')
 
     async def clean_runner(self, kernel_id):
         if kernel_id not in self.container_registry:
@@ -448,6 +455,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}',
                  docker_version['Version'], docker_version['ApiVersion'])
+        await self.check_images()
 
         self.etcd = AsyncEtcd(self.config.etcd_addr,
                               self.config.namespace)
@@ -471,7 +479,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # for this task below.
         await self.scan_images(None)
         await self.scan_running_containers()
-        await self.check_images()
 
         self.redis_stat_pool = await aioredis.create_redis_pool(
             self.config.redis_addr.as_sockaddr(),
@@ -1582,8 +1589,12 @@ async def server_main(loop, pidx, _args):
     try:
         agent = AgentRPCServer(args, loop=loop)
         await agent.init()
+    except InitializationError as e:
+        log.error('Agent initialization failed: {}', e)
+        os.kill(0, signal.SIGINT)
     except Exception:
         log.exception('unexpected error during AgentRPCServer.init()!')
+        os.kill(0, signal.SIGINT)
 
     # Run!
     try:
