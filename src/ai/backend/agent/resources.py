@@ -155,10 +155,6 @@ class KernelResourceSpec:
     '''The size of scratch disk. (not implemented yet)'''
     scratch_disk_size: int = None
 
-    # '''Intrinsic allocations'''
-    # numa_node: int = None
-    # cpu_set: Container[int] = None
-
     def write_to_file(self, file: io.TextIOBase):
         '''
         Write the current resource specification into a file-like object.
@@ -426,3 +422,14 @@ async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
     log.info('Resource slots: {!r}', slots)
     log.info('Slot types: {!r}', known_slot_types)
     return slots
+
+
+async def get_resource_spec_from_container(container):
+    for bind in container['HostConfig']['Binds']:
+        host_path, cont_path, perm = bind.split(':', maxsplit=2)
+        if cont_path == '/home/config':
+            with open(Path(host_path) / 'resource.txt', 'r') as f:
+                return KernelResourceSpec.read_from_file(f)
+            break
+    else:
+        return None

@@ -7,7 +7,7 @@ from .resources import (
     AbstractComputeDevice,
     AbstractComputePlugin,
     DiscretePropertyAllocMap,
-    KernelResourceSpec,
+    get_resource_spec_from_container,
 )
 from .vendor.linux import libnuma
 
@@ -82,15 +82,11 @@ class CPUPlugin(AbstractComputePlugin):
         assert isinstance(alloc_map, DiscretePropertyAllocMap)
         # Docker does not return the original cpuset.... :(
         # We need to read our own records.
-        for bind in container['HostConfig']['Binds']:
-            host_path, cont_path, perm = bind.split(':', maxsplit=2)
-            if cont_path == '/home/config':
-                with open(Path(host_path) / 'resource.txt', 'r') as f:
-                    resource_spec = KernelResourceSpec.read_from_file(f)
-                break
-        else:
+        resource_spec = await get_resource_spec_from_container(container)
+        if resource_spec is None:
             return
-        alloc_map.allocations['cpu'] = resource_spec.allocations['cpu']['cpu']
+        alloc_map.allocations['cpu'].update(
+            resource_spec.allocations['cpu']['cpu'])
 
 
 class MemoryDevice(AbstractComputeDevice):
