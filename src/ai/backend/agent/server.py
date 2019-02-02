@@ -909,9 +909,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         _mount(helpers_pkg_path.resolve(),
                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers')
         _mount(jupyter_custom_css_path.resolve(),
-               '/home/work/.jupyter/custom.css')
+               '/home/work/.jupyter/custom/custom.css')
         _mount(logo_path.resolve(),
-               '/home/work/.jupyter/logo.svg')
+               '/home/work/.jupyter/custom/logo.svg')
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
         # Inject ComputeDevice-specific env-varibles and hooks
