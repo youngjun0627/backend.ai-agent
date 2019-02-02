@@ -155,10 +155,6 @@ class KernelResourceSpec:
     '''The size of scratch disk. (not implemented yet)'''
     scratch_disk_size: int = None
 
-    # '''Intrinsic allocations'''
-    # numa_node: int = None
-    # cpu_set: Container[int] = None
-
     def write_to_file(self, file: io.TextIOBase):
         '''
         Write the current resource specification into a file-like object.
@@ -198,10 +194,16 @@ class KernelResourceSpec:
                 per_device_alloc = {}
                 for entry in val.split(','):
                     dev_id, alloc = entry.split(':')
-                    if known_slot_types[slot_type] == 'bytes':
-                        value = BinarySize.from_str(alloc)
-                    else:
-                        value = Decimal(alloc)
+                    try:
+                        if known_slot_types[slot_type] == 'bytes':
+                            value = BinarySize.from_str(alloc)
+                        else:
+                            value = Decimal(alloc)
+                    except KeyError as e:
+                        log.warning('A previously launched container has '
+                                    'unknown slot type: {}. Ignoring it.',
+                                    e.args[0])
+                        continue
                     per_device_alloc[dev_id] = value
                 allocations[device_type][slot_type] = per_device_alloc
         mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',') if m]
@@ -420,3 +422,14 @@ async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
     log.info('Resource slots: {!r}', slots)
     log.info('Slot types: {!r}', known_slot_types)
     return slots
+
+
+async def get_resource_spec_from_container(container):
+    for bind in container['HostConfig']['Binds']:
+        host_path, cont_path, perm = bind.split(':', maxsplit=2)
+        if cont_path == '/home/config':
+            with open(Path(host_path) / 'resource.txt', 'r') as f:
+                return KernelResourceSpec.read_from_file(f)
+            break
+    else:
+        return None
