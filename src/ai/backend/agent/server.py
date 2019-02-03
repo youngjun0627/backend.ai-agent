@@ -941,12 +941,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if sys.platform == 'linux' and self.config.scratch_in_memory:
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
-            os.makedirs(work_dir)
+            os.makedirs(work_dir, exist_ok=True)
+            os.makedirs(work_dir / '.jupyter', exist_ok=True)
             if KernelFeatures.UID_MATCH in kernel_features:
                 uid = int(environ['LOCAL_USER_ID'])
                 if os.getuid() == 0:  # only possible when I am root.
                     os.chown(work_dir, uid, uid)
-            os.makedirs(config_dir)
+            os.makedirs(config_dir, exist_ok=True)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
                 for k, v in environ.items():
