@@ -103,7 +103,7 @@ class Runner(BaseRunner):
             jupyter_service_type = 'lab' \
                 if service_info['name'] == 'jupyterlab' else 'notebook'
             return [
-                self.runtime_path, '-m', 'jupyter', jupyter_service_type,
+                self.runtime_path, '-m', jupyter_service_type,
                 '--no-browser',
                 '--config', config.name,
             ], {}
