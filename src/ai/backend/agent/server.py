@@ -370,7 +370,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             for repo_tag in image['RepoTags']:
                 if repo_tag.endswith('<none>'):
                     continue
-                img_detail = await self.docker.images.get(repo_tag)
+                img_detail = await self.docker.images.inspect(repo_tag)
                 labels = img_detail['Config']['Labels']
                 if labels and 'ai.backend.kernelspec' in labels:
                     updated_images[repo_tag] = img_detail['Id']
@@ -769,7 +769,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             # Find the exact image using a digest reference
             digest_ref = f"{image_ref.name}@{kernel_config['image']['digest']}"
-            await self.docker.images.get(digest_ref)
+            await self.docker.images.inspect(digest_ref)
         except DockerError as e:
             if e.status == 404:
                 await self.send_event('kernel_pulling',
@@ -958,12 +958,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if sys.platform == 'linux' and self.config.scratch_in_memory:
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
-            os.makedirs(work_dir)
+            os.makedirs(work_dir, exist_ok=True)
+            os.makedirs(work_dir / '.jupyter', exist_ok=True)
             if KernelFeatures.UID_MATCH in kernel_features:
                 uid = int(environ['LOCAL_USER_ID'])
                 if os.getuid() == 0:  # only possible when I am root.
                     os.chown(work_dir, uid, uid)
-            os.makedirs(config_dir)
+            os.makedirs(config_dir, exist_ok=True)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
                 for k, v in environ.items():
