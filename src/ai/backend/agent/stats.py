@@ -121,7 +121,7 @@ class AgentLiveStat:
 
 
 @dataclass(frozen=False)
-class EachContainerLiveStat:
+class PerContainerLiveStat:
     container_id: str
     cpu_used: int = 0
     mem_cur_bytes: int = 0
@@ -147,7 +147,7 @@ async def collect_agent_live_stat(agent, stat_type):
     mem_cur_bytes = stat.mem_cur_bytes_sum
     agent_live_info = {
         'cpu_pct': round(cpu_pct, 2),
-        'mem_cur_bytes': mem_cur_bytes
+        'mem_cur_bytes': mem_cur_bytes,
     }
     pipe = agent.redis_stat_pool.pipeline()
     pipe.hmset_dict(agent.config.instance_id, agent_live_info)
@@ -164,18 +164,18 @@ def _collect_agent_live_stats_sysfs(container_ids, prev_stat):
     cpu_used_sum = 0
     mem_cur_bytes_sum = 0
     cpu_dict = {}
-    results = [_each_container_live_stat_sysfs(cid) for cid in container_ids]
-    for each_stat in results:
-        if each_stat is not None:
-            cpu_used_sum += each_stat.cpu_used
-            mem_cur_bytes_sum += each_stat.mem_cur_bytes
-            cpu_dict[each_stat.container_id] = each_stat.cpu_used
+    results = [_per_container_live_stat_sysfs(cid) for cid in container_ids]
+    for _stat in results:
+        if _stat is not None:
+            cpu_used_sum += _stat.cpu_used
+            mem_cur_bytes_sum += _stat.mem_cur_bytes
+            cpu_dict[_stat.container_id] = _stat.cpu_used
 
     return AgentLiveStat(
         precpu_used_sum,
         cpu_used_sum,
         mem_cur_bytes_sum,
-        cpu_dict
+        cpu_dict,
     )
 
 
@@ -191,13 +191,13 @@ async def _collect_agent_live_stats_api(containers, prev_stat):
     cpu_dict = {}
     tasks = []
     for c in containers:
-        tasks.append(asyncio.ensure_future(_each_container_live_stat_api(c)))
+        tasks.append(asyncio.ensure_future(_per_container_live_stat_api(c)))
     results = await asyncio.gather(*tasks)
-    for each_stat in results:
-        if each_stat is not None:
-            cpu_used_sum += each_stat.cpu_used
-            mem_cur_bytes_sum += each_stat.mem_cur_bytes
-            cpu_dict[each_stat.container_id] = each_stat.cpu_used
+    for _stat in results:
+        if _stat is not None:
+            cpu_used_sum += _stat.cpu_used
+            mem_cur_bytes_sum += _stat.mem_cur_bytes
+            cpu_dict[_stat.container_id] = _stat.cpu_used
 
     return AgentLiveStat(
         precpu_used_sum,
@@ -207,7 +207,7 @@ async def _collect_agent_live_stats_api(containers, prev_stat):
     )
 
 
-def _each_container_live_stat_sysfs(container_id):
+def _per_container_live_stat_sysfs(container_id):
     cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
     mem_prefix = f'/sys/fs/cgroup/memory/docker/{container_id}/'
     try:
@@ -220,14 +220,14 @@ def _each_container_live_stat_sysfs(container_id):
                     f'\n{e!r}')
         return None
 
-    return EachContainerLiveStat(
+    return PerContainerLiveStat(
         container_id,
         cpu_used,
         mem_cur_bytes
     )
 
 
-async def _each_container_live_stat_api(container):
+async def _per_container_live_stat_api(container):
     try:
         ret = await container.stats(stream=False)
     except (DockerError, aiohttp.ClientResponseError):
@@ -243,7 +243,7 @@ async def _each_container_live_stat_api(container):
     cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
     mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
 
-    return EachContainerLiveStat(
+    return PerContainerLiveStat(
         container._id,
         cpu_used,
         mem_cur_bytes
