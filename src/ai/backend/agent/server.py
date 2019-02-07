@@ -363,7 +363,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             for repo_tag in image['RepoTags']:
                 if repo_tag.endswith('<none>'):
                     continue
-                img_detail = await self.docker.images.get(repo_tag)
+                img_detail = await self.docker.images.inspect(repo_tag)
                 labels = img_detail['Config']['Labels']
                 if labels and 'ai.backend.kernelspec' in labels:
                     updated_images[repo_tag] = img_detail['Id']
@@ -752,7 +752,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         try:
             # Find the exact image using a digest reference
             digest_ref = f"{image_ref.name}@{kernel_config['image']['digest']}"
-            await self.docker.images.get(digest_ref)
+            await self.docker.images.inspect(digest_ref)
         except DockerError as e:
             if e.status == 404:
                 await self.send_event('kernel_pulling',
