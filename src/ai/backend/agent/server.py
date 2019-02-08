@@ -745,7 +745,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Read image-specific labels and settings
         image_ref = ImageRef(
             kernel_config['image']['canonical'],
-            kernel_config['image']['registry']['name'])
+            [kernel_config['image']['registry']['name']])
         environ: dict = kernel_config.get('environ', {})
         extra_mount_list = await get_extra_volumes(self.docker, image_ref.short)
 
