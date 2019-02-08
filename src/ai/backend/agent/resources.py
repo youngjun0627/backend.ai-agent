@@ -332,7 +332,7 @@ class FractionAllocMap(AbstractAllocMap):
         allocation = {}
         for slot_type, alloc in slots.items():
             slot_allocation = {}
-            remaining_alloc = int(alloc)
+            remaining_alloc = Decimal(alloc).normalize()
 
             # fill up starting from the most free devices
             sorted_dev_allocs = sorted(
