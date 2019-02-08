@@ -1,6 +1,20 @@
 Changes
 =======
 
+19.03.0b6 (2018-02-08)
+----------------------
+
+- NEW: Jupyter notebooks now have our Backend.AI logo and a slightly customized look.
+
+- Fix the jupyter notebook service-port to work with conda-based images,
+  where "python -m jupyter notebook" does not work but "python -m notebook"
+  works.
+
+- Let agent fail early and cleanly if there is an initialization error,
+  for ease of debugging with supervisord.
+
+- Fix restoration of resource allocation maps upon agent restarts.
+
 19.03.0b5 (2018-02-01)
 ----------------------
 
