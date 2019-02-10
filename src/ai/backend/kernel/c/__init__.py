@@ -9,26 +9,27 @@ from .. import BaseRunner
 
 log = logging.getLogger()
 
-DEFAULT_CFLAGS = '-Wall'
-DEFAULT_LDFLAGS = '-lrt -lm -pthread -ldl'
-CHILD_ENV = {
-    'TERM': 'xterm',
-    'LANG': 'C.UTF-8',
-    'SHELL': '/bin/ash',
-    'USER': 'work',
-    'HOME': '/home/work',
-    'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-    'LD_PRELOAD': os.environ.get('LD_PRELOAD', '/home/backend.ai/libbaihook.so'),
-}
+DEFAULT_CFLAGS = ['-Wall']
+DEFAULT_LDFLAGS = ['-lrt', '-lm', '-lpthread', '-ldl']
 
 
 class Runner(BaseRunner):
 
     log_prefix = 'c-kernel'
+    default_runtime_path = '/usr/bin/g++'
+    default_child_env = {
+        'TERM': 'xterm',
+        'LANG': 'C.UTF-8',
+        'SHELL': '/bin/ash',
+        'USER': 'work',
+        'HOME': '/home/work',
+        'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
+        'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
+    }
 
     def __init__(self):
         super().__init__()
-        self.child_env.update(CHILD_ENV)
 
     async def init_with_loop(self):
         self.user_input_queue = asyncio.Queue()
@@ -44,13 +45,13 @@ class Runner(BaseRunner):
             cfiles = list(Path('.').glob('**/*.c'))
             ofiles = [Path(p.stem + '.o') for p in sorted(cfiles)]
             for cf in cfiles:
-                cmd = f'gcc -c {cf} {DEFAULT_CFLAGS}'
+                cmd = [self.runtime_path, '-c', cf, *DEFAULT_CFLAGS]
                 ret = await self.run_subproc(cmd)
                 if ret != 0:  # stop if gcc has failed
                     return ret
             cfiles = ' '.join(map(lambda p: shlex.quote(str(p)), cfiles))
             ofiles = ' '.join(map(lambda p: shlex.quote(str(p)), ofiles))
-            cmd = f'gcc {ofiles} {DEFAULT_LDFLAGS} -o ./main'
+            cmd = [self.runtime_path, ofiles, *DEFAULT_CFLAGS, '-o', './main']
             return await self.run_subproc(cmd)
         else:
             log.error('cannot find build script ("Makefile") '
@@ -70,9 +71,12 @@ class Runner(BaseRunner):
         with tempfile.NamedTemporaryFile(suffix='.c', dir='.') as tmpf:
             tmpf.write(code_text.encode('utf8'))
             tmpf.flush()
-            cmd = (
-                f'gcc {tmpf.name} {DEFAULT_CFLAGS} -o ./main {DEFAULT_LDFLAGS}'
-                f'&& ./main')
+            cmd = [self.runtime_path, tmpf.name,
+                   *DEFAULT_CFLAGS, '-o', './main', *DEFAULT_LDFLAGS]
+            ret = await self.run_subproc(cmd)
+            if ret != 0:
+                return ret
+            cmd = ['./main']
             return await self.run_subproc(cmd)
 
     async def complete(self, data):
