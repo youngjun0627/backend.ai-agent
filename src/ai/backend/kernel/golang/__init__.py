@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 import shlex
 import tempfile
@@ -7,26 +8,28 @@ from .. import BaseRunner
 
 log = logging.getLogger()
 
-DEFAULT_BFLAGS = ''
-CHILD_ENV = {
-    'TERM': 'xterm',
-    'LANG': 'C.UTF-8',
-    'SHELL': '/bin/ash',
-    'USER': 'work',
-    'HOME': '/home/work',
-    'PATH': '/home/work/bin:/go/bin:/usr/local/go/bin:' +
-            '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-    'GOPATH': '/home/work',
-}
+DEFAULT_BFLAGS = ['']
 
 
 class Runner(BaseRunner):
 
     log_prefix = 'go-kernel'
+    default_runtime_path = '/usr/local/bin/go'
+    default_child_env = {
+        'TERM': 'xterm',
+        'LANG': 'C.UTF-8',
+        'SHELL': '/bin/ash',
+        'USER': 'work',
+        'HOME': '/home/work',
+        'PATH': '/home/work/bin:/go/bin:/usr/local/go/bin:' +
+                '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        'GOPATH': '/home/work',
+        'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
+        'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
+    }
 
     def __init__(self):
         super().__init__()
-        self.child_env.update(CHILD_ENV)
 
     async def init_with_loop(self):
         pass
@@ -36,6 +39,8 @@ class Runner(BaseRunner):
             gofiles = Path('.').glob('**/*.go')
             gofiles = ' '.join(map(lambda p: shlex.quote(str(p)), gofiles))
             cmd = f'go build -o main {DEFAULT_BFLAGS} {gofiles}'
+            cmd = [self.runtime_path,
+                   'build', '-o', 'main', *DEFAULT_BFLAGS, gofiles]
             return await self.run_subproc(cmd)
         else:
             log.error('cannot find main file ("main.go").')
@@ -52,7 +57,7 @@ class Runner(BaseRunner):
         with tempfile.NamedTemporaryFile(suffix='.go', dir='.') as tmpf:
             tmpf.write(code_text.encode('utf8'))
             tmpf.flush()
-            cmd = f'go run {tmpf.name}'
+            cmd = [self.runtime_path, 'run', tmpf.name]
             return await self.run_subproc(cmd)
 
     async def complete(self, data):
