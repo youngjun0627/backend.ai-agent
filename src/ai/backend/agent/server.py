@@ -420,9 +420,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         context = zmq.asyncio.Context()
         stats_sock = context.socket(zmq.PULL)
         stats_sock.setsockopt(zmq.LINGER, 1000)
-        stats_sock.bind(f'tcp://127.0.0.1:{self.config.stat_port}')
-        log.info('collecting stats at port tcp://127.0.0.1:{0}',
-                 self.config.stat_port)
+        stats_sock.bind('ipc://' + str(self.stats_sockpath))
+        log.info('collecting stats at port {}', self.stats_sockpath)
         try:
             recv = functools.partial(stats_sock.recv_serialized,
                                      lambda vs: [msgpack.unpackb(v) for v in vs])
@@ -447,6 +446,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         finally:
             stats_sock.close()
             context.term()
+            self.stats_sockpath.unlink()
 
     async def init(self, *, skip_detect_manager=False):
         # Show Docker version info.
@@ -492,16 +492,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.scan_images_timer = aiotools.create_timer(self.scan_images, 60.0)
 
         # Spawn stat collector task.
+        ipc_base_path = Path('/tmp/backend.ai/ipc')
+        ipc_base_path.mkdir(parents=True, exist_ok=True)
+        self.stats_sockpath = ipc_base_path / f'stats.{os.getpid()}.sock'
         self.stats = dict()
         self.stat_collector_task = self.loop.create_task(self.collect_stats())
 
         # Start container stats collector for existing containers.
-        stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
         stat_type = get_preferred_stat_type()
         for kernel_id, info in self.container_registry.items():
             cid = info['container_id']
             self.stats[cid] = StatCollectorState(kernel_id)
-            async with spawn_stat_collector(stat_addr, stat_type, cid):
+            async with spawn_stat_collector(self.stats_sockpath, stat_type, cid):
                 pass
 
         # Spawn docker monitoring tasks.
@@ -1052,10 +1054,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 config=container_config, name=kernel_name)
             cid = container._id
 
-            stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
             stat_type = get_preferred_stat_type()
             self.stats[cid] = StatCollectorState(kernel_id)
-            async with spawn_stat_collector(stat_addr, stat_type, cid):
+            async with spawn_stat_collector(self.stats_sockpath, stat_type, cid):
                 await container.start()
         except Exception:
             # Oops, we have to restore the allocated resources!
@@ -1161,6 +1162,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             else:
                 log.exception('_destroy_kernel({0}) kill error', kernel_id)
                 self.error_monitor.capture_exception()
+        except asyncio.CancelledError:
+            log.exception('_destroy_kernel({0}) operation cancelled', kernel_id)
         except Exception:
             log.exception('_destroy_kernel({0}) unexpected error', kernel_id)
             self.error_monitor.capture_exception()
@@ -1621,10 +1624,6 @@ def main():
     parser.add('--agent-port', type=port_no, default=6001,
                env_var='BACKEND_AGENT_PORT',
                help='The port number to listen on.')
-    parser.add('--stat-port', type=port_no, default=6002,
-               env_var='BACKEND_STAT_PORT',
-               help='The port number to receive statistics reports from '
-                    'local containers.')
     parser.add('--container-port-range', type=port_range, default=(30000, 31000),
                env_var='BACKEND_CONTAINER_PORT_RANGE',
                help='The range of host public ports to be used by containers '

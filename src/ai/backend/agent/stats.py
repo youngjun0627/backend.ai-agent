@@ -139,7 +139,7 @@ async def collect_agent_live_stats(agent):
 
 
 @aiotools.actxmgr
-async def spawn_stat_collector(stat_addr, stat_type, cid, *,
+async def spawn_stat_collector(stats_sockpath, stat_type, cid, *,
                                exec_opts=None):
     # Spawn high-perf stats collector process for Linux native setups.
     # NOTE: We don't have to keep track of this process,
@@ -153,12 +153,12 @@ async def spawn_stat_collector(stat_addr, stat_type, cid, *,
 
     proc = await asyncio.create_subprocess_exec(*[
         sys.executable, '-m', 'ai.backend.agent.stats',
-        stat_addr, cid, '--type', stat_type,
+        str(stats_sockpath), cid, '--type', stat_type,
     ], **exec_opts)
 
-    signal_path = 'ipc://' + str(ipc_base_path / f'stat-start-{proc.pid}.sock')
+    signal_sockpath = ipc_base_path / f'stat-start-{proc.pid}.sock'
     signal_sock = context.socket(zmq.PAIR)
-    signal_sock.connect(signal_path)
+    signal_sock.connect('ipc://' + str(signal_sockpath))
     try:
         await signal_sock.recv_multipart()
         yield proc
@@ -404,15 +404,15 @@ def main(args):
     mypid = os.getpid()
 
     ipc_base_path = Path('/tmp/backend.ai/ipc')
-    signal_path = str(ipc_base_path / f'stat-start-{mypid}.sock')
-    log.debug('creating signal socket at {}', signal_path)
+    signal_sockpath = ipc_base_path / f'stat-start-{mypid}.sock'
+    log.debug('creating signal socket at {}', signal_sockpath)
     signal_sock = context.socket(zmq.PAIR)
-    signal_sock.bind('ipc://' + signal_path)
+    signal_sock.bind('ipc://' + str(signal_sockpath))
     try:
 
         stats_sock = context.socket(zmq.PUSH)
         stats_sock.setsockopt(zmq.LINGER, 2000)
-        stats_sock.connect(args.sockaddr)
+        stats_sock.connect('ipc://' + args.sockpath)
         send_stat = functools.partial(
             stats_sock.send_serialized,
             serialize=lambda v: [msgpack.packb(v)])
@@ -471,14 +471,14 @@ def main(args):
         sys.exit(0)
     finally:
         signal_sock.close()
-        os.unlink(signal_path)
+        signal_sockpath.unlink()
         log.info('terminated statistics collection for {}', args.cid)
 
 
 if __name__ == '__main__':
     # The entry point for stat collector daemon
     parser = argparse.ArgumentParser()
-    parser.add_argument('sockaddr', type=str)
+    parser.add_argument('sockpath', type=str)
     parser.add_argument('cid', type=str)
     parser.add_argument('-t', '--type', choices=['cgroup', 'api'],
                         default='cgroup')
