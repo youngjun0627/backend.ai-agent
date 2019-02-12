@@ -348,7 +348,7 @@ class FractionAllocMap(AbstractAllocMap):
                                       current_alloc)
             if total_allocatable < alloc:
                 raise InsufficientResource(
-                    'DiscretePropertyAllocMap: insufficient allocatable amount!',
+                    'FractionAllocMap: insufficient allocatable amount!',
                     context_tag, alloc, total_allocatable)
 
             slot_allocation = {}
