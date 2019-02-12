@@ -854,7 +854,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     if slot_type.startswith(dev_type)
                 }
                 resource_spec.allocations[dev_type] = \
-                    computer_set.alloc_map.allocate(device_specific_slots)
+                    computer_set.alloc_map.allocate(device_specific_slots,
+                                                    context_tag=dev_type)
 
             # Realize vfolder mounts.
             for vfolder in vfolders:
