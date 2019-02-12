@@ -857,12 +857,24 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     computer_set.alloc_map.allocate(device_specific_slots)
 
             # Realize vfolder mounts.
-            for folder_name, folder_host, folder_id in vfolders:
+            for vfolder in vfolders:
+                if len(vfolder) == 4:
+                    folder_name, folder_host, folder_id, folder_perm = vfolder
+                elif len(vfolder) == 3:  # legacy managers
+                    folder_name, folder_host, folder_id = vfolder
+                    folder_perm = 'rw'
+                else:
+                    raise RuntimeError(
+                        'Unexpected number of vfolder mount detail tuple size')
                 host_path = (self.config.vfolder_mount / folder_host /
                              self.config.vfolder_fsprefix / folder_id)
                 kernel_path = Path(f'/home/work/{folder_name}')
-                # TODO: apply READ_ONLY for read-only shared vfolders
-                mount = Mount(host_path, kernel_path, MountPermission.READ_WRITE)
+                folder_perm = MountPermission(folder_perm)
+                if folder_perm == MountPermission.RW_DELETE:
+                    # TODO: enforce readable/writable but not deletable
+                    # (Currently docker's READ_WRITE includes DELETE)
+                    folder_perm = MountPermission.READ_WRITE
+                mount = Mount(host_path, kernel_path, folder_perm)
                 resource_spec.mounts.append(mount)
                 binds.append(str(mount))
 
