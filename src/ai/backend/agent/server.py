@@ -354,6 +354,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await self.send_event('kernel_terminated', kernel_id,
                                       'self-terminated', None)
 
+        log.info('starting with resource allocations')
+        for computer_name, computer_set in self.computers.items():
+            log.info('{}: {!r}', computer_name,
+                     dict(computer_set.alloc_map.allocations))
+
     async def scan_images(self, interval):
         all_images = await self.docker.images.list()
         updated_images = {}
