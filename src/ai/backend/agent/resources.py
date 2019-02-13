@@ -287,6 +287,10 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
                 self.allocations[slot_type].items(),
                 key=lambda pair: self.property_func(self.devices[pair[0]]) - pair[1],
                 reverse=True)
+            log.debug('DiscretePropertyAllocMap: allocating {} {}',
+                      slot_type, alloc)
+            log.debug('DiscretePropertyAllocMap: current-alloc: {!r}',
+                      sorted_dev_allocs)
 
             total_allocatable = 0
             for dev_id, current_alloc in sorted_dev_allocs:
@@ -296,7 +300,7 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
             if total_allocatable < alloc:
                 raise InsufficientResource(
                     'DiscretePropertyAllocMap: insufficient allocatable amount!',
-                    context_tag, str(alloc), str(total_allocatable))
+                    context_tag, slot_type, str(alloc), str(total_allocatable))
 
             slot_allocation = {}
             for dev_id, current_alloc in sorted_dev_allocs:
@@ -340,6 +344,8 @@ class FractionAllocMap(AbstractAllocMap):
                 self.allocations[slot_type].items(),
                 key=lambda pair: self.shares_per_device[pair[0]] - pair[1],
                 reverse=True)
+            log.debug('FractionAllocMap: allocating {} {}', slot_type, alloc)
+            log.debug('FractionAllocMap: current-alloc: {!r}', sorted_dev_allocs)
 
             total_allocatable = 0
             for dev_id, current_alloc in sorted_dev_allocs:
@@ -349,7 +355,7 @@ class FractionAllocMap(AbstractAllocMap):
             if total_allocatable < alloc:
                 raise InsufficientResource(
                     'FractionAllocMap: insufficient allocatable amount!',
-                    context_tag, str(alloc), str(total_allocatable))
+                    context_tag, slot_type, str(alloc), str(total_allocatable))
 
             slot_allocation = {}
             for dev_id, current_alloc in sorted_dev_allocs:
