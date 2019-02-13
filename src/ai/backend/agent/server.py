@@ -47,7 +47,7 @@ from ai.backend.common.types import (
     MountPermission,
 )
 from . import __version__ as VERSION
-from .exception import InitializationError
+from .exception import InitializationError, InsufficientResource
 from .files import scandir, upload_output_files_to_s3
 from .stats import (
     get_preferred_stat_type, collect_agent_live_stats,
@@ -853,9 +853,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     slot_type: amount for slot_type, amount in slots.items()
                     if slot_type.startswith(dev_type)
                 }
-                resource_spec.allocations[dev_type] = \
-                    computer_set.alloc_map.allocate(device_specific_slots,
-                                                    context_tag=dev_type)
+                try:
+                    resource_spec.allocations[dev_type] = \
+                        computer_set.alloc_map.allocate(device_specific_slots,
+                                                        context_tag=dev_type)
+                except InsufficientResource:
+                    log.info('insufficient resource: {} of {}\n'
+                             '(alloc map: {})',
+                             device_specific_slots, dev_type,
+                             computer_set.alloc_map.allocations)
+                    raise
 
             # Realize vfolder mounts.
             for vfolder in vfolders:
