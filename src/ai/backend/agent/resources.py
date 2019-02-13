@@ -296,7 +296,7 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
             if total_allocatable < alloc:
                 raise InsufficientResource(
                     'DiscretePropertyAllocMap: insufficient allocatable amount!',
-                    context_tag, alloc, total_allocatable)
+                    context_tag, str(alloc), str(total_allocatable))
 
             slot_allocation = {}
             for dev_id, current_alloc in sorted_dev_allocs:
