@@ -1,6 +1,20 @@
 Changes
 =======
 
+19.03.0b7 (2018-02-15)
+----------------------
+
+- Make logs and error messages to have more details.
+
+- Implement RW/RO permissions when mounting vfolders (lablup/backend.ai-manager#82)
+
+- Change statistics collector to use UNIX domain socketes, for specific environments
+  where locally bound sockets are not accessible via network-local IP addresses.
+
+- Update Alpine-based kernel runners with a fix for uid-match functionality for them.
+
+- Fix some bugs related to allocation maps and ImageRef class.
+
 19.03.0b6 (2018-02-08)
 ----------------------
 
