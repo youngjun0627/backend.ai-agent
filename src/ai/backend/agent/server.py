@@ -747,7 +747,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     @aiozmq.rpc.method
     @update_last_used
-    async def reset(self):
+    async def refresh_idle(self, kernel_id: str):
+        # update_last_used decorator already implements this. :)
+        log.debug('rpc::refresh_idle()')
+        pass
+
+    @aiozmq.rpc.method
+    async def shutdown_agent(self, terminate_kernels: bool):
+        # TODO: implement
+        log.debug('rpc::shutdown_agent()')
+        pass
+
+    @aiozmq.rpc.method
+    async def reset_agent(self):
         log.debug('rpc::reset()')
         async with self.handle_rpc_exception():
             kernel_ids = tuple(self.container_registry.keys())
