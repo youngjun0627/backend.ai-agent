@@ -405,7 +405,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         ))
 
     async def check_images(self):
-        for distro in ['ubuntu16.04']:
+        for distro in ['ubuntu16.04', 'alpine3.8']:
             try:
                 image_name = f'lablup/backendai-krunner-env:{VERSION}-{distro}'
                 await self.docker.images.inspect(image_name)
