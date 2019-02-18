@@ -137,7 +137,7 @@ async def collect_agent_live_stat(agent, stat_type):
         new_stat = _collect_agent_live_stats_sysfs(container_ids, stat)
     elif stat_type == 'api':
         containers = [DockerContainer(agent.docker, cid) for cid in container_ids]
-        new_stat = _collect_agent_live_stats_api(containers, stat)
+        new_stat = await _collect_agent_live_stats_api(containers, stat)
     else:
         log.error("stat_type is neither cgroup nor api")
         return
