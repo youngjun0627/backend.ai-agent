@@ -136,7 +136,7 @@ async def collect_agent_live_stat(agent, stat_type):
     if stat_type == 'cgroup':
         new_stat = _collect_agent_live_stats_sysfs(container_ids, stat)
     elif stat_type == 'api':
-        containers = [DockerContainer(agent.docker, cid) for cid in container_ids]
+        containers = [DockerContainer(agent.docker, id=cid) for cid in container_ids]
         new_stat = await _collect_agent_live_stats_api(containers, stat)
     else:
         log.error("stat_type is neither cgroup nor api")
@@ -182,7 +182,7 @@ def _collect_agent_live_stats_sysfs(container_ids, prev_stat):
 async def _collect_agent_live_stats_api(containers, prev_stat):
     container_ids = [c._id for c in containers]
     precpu_used_sum = prev_stat.cpu_used_sum
-    for cid, cpu_used in prev_stat.cpu_dict:
+    for cid, cpu_used in prev_stat.cpu_dict.items():
         if cid not in container_ids:
             precpu_used_sum -= cpu_used
 
