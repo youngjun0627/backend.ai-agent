@@ -775,8 +775,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         try:
             # Find the exact image using a digest reference
-            digest_ref = f"{image_ref.name}@{kernel_config['image']['digest']}"
+            digest_ref = f"{kernel_config['image']['digest']}"
             await self.docker.images.inspect(digest_ref)
+            log.info('found the local up-to-date image for {}', image_ref.canonical)
         except DockerError as e:
             if e.status == 404:
                 await self.send_event('kernel_pulling',
@@ -791,12 +792,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     auth_config = {
                         'auth': encoded_creds,
                     }
-                # TODO: digest refs are not working as expected...
-                # digest_ref = f"{image_ref.registry}/{image_ref.name}@" \
-                #              f"{kernel_config['image']['digest']}"
-                digest_ref = image_ref.canonical
-                log.info('pulling image {} from registry', digest_ref)
-                await self.docker.images.pull(digest_ref, auth=auth_config)
+                log.info('pulling image {} from registry', image_ref.canonical)
+                repo_digest = kernel_config['image'].get('repo_digest')
+                if repo_digest is not None:
+                    await self.docker.images.pull(
+                        f'{image_ref.short}@{repo_digest}',
+                        auth=auth_config)
+                else:
+                    await self.docker.images.pull(
+                        image_ref.canonical,
+                        auth=auth_config)
             else:
                 raise
         await self.send_event('kernel_creating', kernel_id)
