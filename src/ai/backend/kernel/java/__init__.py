@@ -14,29 +14,29 @@ JCC = 'javac'
 JCR = 'java'
 
 # Let Java respect container resource limits
-DEFAULT_JFLAGS = ('-J-XX:+UnlockExperimentalVMOptions '
-                  '-J-XX:+UseCGroupMemoryLimitForHeap -d .')
-
-CHILD_ENV = {
-    'TERM': 'xterm',
-    'LANG': 'C.UTF-8',
-    'SHELL': '/bin/ash',
-    'USER': 'work',
-    'HOME': '/home/work',
-    'PATH': ('/usr/lib/jvm/java-1.8-openjdk/jre/bin:'
-             '/usr/lib/jvm/java-1.8-openjdk/bin:/usr/local/sbin:'
-             '/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'),
-    'LD_PRELOAD': os.environ.get('LD_PRELOAD', '/home/backend.ai/libbaihook.so'),
-}
+DEFAULT_JFLAGS = ['-J-XX:+UnlockExperimentalVMOptions',
+                  '-J-XX:+UseCGroupMemoryLimitForHeap', '-d', '.']
 
 
 class Runner(BaseRunner):
 
     log_prefix = 'java-kernel'
+    default_runtime_path = '/usr/lib/jvm/java-1.8-openjdk/bin/java'
+    default_child_env = {
+        'TERM': 'xterm',
+        'LANG': 'C.UTF-8',
+        'SHELL': '/bin/ash',
+        'USER': 'work',
+        'HOME': '/home/work',
+        'PATH': ('/usr/lib/jvm/java-1.8-openjdk/jre/bin:'
+                 '/usr/lib/jvm/java-1.8-openjdk/bin:/usr/local/sbin:'
+                 '/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'),
+        'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
+        'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
+    }
 
     def __init__(self):
         super().__init__()
-        self.child_env = CHILD_ENV
 
     def _code_for_user_input_server(self, code: str) -> str:
         # TODO: More elegant way of not touching user code? This method does not work
@@ -59,19 +59,19 @@ class Runner(BaseRunner):
         if Path('Main.java').is_file():
             javafiles = Path('.').glob('**/*.java')
             javafiles = ' '.join(map(lambda p: shlex.quote(str(p)), javafiles))
-            cmd = f'{JCC} {DEFAULT_JFLAGS} {javafiles}'
+            cmd = [JCC, *DEFAULT_JFLAGS, javafiles]
             return await self.run_subproc(cmd)
         else:
             javafiles = Path('.').glob('**/*.java')
             javafiles = ' '.join(map(lambda p: shlex.quote(str(p)), javafiles))
-            cmd = f'{JCC} {DEFAULT_JFLAGS} {javafiles}'
+            cmd = [JCC, *DEFAULT_JFLAGS, javafiles]
             return await self.run_subproc(cmd)
 
     async def execute_heuristic(self) -> int:
         if Path('./main/Main.class').is_file():
-            return await self.run_subproc(f'{JCR} main.Main')
+            return await self.run_subproc([JCR, 'main.Main'])
         elif Path('./Main.class').is_file():
-            return await self.run_subproc(f'{JCR} Main')
+            return await self.run_subproc([JCR, 'Main'])
         else:
             log.error('cannot find entry class (main.Main).')
             return 127
@@ -93,8 +93,10 @@ class Runner(BaseRunner):
             code = self._code_for_user_input_server(code_text)
             with open(mainpath, 'w', encoding='utf-8') as tmpf:
                 tmpf.write(code)
-            cmd = f'{JCC} {mainpath} && ' \
-                  f'{JCR} -classpath {tmpdir} {mainpath.stem}'
+            ret = await self.run_subproc([JCC, mainpath])
+            if ret != 0:
+                return ret
+            cmd = [JCR, '-classpath', tmpdir, mainpath.stem]
             return await self.run_subproc(cmd)
 
     async def complete(self, data):

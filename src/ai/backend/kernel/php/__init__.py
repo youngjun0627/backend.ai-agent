@@ -7,24 +7,25 @@ from .. import BaseRunner
 
 log = logging.getLogger()
 
-CHILD_ENV = {
-    'TERM': 'xterm',
-    'LANG': 'C.UTF-8',
-    'SHELL': '/bin/ash',
-    'USER': 'work',
-    'HOME': '/home/work',
-    'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-    'LD_PRELOAD': os.environ.get('LD_PRELOAD', '/home/backend.ai/libbaihook.so'),
-}
-
 
 class Runner(BaseRunner):
 
     log_prefix = 'php-kernel'
+    default_runtime_path = '/usr/bin/php'
+    default_child_env = {
+        'TERM': 'xterm',
+        'LANG': 'C.UTF-8',
+        'SHELL': '/bin/ash',
+        'USER': 'work',
+        'HOME': '/home/work',
+        'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        'GOPATH': '/home/work',
+        'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
+        'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
+    }
 
     def __init__(self):
         super().__init__()
-        self.child_env.update(CHILD_ENV)
 
     async def init_with_loop(self):
         pass
@@ -35,7 +36,7 @@ class Runner(BaseRunner):
 
     async def execute_heuristic(self) -> int:
         if Path('main.php').is_file():
-            cmd = 'php main.php'
+            cmd = [self.runtime_path, 'main.php']
             return await self.run_subproc(cmd)
         else:
             log.error('cannot find executable ("main.php").')
@@ -46,7 +47,7 @@ class Runner(BaseRunner):
             tmpf.write(b'<?php\n\n')
             tmpf.write(code_text.encode('utf8'))
             tmpf.flush()
-            cmd = f'php {tmpf.name}'
+            cmd = [self.runtime_path, tmpf.name]
             return await self.run_subproc(cmd)
 
     async def complete(self, data):

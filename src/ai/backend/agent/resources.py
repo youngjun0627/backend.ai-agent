@@ -18,6 +18,7 @@ from ai.backend.common.types import (
     DeviceId, SlotType, Allocation, ResourceAllocations,
 )
 from ai.backend.common.logging import BraceStyleAdapter
+from .exception import InsufficientResource
 
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
@@ -25,10 +26,6 @@ log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
 compute_device_types = {}
 
 known_slot_types = {}
-
-
-class InsufficientResource(Exception):
-    pass
 
 
 @attr.s(auto_attribs=True)
@@ -241,7 +238,8 @@ class AbstractAllocMap(metaclass=ABCMeta):
         self.device_mask = device_mask
 
     @abstractmethod
-    def allocate(self, slots: Mapping[SlotType, Allocation]) -> ResourceAllocations:
+    def allocate(self, slots: Mapping[SlotType, Allocation], *,
+                 context_tag: str = None) -> ResourceAllocations:
         '''
         Allocate the given amount of resources.
 
@@ -277,7 +275,8 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
             dev_id: 0 for dev_id in self.devices.keys()
         })
 
-    def allocate(self, slots: Mapping[SlotType, Allocation]) -> ResourceAllocations:
+    def allocate(self, slots: Mapping[SlotType, Allocation], *,
+                 context_tag: str = None) -> ResourceAllocations:
         allocation = {}
         for slot_type, alloc in slots.items():
             slot_allocation = {}
@@ -288,6 +287,10 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
                 self.allocations[slot_type].items(),
                 key=lambda pair: self.property_func(self.devices[pair[0]]) - pair[1],
                 reverse=True)
+            log.debug('DiscretePropertyAllocMap: allocating {} {}',
+                      slot_type, alloc)
+            log.debug('DiscretePropertyAllocMap: current-alloc: {!r}',
+                      sorted_dev_allocs)
 
             total_allocatable = 0
             for dev_id, current_alloc in sorted_dev_allocs:
@@ -296,7 +299,8 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
                                       current_alloc)
             if total_allocatable < alloc:
                 raise InsufficientResource(
-                    'DiscretePropertyAllocMap: insufficient allocatable amount!')
+                    'DiscretePropertyAllocMap: insufficient allocatable amount!',
+                    context_tag, slot_type, str(alloc), str(total_allocatable))
 
             slot_allocation = {}
             for dev_id, current_alloc in sorted_dev_allocs:
@@ -328,7 +332,8 @@ class FractionAllocMap(AbstractAllocMap):
             dev_id: Decimal(0) for dev_id in self.devices.keys()
         })
 
-    def allocate(self, slots: Mapping[SlotType, Allocation]) -> ResourceAllocations:
+    def allocate(self, slots: Mapping[SlotType, Allocation], *,
+                 context_tag: str = None) -> ResourceAllocations:
         allocation = {}
         for slot_type, alloc in slots.items():
             slot_allocation = {}
@@ -339,6 +344,8 @@ class FractionAllocMap(AbstractAllocMap):
                 self.allocations[slot_type].items(),
                 key=lambda pair: self.shares_per_device[pair[0]] - pair[1],
                 reverse=True)
+            log.debug('FractionAllocMap: allocating {} {}', slot_type, alloc)
+            log.debug('FractionAllocMap: current-alloc: {!r}', sorted_dev_allocs)
 
             total_allocatable = 0
             for dev_id, current_alloc in sorted_dev_allocs:
@@ -347,7 +354,8 @@ class FractionAllocMap(AbstractAllocMap):
                                       current_alloc)
             if total_allocatable < alloc:
                 raise InsufficientResource(
-                    'FractionAllocMap: insufficient allocatable amount!')
+                    'FractionAllocMap: insufficient allocatable amount!',
+                    context_tag, slot_type, str(alloc), str(total_allocatable))
 
             slot_allocation = {}
             for dev_id, current_alloc in sorted_dev_allocs:

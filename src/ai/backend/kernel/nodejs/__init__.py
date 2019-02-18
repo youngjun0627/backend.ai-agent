@@ -7,24 +7,24 @@ from .. import BaseRunner
 
 log = logging.getLogger()
 
-CHILD_ENV = {
-    'TERM': 'xterm',
-    'LANG': 'C.UTF-8',
-    'SHELL': '/bin/ash',
-    'USER': 'work',
-    'HOME': '/home/work',
-    'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-    'LD_PRELOAD': os.environ.get('LD_PRELOAD', '/home/backend.ai/libbaihook.so'),
-}
-
 
 class Runner(BaseRunner):
 
     log_prefix = 'nodejs-kernel'
+    default_runtime_path = '/usr/bin/local/node'
+    default_child_env = {
+        'TERM': 'xterm',
+        'LANG': 'C.UTF-8',
+        'SHELL': '/bin/ash',
+        'USER': 'work',
+        'HOME': '/home/work',
+        'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
+        'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
+    }
 
     def __init__(self):
         super().__init__()
-        self.child_env.update(CHILD_ENV)
 
     async def init_with_loop(self):
         pass
@@ -35,7 +35,7 @@ class Runner(BaseRunner):
 
     async def execute_heuristic(self) -> int:
         if Path('main.js').is_file():
-            cmd = 'node main.js'
+            cmd = [self.runtime_path, 'main.js']
             return await self.run_subproc(cmd)
         else:
             log.error('cannot find executable ("main.js").')
@@ -45,7 +45,7 @@ class Runner(BaseRunner):
         with tempfile.NamedTemporaryFile(suffix='.js', dir='.') as tmpf:
             tmpf.write(code_text.encode('utf8'))
             tmpf.flush()
-            cmd = f'node {tmpf.name}'
+            cmd = [self.runtime_path, tmpf.name]
             return await self.run_subproc(cmd)
 
     async def complete(self, data):

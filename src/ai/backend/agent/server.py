@@ -47,7 +47,7 @@ from ai.backend.common.types import (
     MountPermission,
 )
 from . import __version__ as VERSION
-from .exception import InitializationError
+from .exception import InitializationError, InsufficientResource
 from .files import scandir, upload_output_files_to_s3
 from .stats import (
     get_preferred_stat_type, collect_agent_live_stat,
@@ -361,6 +361,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await self.send_event('kernel_terminated', kernel_id,
                                       'self-terminated', None)
 
+        log.info('starting with resource allocations')
+        for computer_name, computer_set in self.computers.items():
+            log.info('{}: {!r}', computer_name,
+                     dict(computer_set.alloc_map.allocations))
+
     async def scan_images(self, interval):
         all_images = await self.docker.images.list()
         updated_images = {}
@@ -427,9 +432,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         context = zmq.asyncio.Context()
         stats_sock = context.socket(zmq.PULL)
         stats_sock.setsockopt(zmq.LINGER, 1000)
-        stats_sock.bind(f'tcp://127.0.0.1:{self.config.stat_port}')
-        log.info('collecting stats at port tcp://127.0.0.1:{0}',
-                 self.config.stat_port)
+        stats_sock.bind('ipc://' + str(self.stats_sockpath))
+        log.info('collecting stats at port {}', self.stats_sockpath)
         try:
             recv = functools.partial(stats_sock.recv_serialized,
                                      lambda vs: [msgpack.unpackb(v) for v in vs])
@@ -454,6 +458,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         finally:
             stats_sock.close()
             context.term()
+            self.stats_sockpath.unlink()
 
     async def collect_live_stat(self, interval):
         await collect_agent_live_stat(self, self.stat_type)
@@ -502,16 +507,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.scan_images_timer = aiotools.create_timer(self.scan_images, 60.0)
 
         # Spawn stat collector task.
+        ipc_base_path = Path('/tmp/backend.ai/ipc')
+        ipc_base_path.mkdir(parents=True, exist_ok=True)
+        self.stats_sockpath = ipc_base_path / f'stats.{os.getpid()}.sock'
         self.stats = dict()
         self.stat_collector_task = self.loop.create_task(self.collect_stats())
 
         # Start container stats collector for existing containers.
-        stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
         stat_type = get_preferred_stat_type()
         for kernel_id, info in self.container_registry.items():
             cid = info['container_id']
             self.stats[cid] = StatCollectorState(kernel_id)
-            async with spawn_stat_collector(stat_addr, stat_type, cid):
+            async with spawn_stat_collector(self.stats_sockpath, stat_type, cid):
                 pass
 
         # Start collecting agent live stat.
@@ -868,16 +875,36 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     slot_type: amount for slot_type, amount in slots.items()
                     if slot_type.startswith(dev_type)
                 }
-                resource_spec.allocations[dev_type] = \
-                    computer_set.alloc_map.allocate(device_specific_slots)
+                try:
+                    resource_spec.allocations[dev_type] = \
+                        computer_set.alloc_map.allocate(device_specific_slots,
+                                                        context_tag=dev_type)
+                except InsufficientResource:
+                    log.info('insufficient resource: {} of {}\n'
+                             '(alloc map: {})',
+                             device_specific_slots, dev_type,
+                             computer_set.alloc_map.allocations)
+                    raise
 
             # Realize vfolder mounts.
-            for folder_name, folder_host, folder_id in vfolders:
+            for vfolder in vfolders:
+                if len(vfolder) == 4:
+                    folder_name, folder_host, folder_id, folder_perm = vfolder
+                elif len(vfolder) == 3:  # legacy managers
+                    folder_name, folder_host, folder_id = vfolder
+                    folder_perm = 'rw'
+                else:
+                    raise RuntimeError(
+                        'Unexpected number of vfolder mount detail tuple size')
                 host_path = (self.config.vfolder_mount / folder_host /
                              self.config.vfolder_fsprefix / folder_id)
                 kernel_path = Path(f'/home/work/{folder_name}')
-                # TODO: apply READ_ONLY for read-only shared vfolders
-                mount = Mount(host_path, kernel_path, MountPermission.READ_WRITE)
+                folder_perm = MountPermission(folder_perm)
+                if folder_perm == MountPermission.RW_DELETE:
+                    # TODO: enforce readable/writable but not deletable
+                    # (Currently docker's READ_WRITE includes DELETE)
+                    folder_perm = MountPermission.READ_WRITE
+                mount = Mount(host_path, kernel_path, folder_perm)
                 resource_spec.mounts.append(mount)
                 binds.append(str(mount))
 
@@ -1069,10 +1096,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 config=container_config, name=kernel_name)
             cid = container._id
 
-            stat_addr = f'tcp://{self.config.agent_host}:{self.config.stat_port}'
             stat_type = get_preferred_stat_type()
             self.stats[cid] = StatCollectorState(kernel_id)
-            async with spawn_stat_collector(stat_addr, stat_type, cid):
+            async with spawn_stat_collector(self.stats_sockpath, stat_type, cid):
                 await container.start()
         except Exception:
             # Oops, we have to restore the allocated resources!
@@ -1178,6 +1204,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             else:
                 log.exception('_destroy_kernel({0}) kill error', kernel_id)
                 self.error_monitor.capture_exception()
+        except asyncio.CancelledError:
+            log.exception('_destroy_kernel({0}) operation cancelled', kernel_id)
         except Exception:
             log.exception('_destroy_kernel({0}) unexpected error', kernel_id)
             self.error_monitor.capture_exception()
@@ -1637,10 +1665,6 @@ def main():
     parser.add('--agent-port', type=port_no, default=6001,
                env_var='BACKEND_AGENT_PORT',
                help='The port number to listen on.')
-    parser.add('--stat-port', type=port_no, default=6002,
-               env_var='BACKEND_STAT_PORT',
-               help='The port number to receive statistics reports from '
-                    'local containers.')
     parser.add('--container-port-range', type=port_range, default=(30000, 31000),
                env_var='BACKEND_CONTAINER_PORT_RANGE',
                help='The range of host public ports to be used by containers '
