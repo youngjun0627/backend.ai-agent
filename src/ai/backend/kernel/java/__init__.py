@@ -93,7 +93,7 @@ class Runner(BaseRunner):
             code = self._code_for_user_input_server(code_text)
             with open(mainpath, 'w', encoding='utf-8') as tmpf:
                 tmpf.write(code)
-            ret = await self.run_subproc([JCC, mainpath])
+            ret = await self.run_subproc([JCC, str(mainpath)])
             if ret != 0:
                 return ret
             cmd = [JCR, '-classpath', tmpdir, mainpath.stem]

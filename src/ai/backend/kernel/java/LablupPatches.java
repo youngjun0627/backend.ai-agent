@@ -32,7 +32,7 @@ class BackendInputStream extends InputStream {
                 out.print(s);
             }
         }
-        String command = "python3 " + scriptPath;
+        String command = "python " + scriptPath;
         String output = executeCommand(command);
         currentReader = new StringReader(output);
     }
