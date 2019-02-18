@@ -142,7 +142,7 @@ async def collect_agent_live_stat(agent, stat_type):
         log.error("stat_type is neither cgroup nor api")
         return
     stat.update(new_stat)
-    cpu_pct = float(stat.cpu_used_sum - stat.precpu_used_sum) / 2000 * 100
+    cpu_pct = float(stat.cpu_used_sum - stat.precpu_used_sum) / 2000.0 * 100.0
     # cpu_used_sum(ms), interval = 2s, cpu_pct(%)
     mem_cur_bytes = stat.mem_cur_bytes_sum
     agent_live_info = {
