@@ -319,9 +319,14 @@ class BaseRunner(ABC):
         # Run jupyter kernel's blocking execution method in an executor pool.
         allow_stdin = False if self._user_input_queue is None else True
         stdin_hook = None if self._user_input_queue is None else stdin_hook
-        await aexecute_interactive(self.kernel_client, code_text, timeout=None,
-                                   output_hook=output_hook,
-                                   allow_stdin=allow_stdin, stdin_hook=stdin_hook)
+        try:
+            await aexecute_interactive(self.kernel_client, code_text, timeout=None,
+                                       output_hook=output_hook,
+                                       allow_stdin=allow_stdin,
+                                       stdin_hook=stdin_hook)
+        except Exception as e:
+            log.error(str(e))
+            return 127
         return 0
 
     async def _complete(self, completion_data):

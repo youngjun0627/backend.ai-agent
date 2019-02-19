@@ -44,27 +44,22 @@ async def aexecute_interactive(kernel_client, code, silent=False, store_history=
         events = dict(await poller.poll(timeout_ms))
         if not events:
             raise TimeoutError("Timeout waiting for output")
+        if iopub_socket in events:
+            msg = kernel_client.iopub_channel.get_msg(timeout=0)
+            if msg['parent_header'].get('msg_id') != msg_id:
+                continue  # not from my request
+            await output_hook(msg)
+
+            # Stop on idle
+            if msg['header']['msg_type'] == 'status' and \
+                    msg['content']['execution_state'] == 'idle':
+                break
         if stdin_socket in events:
             req = kernel_client.stdin_channel.get_msg(timeout=0)
             loop = asyncio.get_event_loop()
             loop.create_task(stdin_hook(req))
-            # loop.call_soon(stdin_hook, req)
-            # await stdin_hook(req)
-            continue
-        if iopub_socket not in events:
-            continue
 
-        msg = kernel_client.iopub_channel.get_msg(timeout=0)
-        if msg['parent_header'].get('msg_id') != msg_id:
-            continue  # not from my request
-        await output_hook(msg)
-
-        # Stop on idle
-        if msg['header']['msg_type'] == 'status' and \
-                msg['content']['execution_state'] == 'idle':
-            break
-
-    # output is done, get the reply
+    # Output is done, get the reply
     if timeout is not None:
         timeout = max(0, deadline - monotonic())
     return kernel_client._recv_reply(msg_id, timeout=timeout)
