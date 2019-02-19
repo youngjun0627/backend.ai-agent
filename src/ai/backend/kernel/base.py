@@ -16,6 +16,7 @@ from jupyter_client.kernelspec import KernelSpecManager
 import msgpack
 import zmq
 
+from .jupyter_client import aexecute_interactive
 from .logging import BraceStyleAdapter, setup_logger
 from .compat import asyncio_run_forever, current_loop
 from .utils import wait_local_port_open
@@ -258,19 +259,16 @@ class BaseRunner(ABC):
             return 127
 
         log.debug('executing in query mode...')
-        loop = asyncio.get_event_loop()
 
-        def output_hook(msg):
+        async def output_hook(msg):
             content = msg.get('content', '')
             if msg['msg_type'] == 'stream':
                 # content['name'] will be 'stdout' or 'stderr'.
-                loop.call_soon_threadsafe(self.outsock.send_multipart,
-                                          [content['name'].encode('ascii'),
-                                           content['text'].encode('utf-8')])
+                await self.outsock.send_multipart([content['name'].encode('ascii'),
+                                                   content['text'].encode('utf-8')])
             elif msg['msg_type'] == 'error':
                 tbs = '\n'.join(content['traceback'])
-                loop.call_soon_threadsafe(self.outsock.send_multipart,
-                                          [b'stderr', tbs.encode('utf-8')])
+                await self.outsock.send_multipart([b'stderr', tbs.encode('utf-8')])
             elif msg['msg_type'] in ['execute_result', 'display_data']:
                 data = content['data']
                 if len(data) < 1:
@@ -280,11 +278,11 @@ class BaseRunner(ABC):
                 dtype, dval = list(data.items())[0]
 
                 if dtype == 'text/plain':
-                    loop.call_soon_threadsafe(self.outsock.send_multipart,
-                                              [b'stdout', dval.encode('utf-8')])
+                    await self.outsock.send_multipart([b'stdout',
+                                                       dval.encode('utf-8')])
                 elif dtype == 'text/html':
-                    loop.call_soon_threadsafe(self.outsock.send_multipart,
-                                              [b'media', dval.encode('utf-8')])
+                    await self.outsock.send_multipart([b'media',
+                                                       dval.encode('utf-8')])
                 # elif dtype == 'text/markdown':
                 #     NotImplementedError
                 # elif dtype == 'text/latex':
@@ -292,42 +290,38 @@ class BaseRunner(ABC):
                 # elif dtype in ['application/json', 'application/javascript']:
                 #     NotImplementedError
                 elif dtype in ['image/png', 'image/jpeg']:
-                    loop.call_soon_threadsafe(
-                        self.outsock.send_multipart,
-                        [b'media',
-                         json.dumps({
-                             'type': dtype,
-                             'data': f'data:{dtype};base64,{dval}',
-                         }).encode('utf8')])
+                    await self.outsock.send_multipart([
+                        b'media',
+                        json.dumps({
+                            'type': dtype,
+                            'data': f'data:{dtype};base64,{dval}',
+                        }).encode('utf-8')
+                    ])
                 elif dtype == 'image/svg+xml':
-                    loop.call_soon_threadsafe(
-                        self.outsock.send_multipart,
-                        [b'media',
-                         json.dumps({'type': dtype, 'data': dval}).encode('utf8')])
+                    await self.outsock.send_multipart([
+                        b'media',
+                        json.dumps({'type': dtype, 'data': dval}).encode('utf8')
+                    ])
 
-        def stdin_hook(msg):
+        async def stdin_hook(msg):
             if msg['msg_type'] == 'input_request':
                 prompt = msg['content']['prompt']
                 password = msg['content']['password']
                 if prompt:
-                    loop.call_soon_threadsafe(self.outsock.send_multipart,
-                                              [b'stdout', prompt.encode('utf-8')])
-                loop.call_soon_threadsafe(
-                    self.outsock.send_multipart,
+                    await self.outsock.send_multipart([
+                        b'stdout', prompt.encode('utf-8')])
+                await self.outsock.send_multipart(
                     [b'waiting-input',
                      json.dumps({'is_password': password}).encode('utf-8')])
-                user_input = self._user_input_queue.sync_q.get()
+                user_input = await self._user_input_queue.async_q.get()
                 self.kernel_client.input(user_input)
 
         # Run jupyter kernel's blocking execution method in an executor pool.
         allow_stdin = False if self._user_input_queue is None else True
         stdin_hook = None if self._user_input_queue is None else stdin_hook
-        await loop.run_in_executor(
-            None,
-            partial(self.kernel_client.execute_interactive, code_text, timeout=2,
-                    output_hook=output_hook,
-                    allow_stdin=allow_stdin, stdin_hook=stdin_hook)
-        )
+        await aexecute_interactive(self.kernel_client, code_text, timeout=None,
+                                   output_hook=output_hook,
+                                   allow_stdin=allow_stdin, stdin_hook=stdin_hook)
         return 0
 
     async def _complete(self, completion_data):
