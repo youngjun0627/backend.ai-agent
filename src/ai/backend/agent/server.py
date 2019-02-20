@@ -254,7 +254,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         ]
         install_plugins(plugins, self, 'attr', self.config)
 
-
     async def detect_manager(self):
         log.info('detecting the manager...')
         manager_id = await self.etcd.get('nodes/manager')
@@ -267,29 +266,32 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('detecting the manager: OK ({0})', manager_id)
 
     async def read_etcd_configs(self):
-        if not hasattr(self.config, 'redis_addr') or self.config.redis_addr is None:
-            self.config.redis_addr = host_port_pair(
-                await self.etcd.get('nodes/redis'))
-        if not hasattr(self.config, 'event_addr') or self.config.event_addr is None:
-            self.config.event_addr = host_port_pair(
-                await self.etcd.get('nodes/manager/event_addr'))
+        self.config.redis_addr = host_port_pair(await self.etcd.get('nodes/redis'))
+        self.config.redis_auth = await self.etcd.get('nodes/redis/password')
+        self.config.event_addr = host_port_pair(
+            await self.etcd.get('nodes/manager/event_addr'))
+        log.info('configured redis_addr: {0}', self.config.redis_addr)
+        log.info('configured event_addr: {0}', self.config.event_addr)
+
         if not hasattr(self.config, 'idle_timeout') or \
                 self.config.idle_timeout is None:
             idle_timeout = await self.etcd.get('nodes/idle_timeout')
             if idle_timeout is None:
                 idle_timeout = 600  # default: 10 minutes
             self.config.idle_timeout = idle_timeout
+        log.info('configured idle timeout: {0}', self.config.idle_timeout)
 
-        log.info('configured redis_addr: {0}', self.config.redis_addr)
-        log.info('configured event_addr: {0}', self.config.event_addr)
         vfolder_mount = await self.etcd.get('volumes/_mount')
         if vfolder_mount is None:
             vfolder_mount = '/mnt'
         self.config.vfolder_mount = Path(vfolder_mount)
+        log.info('configured vfolder mount base: {0}', self.config.vfolder_mount)
+
         vfolder_fsprefix = await self.etcd.get('volumes/_fsprefix')
         if vfolder_fsprefix is None:
             vfolder_fsprefix = ''
         self.config.vfolder_fsprefix = Path(vfolder_fsprefix.lstrip('/'))
+        log.info('configured vfolder fs prefix: {0}', self.config.vfolder_fsprefix)
 
     async def scan_running_containers(self):
         env_containers = {}
