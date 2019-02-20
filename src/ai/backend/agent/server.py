@@ -470,8 +470,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                  docker_version['Version'], docker_version['ApiVersion'])
         await self.check_images()
 
+        etcd_credentials = None
+        if self.config.etcd_user is not None:
+            etcd_credentials = {
+                'user': self.config.etcd_user,
+                'password': self.config.etcd_password,
+            }
         self.etcd = AsyncEtcd(self.config.etcd_addr,
-                              self.config.namespace)
+                              self.config.namespace,
+                              credentials=etcd_credentials)
 
         # detect_slots() loads accelerator plugins and updates compute_device_types
         self.slots = await detect_slots(
@@ -495,6 +502,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.redis_stat_pool = await aioredis.create_redis_pool(
             self.config.redis_addr.as_sockaddr(),
+            password=self.config.redis_auth,
             timeout=3.0,
             encoding='utf8',
             db=0)  # REDIS_STAT_DB in backend.ai-manager
@@ -1690,6 +1698,14 @@ def main():
                env_var='BACKEND_ETCD_ADDR',
                default=HostPortPair(ip_address('127.0.0.1'), 2379),
                help='The host:port pair of the etcd cluster or its proxy.')
+    parser.add('--etcd-user', type=str,
+               env_var='BACKEND_ETCD_USER',
+               default=None,
+               help='The username for the etcd cluster.')
+    parser.add('--etcd-password', type=str,
+               env_var='BACKEND_ETCD_PASSWORD',
+               default=None,
+               help='The password the user for the etcd cluster.')
     parser.add('--idle-timeout', type=non_negative_int, default=None,
                help='The maximum period of time allowed for kernels to wait '
                     'further requests.')
