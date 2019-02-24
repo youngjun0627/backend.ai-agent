@@ -1,6 +1,7 @@
 import asyncio
 from ipaddress import ip_address
 import logging
+import signal
 import subprocess
 
 import aiojobs.aiohttp
@@ -19,6 +20,8 @@ from ai.backend.common.logging import Logger, BraceStyleAdapter
 from . import __version__ as VERSION
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.watcher'))
+
+shutdown_enabled = False
 
 
 @web.middleware
@@ -42,18 +45,39 @@ async def handle_status(request: web.Request) -> web.Response:
 
 
 async def handle_soft_reset(request: web.Request) -> web.Response:
-    log.info('soft-reset')
-    return web.Response(status=200)
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'reload', 'backendai-agent.service'])
+    await proc.wait()
+    return web.json_response({
+        'result': 'ok',
+    })
 
 
 async def handle_hard_reset(request: web.Request) -> web.Response:
-    log.info('hard-reset')
-    return web.Response(status=200)
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'stop', 'backendai-agent.service'])
+    await proc.wait()
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'restart', 'docker.service'])
+    await proc.wait()
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'start', 'backendai-agent.service'])
+    await proc.wait()
+    return web.json_response({
+        'result': 'ok',
+    })
 
 
 async def handle_shutdown(request: web.Request) -> web.Response:
-    log.info('shutdown')
-    return web.Response(status=200)
+    global shutdown_enabled
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'stop', 'backendai-agent.service'])
+    await proc.wait()
+    shutdown_enabled = True
+    signal.alarm(1)
+    return web.json_response({
+        'result': 'ok',
+    })
 
 
 async def init_app(app):
@@ -73,7 +97,9 @@ async def prepare_hook(request, response):
 
 
 @aiotools.server
-async def watcher_main(loop, pidx, args):
+async def watcher_server(loop, pidx, args):
+    global shutdown_enabled
+
     app = web.Application()
     app['config'] = args[0]
     aiojobs.aiohttp.setup(app, close_timeout=10)
@@ -111,9 +137,12 @@ async def watcher_main(loop, pidx, args):
     log.info('started at {}:{}',
              app['config'].service_ip, app['config'].service_port)
     try:
-        yield
+        stop_sig = yield
     finally:
         log.info('shutting down...')
+        if stop_sig == signal.SIGALRM and shutdown_enabled:
+            log.warning('shutting down the agent node!')
+            subprocess.run(['shutdown', '-h', 'now'])
         await runner.cleanup()
 
 
@@ -139,7 +168,8 @@ if __name__ == '__main__':
                help='The IP where the watcher server listens on.')
     parser.add('--service-port', env_var='BACKEND_WATCHER_SERVICE_PORT',
                type=port_no, default=6009,
-               help='The TCP port number where the watcher server listens on.')
+               help='The TCP port number where the watcher server listens on. '
+                    '(default: 6009)')
     Logger.update_log_args(parser)
     args = parser.parse_args()
 
@@ -157,6 +187,9 @@ if __name__ == '__main__':
         if args.debug:
             log_config.debug('debug mode enabled.')
 
-        aiotools.start_server(watcher_main, num_workers=1,
-                              use_threading=True, args=(args, ))
+        aiotools.start_server(
+            watcher_server, num_workers=1,
+            use_threading=True, args=(args, ),
+            stop_signals={signal.SIGINT, signal.SIGTERM, signal.SIGALRM},
+        )
         log.info('exit.')

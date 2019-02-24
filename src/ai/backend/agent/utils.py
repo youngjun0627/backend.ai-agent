@@ -1,3 +1,4 @@
+import asyncio
 from typing import MutableMapping, Sequence
 
 
@@ -14,3 +15,9 @@ def update_nested_dict(dest, additions):
                 dest[k].extend(v)
             else:
                 dest[k] = v
+
+
+if hasattr(asyncio, 'get_running_loop'):
+    current_loop = asyncio.get_running_loop
+else:
+    current_loop = asyncio.get_event_loop
