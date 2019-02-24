@@ -1814,7 +1814,8 @@ def main():
         aiotools.start_server(server_main, num_workers=1,
                               use_threading=True, args=(args, ))
         log.info('exit.')
-        args.pid_file.unlink()
+        if args.pid_file is not None:
+            args.pid_file.unlink()
 
 
 if __name__ == '__main__':
