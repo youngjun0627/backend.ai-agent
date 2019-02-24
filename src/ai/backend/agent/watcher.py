@@ -1,8 +1,11 @@
+import asyncio
 from ipaddress import ip_address
 import logging
+import subprocess
 
-import aiotools
+import aiojobs.aiohttp
 from aiohttp import web
+import aiotools
 import configargparse
 from setproctitle import setproctitle
 
@@ -11,6 +14,7 @@ from ai.backend.common.argparse import (
     host_port_pair, HostPortPair,
     ipaddr, port_no,
 )
+from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from . import __version__ as VERSION
 
@@ -23,6 +27,18 @@ async def auth_middleware(request, handler):
     if token == request.app['token']:
         return (await handler(request))
     return web.HTTPForbidden()
+
+
+async def handle_status(request: web.Request) -> web.Response:
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'is-active', 'backendai-agent.service'],
+        stdout=subprocess.PIPE)
+    status = (await proc.stdout.read()).strip().decode()
+    await proc.wait()
+    return web.json_response({
+        'agent-status': status,  # maybe also "inactive", "activating"
+        'watcher-status': 'active',
+    })
 
 
 async def handle_soft_reset(request: web.Request) -> web.Response:
@@ -42,9 +58,10 @@ async def handle_shutdown(request: web.Request) -> web.Response:
 
 async def init_app(app):
     r = app.router.add_route
-    r('POST', r'/soft-reset', handle_soft_reset)
-    r('POST', r'/hard-reset', handle_hard_reset)
-    r('POST', r'/shutdown', handle_shutdown)
+    r('GET', '/', handle_status)
+    r('POST', '/soft-reset', handle_soft_reset)
+    r('POST', '/hard-reset', handle_hard_reset)
+    r('POST', '/shutdown', handle_shutdown)
 
 
 async def shutdown_app(app):
@@ -59,7 +76,24 @@ async def prepare_hook(request, response):
 async def watcher_main(loop, pidx, args):
     app = web.Application()
     app['config'] = args[0]
-    app['token'] = 'abc'
+    aiojobs.aiohttp.setup(app, close_timeout=10)
+
+    etcd_credentials = None
+    if app['config'].etcd_user is not None:
+        etcd_credentials = {
+            'user': app['config'].etcd_user,
+            'password': app['config'].etcd_password,
+        }
+    etcd = AsyncEtcd(app['config'].etcd_addr,
+                     app['config'].namespace,
+                     credentials=etcd_credentials)
+
+    token = await etcd.get('config/agent/watcher-token')
+    if token is None:
+        token = 'insecure'
+    log.debug('watcher authentication token: {}', token)
+    app['token'] = token
+
     app.middlewares.append(auth_middleware)
     app.on_shutdown.append(shutdown_app)
     app.on_startup.append(init_app)
