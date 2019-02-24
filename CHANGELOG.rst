@@ -1,6 +1,31 @@
 Changes
 =======
 
+19.03.0rc1 (2018-02-25)
+-----------------------
+
+- NEW: A side-by-side watcher daemon (#107)
+
+  - It provides a separate channel for watching and controlling the agent
+    even when the agent become unavailable (e.g., deadlock or internal crash).
+
+  - It works best with a SystemD integration.
+
+  - WARNING: Currently "reload" (agent restart without terminating running
+    containers) has problems with PID tracking.  Finding solutions for this...
+
+- NEW: Support Redis/etcd authentication (lablup/backend.ai-manager#138)
+
+  - NOTE: Currently etcd authentication is *not* usable in productions due to
+    a missing implementation of automatic refreshing auth tokens in the upstream
+    etcd3 library.
+
+- NEW: Agent-level (system-wide) live statistics (#101)
+
+- Fix detection of up-to-date local Docker image (#105)
+
+- Fix ordering of prompt outputs and user input events in the query mode (#106)
+
 19.03.0b7 (2018-02-15)
 ----------------------
 
