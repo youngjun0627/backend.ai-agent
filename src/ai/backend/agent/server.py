@@ -1744,6 +1744,10 @@ def main():
     parser.add('--limit-gpus', type=str, default=None,
                help='The hexademical mask to limit available CUDA GPUs '
                     'reported to the manager (default: not limited)')
+    parser.add('--pid-file', type=Path, default=None,
+               env_var='BACKEND_PID_FILE',
+               help='The path to the pid file.  If not set, it does not '
+                    'create the pid file.')
     parser.add('--scratch-root', type=Path,
                default=Path('/var/cache/scratches'),
                env_var='BACKEND_SCRATCH_ROOT',
@@ -1795,6 +1799,8 @@ def main():
     logger.add_pkg('aiotools')
     logger.add_pkg('ai.backend')
     setproctitle(f'backend.ai: agent {args.namespace} *:{args.agent_port}')
+    if args.pid_file is not None:
+        args.pid_file.write_text(str(os.getpid()))
 
     with logger:
         log.info('Backend.AI Agent {0}', VERSION)
@@ -1808,6 +1814,7 @@ def main():
         aiotools.start_server(server_main, num_workers=1,
                               use_threading=True, args=(args, ))
         log.info('exit.')
+        args.pid_file.unlink()
 
 
 if __name__ == '__main__':
