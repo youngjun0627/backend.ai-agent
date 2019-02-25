@@ -504,7 +504,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.redis_stat_pool = await aioredis.create_redis_pool(
             self.config.redis_addr.as_sockaddr(),
-            password=self.config.redis_auth,
+            password=self.config.redis_auth if self.config.redis_auth else None,
             timeout=3.0,
             encoding='utf8',
             db=0)  # REDIS_STAT_DB in backend.ai-manager
