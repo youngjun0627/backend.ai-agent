@@ -1,6 +1,4 @@
 import asyncio
-from functools import partial
-import sys
 from time import monotonic
 import zmq
 

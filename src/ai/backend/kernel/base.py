@@ -146,7 +146,7 @@ class BaseRunner(ABC):
                     self.kernel_client.start_channels(shell=True, iopub=True,
                                                       stdin=True, hb=True)
                     try:
-                        self.kernel_client.wait_for_ready(timeout=5)
+                        self.kernel_client.wait_for_ready(timeout=10)
                         # self.init_jupyter_kernel()
                     except RuntimeError:
                         # Clean up for client and kernel will be done in `shutdown`.
