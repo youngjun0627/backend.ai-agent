@@ -105,7 +105,7 @@ async def watcher_server(loop, pidx, args):
     aiojobs.aiohttp.setup(app, close_timeout=10)
 
     etcd_credentials = None
-    if app['config'].etcd_user is not None:
+    if app['config'].etcd_user:
         etcd_credentials = {
             'user': app['config'].etcd_user,
             'password': app['config'].etcd_password,

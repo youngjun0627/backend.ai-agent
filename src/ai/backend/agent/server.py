@@ -473,7 +473,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.check_images()
 
         etcd_credentials = None
-        if self.config.etcd_user is not None:
+        if self.config.etcd_user:
             etcd_credentials = {
                 'user': self.config.etcd_user,
                 'password': self.config.etcd_password,
