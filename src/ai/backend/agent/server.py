@@ -267,7 +267,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def read_etcd_configs(self):
         self.config.redis_addr = host_port_pair(await self.etcd.get('nodes/redis'))
-        self.config.redis_auth = await self.etcd.get('nodes/redis/password')
+        self.config.redis_password = await self.etcd.get('nodes/redis/password')
         self.config.event_addr = host_port_pair(
             await self.etcd.get('nodes/manager/event_addr'))
         log.info('configured redis_addr: {0}', self.config.redis_addr)
@@ -504,7 +504,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.redis_stat_pool = await aioredis.create_redis_pool(
             self.config.redis_addr.as_sockaddr(),
-            password=self.config.redis_auth if self.config.redis_auth else None,
+            password=(self.config.redis_password
+                      if self.config.redis_password else None),
             timeout=3.0,
             encoding='utf8',
             db=0)  # REDIS_STAT_DB in backend.ai-manager
