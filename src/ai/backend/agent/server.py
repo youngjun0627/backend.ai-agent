@@ -66,7 +66,7 @@ from .resources import (
     detect_slots,
 )
 from .kernel import KernelRunner, KernelFeatures
-from .utils import update_nested_dict
+from .utils import update_nested_dict, get_krunner_image_ref
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
@@ -409,7 +409,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def check_images(self):
         for distro in ['ubuntu16.04', 'alpine3.8']:
             try:
-                image_name = f'lablup/backendai-krunner-env:{VERSION}-{distro}'
+                image_name = get_krunner_image_ref(distro)
                 await self.docker.images.inspect(image_name)
             except DockerError:
                 raise InitializationError(
@@ -1118,7 +1118,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # We are all set! Create and start the container.
         try:
             env_container = await self.docker.containers.create(config={
-                'Image': f'lablup/backendai-krunner-env:{VERSION}-{distro}',
+                'Image': get_krunner_image_ref(distro),
             }, name=f'kernel-env.{kernel_id}')
             container = await self.docker.containers.create(
                 config=container_config, name=kernel_name)
