@@ -18,6 +18,7 @@ import msgpack
 import zmq
 
 from . import __version__ as VERSION
+from .utils import get_krunner_image_ref
 from ai.backend.common.utils import StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
 
@@ -512,7 +513,7 @@ def build_krunner_env(distro, agent_version):
             (f'python36.{distro}.dockerfile',
              f'lablup/backendai-krunner-python:{distro}'),
             (f'env.{distro}.dockerfile',
-             f'lablup/backendai-krunner-env:{agent_version}-{distro}'),
+             get_krunner_image_ref(distro)),
         ]
     ]
     for dockerfile, tag in dockerfiles:
