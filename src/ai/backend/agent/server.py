@@ -652,12 +652,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         host_pid = struct.unpack('q', msg[1])[0]
                         container_pid = await host_pid_to_container_pid(
                             container_id, host_pid)
-                        reply = [struct.pack('q', 0), bytes(container_pid)]
+                        reply = [
+                            struct.pack('q', 0),
+                            struct.pack('q', container_pid),
+                        ]
                     elif msg[0] == b'container-pid-to-host-pid':
                         container_pid = struct.unpack('q', msg[1])[0]
                         host_pid = await container_pid_to_host_pid(
                             container_id, container_pid)
-                        reply = [struct.pack('q', 0), bytes(host_pid)]
+                        reply = [
+                            struct.pack('q', 0),
+                            struct.pack('q', host_pid),
+                        ]
                     else:
                         reply = [struct.pack('q', -2), b'Invalid action']
                 except asyncio.CancelledError:
@@ -1041,9 +1047,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
         agent_sock = self.zmq_ctx.socket(zmq.REQ)
+        os.makedirs(scratch_dir, exist_ok=True)
         agent_sock_path = scratch_dir / 'agent.sock'
         agent_sock.bind(f'ipc://{agent_sock_path}')
-        _mount(agent_sock, '/opt/backend.ai/agent.sock')
+        _mount(agent_sock_path, '/opt/backend.ai/agent.sock')
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args = {}
@@ -1069,8 +1076,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if restarting:
             pass
         else:
-            os.makedirs(scratch_dir)
-            os.makedirs(tmp_dir)
+            os.makedirs(scratch_dir, exist_ok=True)
+            os.makedirs(tmp_dir, exist_ok=True)
             if sys.platform == 'linux' and self.config.scratch_in_memory:
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
