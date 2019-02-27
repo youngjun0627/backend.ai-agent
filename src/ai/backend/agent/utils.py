@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from typing import MutableMapping, Sequence
 
 from packaging import version
@@ -32,3 +33,24 @@ def get_krunner_image_ref(distro):
     if v.is_devrelease or v.is_prerelease:
         return f'lablup/backendai-krunner-env:dev-{distro}'
     return f'lablup/backendai-krunner-env:{VERSION}-{distro}'
+
+
+async def host_pid_to_container_pid(container_id, host_pid):
+    try:
+        tasks_path = Path(f'/sys/fs/cgroup/pids/docker/{container_id}/tasks')
+        cgtasks = [*map(int, tasks_path.read_text().splitlines())]
+        if host_pid not in cgtasks:
+            return -1
+        proc_path = Path(f'/proc/{host_pid}/status')
+        proc_status = {k: v for k, v
+                       in map(lambda l: l.split(':\t'),
+                              proc_path.read_text().splitlines())}
+        nspids = [*map(int, proc_status['NSpid'].split())]
+        return nspids[1]
+    except (ValueError, KeyError, IOError):
+        return -1
+
+
+async def container_pid_to_host_pid(container_id, container_pid):
+    # TODO: implement
+    return -1

@@ -13,9 +13,10 @@ import secrets
 import shlex
 import signal
 import shutil
+import struct
 import subprocess
-import time
 import sys
+import time
 from typing import Collection, Mapping
 
 from aiodocker.docker import Docker, DockerContainer
@@ -66,7 +67,11 @@ from .resources import (
     detect_slots,
 )
 from .kernel import KernelRunner, KernelFeatures
-from .utils import update_nested_dict, get_krunner_image_ref
+from .utils import (
+    current_loop, update_nested_dict, get_krunner_image_ref,
+    host_pid_to_container_pid,
+    container_pid_to_host_pid,
+)
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
@@ -210,7 +215,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     )
 
     def __init__(self, config, loop=None):
-        self.loop = loop if loop else asyncio.get_event_loop()
+        self.loop = loop if loop else current_loop()
         self.config = config
         self.config.app_name = 'backend.ai-agent'
         self.etcd = None
@@ -431,8 +436,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await runner.close()
 
     async def collect_stats(self):
-        context = zmq.asyncio.Context()
-        stats_sock = context.socket(zmq.PULL)
+        stats_sock = self.zmq_ctx.socket(zmq.PULL)
         stats_sock.setsockopt(zmq.LINGER, 1000)
         stats_sock.bind('ipc://' + str(self.stats_sockpath))
         log.info('collecting stats at port {}', self.stats_sockpath)
@@ -459,13 +463,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             pass
         finally:
             stats_sock.close()
-            context.term()
             self.stats_sockpath.unlink()
 
     async def collect_live_stat(self, interval):
         await collect_agent_live_stat(self, self.stat_type)
 
     async def init(self, *, skip_detect_manager=False):
+        self.zmq_ctx = zmq.asyncio.Context()
+
         # Show Docker version info.
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}',
@@ -614,6 +619,56 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if self.event_sock is not None:
             await self.send_event('instance_terminated', 'shutdown')
             self.event_sock.close()
+
+        self.zmq_ctx.term()
+
+    async def handle_agent_sock(self, container_id, sock):
+        '''
+        A simple request-reply socket handler for in-container processes.
+        For ease of implementation in low-level languages such as C,
+        it uses a simple C-friendly ZeroMQ-based multipart messaging protocol.
+
+        Request message:
+            The first part is action as string,
+            The second part and later are arguments.
+
+        Reply message:
+            The first part is 64-bit integer (long long in C)
+              (0: success)
+              (-1: generic unhandled error)
+              (-2: invalid action)
+            The second part and later are arguments.
+
+        All strings are UTF-8 encoded.
+        '''
+        try:
+            while True:
+                msg = await sock.recv_multipart()
+                if not msg:
+                    break
+                log.debug('conatiner upcall', msg)
+                try:
+                    if msg[0] == b'host-pid-to-container-pid':
+                        host_pid = struct.unpack('q', msg[1])[0]
+                        container_pid = await host_pid_to_container_pid(
+                            container_id, host_pid)
+                        reply = [struct.pack('q', 0), bytes(container_pid)]
+                    elif msg[0] == b'container-pid-to-host-pid':
+                        container_pid = struct.unpack('q', msg[1])[0]
+                        host_pid = await container_pid_to_host_pid(
+                            container_id, container_pid)
+                        reply = [struct.pack('q', 0), bytes(host_pid)]
+                    else:
+                        reply = [struct.pack('q', -2), b'Invalid action']
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    reply = [struct.pack('q', -1), f'Error: {e}'.encode('utf-8')]
+                await sock.send_multipart(reply)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            sock.close()
 
     @aiotools.actxmgr
     async def handle_rpc_exception(self):
@@ -839,6 +894,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         tmp_dir = (self.config.scratch_root / f'{kernel_id}_tmp').resolve()
         config_dir = scratch_dir / 'config'
         work_dir = scratch_dir / 'work'
+        agent_tasks = []
 
         # PHASE 1: Read existing resource spec or devise a new resource spec.
 
@@ -984,6 +1040,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                '/home/work/.jupyter/custom/logo.svg')
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
+        agent_sock = self.zmq_ctx.socket(zmq.REQ)
+        agent_sock_path = scratch_dir / 'agent.sock'
+        agent_sock.bind(f'ipc://{agent_sock_path}')
+        _mount(agent_sock, '/opt/backend.ai/agent.sock')
+
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args = {}
         for dev_type, device_alloc in resource_spec.allocations.items():
@@ -1123,6 +1184,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             container = await self.docker.containers.create(
                 config=container_config, name=kernel_name)
             cid = container._id
+            agent_tasks.append(self.loop.create_task(
+                self.handle_agent_sock(cid, agent_sock)))
 
             stat_type = get_preferred_stat_type()
             self.stats[cid] = StatCollectorState(kernel_id)
@@ -1175,6 +1238,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'last_used': time.monotonic(),
             'runner_tasks': set(),
             'resource_spec': resource_spec,
+            'agent_tasks': agent_tasks,
         }
         log.debug('kernel repl-in address: {0}:{1}', kernel_host, repl_in_port)
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
@@ -1375,7 +1439,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return result
 
     async def _accept_file(self, kernel_id, filename, filedata):
-        loop = asyncio.get_event_loop()
+        loop = current_loop()
         work_dir = self.config.scratch_root / kernel_id / 'work'
         try:
             # create intermediate directories in the path
@@ -1555,12 +1619,17 @@ print(json.dumps(files))''' % {'path': path}
     async def clean_kernel(self, kernel_id):
         try:
             kernel_info = self.container_registry[kernel_id]
-
+        except KeyError:
+            pass
+        else:
             container_id = kernel_info['container_id']
             env_container_id = kernel_info['env_container_id']
             container = self.docker.containers.container(container_id)
             env_container = self.docker.containers.container(env_container_id)
             try:
+                for task in kernel_info['agent_tasks']:
+                    task.cancel()
+                await asyncio.gather(*kernel_info['agent_tasks'])
                 await self.clean_runner(kernel_id)
             finally:
                 # When the agent restarts with a different port range, existing
@@ -1582,8 +1651,7 @@ print(json.dumps(files))''' % {'path': path}
                         lambda p: port_range[0] <= p <= port_range[1],
                         kernel_info['host_ports'])]
                     self.port_pool.update(restored_ports)
-        except KeyError:
-            pass
+
         if kernel_id in self.restarting_kernels:
             self.restarting_kernels[kernel_id].destroy_event.set()
         else:
