@@ -132,10 +132,9 @@ async def get_extra_volumes(docker, lang):
         if vol.name in avail_volume_names:
             mount_list.append(vol)
         else:
-            log.warning('could not attach volume {0} '
-                        'to a kernel using language {1} ',
-                        '(volume not found)',
-                        vol.name, lang)
+            log.info('skipped attaching extra volume {0} '
+                     'to a kernel based on image {1}',
+                     vol.name, lang)
     return mount_list
 
 
