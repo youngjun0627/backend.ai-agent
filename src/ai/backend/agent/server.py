@@ -629,11 +629,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         it uses a simple C-friendly ZeroMQ-based multipart messaging protocol.
 
         Request message:
-            The first part is action as string,
+            The first part is the requested action as string,
             The second part and later are arguments.
 
         Reply message:
-            The first part is 64-bit integer (long long in C)
+            The first part is a 32-bit integer (int in C)
               (0: success)
               (-1: generic unhandled error)
               (-2: invalid action)
@@ -646,30 +646,29 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 msg = await sock.recv_multipart()
                 if not msg:
                     break
-                log.debug('conatiner upcall', msg)
                 try:
                     if msg[0] == b'host-pid-to-container-pid':
-                        host_pid = struct.unpack('q', msg[1])[0]
+                        host_pid = struct.unpack('i', msg[1])[0]
                         container_pid = await host_pid_to_container_pid(
                             container_id, host_pid)
                         reply = [
-                            struct.pack('q', 0),
-                            struct.pack('q', container_pid),
+                            struct.pack('i', 0),
+                            struct.pack('i', container_pid),
                         ]
                     elif msg[0] == b'container-pid-to-host-pid':
-                        container_pid = struct.unpack('q', msg[1])[0]
+                        container_pid = struct.unpack('i', msg[1])[0]
                         host_pid = await container_pid_to_host_pid(
                             container_id, container_pid)
                         reply = [
-                            struct.pack('q', 0),
-                            struct.pack('q', host_pid),
+                            struct.pack('i', 0),
+                            struct.pack('i', host_pid),
                         ]
                     else:
-                        reply = [struct.pack('q', -2), b'Invalid action']
+                        reply = [struct.pack('i', -2), b'Invalid action']
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    reply = [struct.pack('q', -1), f'Error: {e}'.encode('utf-8')]
+                    reply = [struct.pack('i', -1), f'Error: {e}'.encode('utf-8')]
                 await sock.send_multipart(reply)
         except asyncio.CancelledError:
             pass
@@ -1046,11 +1045,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                '/home/work/.jupyter/custom/logo.svg')
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
-        agent_sock = self.zmq_ctx.socket(zmq.REQ)
+        agent_sock = self.zmq_ctx.socket(zmq.REP)
         os.makedirs(scratch_dir, exist_ok=True)
         agent_sock_path = scratch_dir / 'agent.sock'
         agent_sock.bind(f'ipc://{agent_sock_path}')
-        _mount(agent_sock_path, '/opt/backend.ai/agent.sock')
+        _mount(agent_sock_path, '/opt/backend.ai/agent.sock', perm='rw')
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args = {}
