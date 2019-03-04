@@ -673,6 +673,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             pass
         finally:
             sock.close()
+            self.agent_sockpath.unlink()
 
     @aiotools.actxmgr
     async def handle_rpc_exception(self):
@@ -1045,10 +1046,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
         agent_sock = self.zmq_ctx.socket(zmq.REP)
-        os.makedirs(scratch_dir, exist_ok=True)
-        agent_sock_path = scratch_dir / 'agent.sock'
-        agent_sock.bind(f'ipc://{agent_sock_path}')
-        _mount(agent_sock_path, '/opt/backend.ai/agent.sock', perm='rw')
+        ipc_base_path = Path('/tmp/backend.ai/ipc')
+        ipc_base_path.mkdir(parents=True, exist_ok=True)
+        self.agent_sockpath = ipc_base_path / f'agent.{os.getpid()}.sock'
+        agent_sock.bind(f'ipc://{self.agent_sockpath}')
+        _mount(self.agent_sockpath, '/opt/backend.ai/agent.sock', perm='rw')
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args = {}
