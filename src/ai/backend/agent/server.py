@@ -1027,6 +1027,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'ai.backend.agent', '../runner/jupyter-custom.css'))
         logo_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/logo.svg'))
+        font_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/roboto.ttf'))
+        font_italic_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/roboto-italic.ttf'))
         _mount(entrypoint_sh_path.resolve(),
                '/opt/backend.ai/bin/entrypoint.sh')
         _mount(suexec_path.resolve(),
@@ -1043,6 +1047,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                '/home/work/.jupyter/custom/custom.css')
         _mount(logo_path.resolve(),
                '/home/work/.jupyter/custom/logo.svg')
+        _mount(font_path.resolve(),
+               '/home/work/.jupyter/custom/roboto.ttf')
+        _mount(font_italic_path.resolve(),
+               '/home/work/.jupyter/custom/roboto-italic.ttf')
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
         agent_sock = self.zmq_ctx.socket(zmq.REP)
