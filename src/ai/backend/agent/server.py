@@ -1787,8 +1787,7 @@ def main():
                default=None,
                help='The password the user for the etcd cluster.')
     parser.add('--idle-timeout', type=non_negative_int, default=None,
-               help='The maximum period of time allowed for kernels to wait '
-                    'further requests.')
+               help='Depreacted. Use keypair resource policy to control this.')
     parser.add('--sandbox-type', type=str,
                choices=['docker', 'jail'], default='docker',
                env_var='BACKEND_SANDBOX_TYPE',
