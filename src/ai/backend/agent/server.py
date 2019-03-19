@@ -277,14 +277,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('configured redis_addr: {0}', self.config.redis_addr)
         log.info('configured event_addr: {0}', self.config.event_addr)
 
-        if not hasattr(self.config, 'idle_timeout') or \
-                self.config.idle_timeout is None:
-            idle_timeout = await self.etcd.get('nodes/idle_timeout')
-            if idle_timeout is None:
-                idle_timeout = 600  # default: 10 minutes
-            self.config.idle_timeout = idle_timeout
-        log.info('configured idle timeout: {0}', self.config.idle_timeout)
-
         vfolder_mount = await self.etcd.get('volumes/_mount')
         if vfolder_mount is None:
             vfolder_mount = '/mnt'
@@ -546,9 +538,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Send the first heartbeat.
         self.hb_timer    = aiotools.create_timer(self.heartbeat, 3.0)
-        if self.config.idle_timeout != 0:
-            # idle_timeout == 0 means there is no timeout.
-            self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
+        self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
 
         # Start serving requests.
         agent_addr = f'tcp://*:{self.config.agent_port}'
@@ -915,6 +905,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 slots={**slots},  # copy
                 mounts=[],
                 scratch_disk_size=0,  # TODO: implement (#70)
+                idle_timeout=kernel_config['idle_timeout'],
             )
 
         # PHASE 2: Apply the resource spec.
@@ -1697,7 +1688,10 @@ print(json.dumps(files))''' % {'path': path}
         for kernel_id in keys:
             try:
                 last_used = self.container_registry[kernel_id]['last_used']
-                if now - last_used > self.config.idle_timeout:
+                idle_timeout = \
+                    self.container_registry[kernel_id]['resource_spec'] \
+                    .idle_timeout
+                if idle_timeout > 0 and now - last_used > idle_timeout:
                     log.info('destroying kernel {0} as clean-up', kernel_id)
                     task = asyncio.ensure_future(
                         self._destroy_kernel(kernel_id, 'idle-timeout'))

@@ -152,6 +152,9 @@ class KernelResourceSpec:
     '''The size of scratch disk. (not implemented yet)'''
     scratch_disk_size: int = None
 
+    '''The idle timeout in seconds.'''
+    idle_timeout: int = None
+
     def write_to_file(self, file: io.TextIOBase):
         '''
         Write the current resource specification into a file-like object.
@@ -163,6 +166,7 @@ class KernelResourceSpec:
             k: str(v) for k, v in self.slots.items()
         })
         file.write(f'SLOTS={slots_str}\n')
+        file.write(f'IDLE_TIMEOUT={self.idle_timeout}\n')
         for device_type, slots in self.allocations.items():
             for slot_type, per_device_alloc in slots.items():
                 pieces = []
@@ -209,6 +213,7 @@ class KernelResourceSpec:
             allocations=dict(allocations),
             slots=ResourceSlot(json.loads(kvpairs['SLOTS'])),
             mounts=mounts,
+            idle_timeout=int(kvpairs.get('IDLE_TIMEOUT', '600')),
         )
 
     def to_json(self) -> str:
