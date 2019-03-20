@@ -1211,6 +1211,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             # Write resource.txt again to update the contaienr id.
             with open(config_dir / 'resource.txt', 'w') as f:
                 resource_spec.write_to_file(f)
+                for dev_type, device_alloc in resource_spec.allocations.items():
+                    computer_set = self.computers[dev_type]
+                    kvpairs = \
+                        await computer_set.klass.generate_resource_data(device_alloc)
+                    for k, v in kvpairs.items():
+                        f.write(f'{k}={v}\n')
 
             stat_type = get_preferred_stat_type()
             self.stats[cid] = StatCollectorState(kernel_id)
