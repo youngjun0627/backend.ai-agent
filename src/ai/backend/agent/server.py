@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import functools
+import hashlib
 from ipaddress import ip_address
 import logging, logging.config
 import os, os.path
@@ -1047,7 +1048,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         agent_sock = self.zmq_ctx.socket(zmq.REP)
         ipc_base_path = Path('/tmp/backend.ai/ipc')
         ipc_base_path.mkdir(parents=True, exist_ok=True)
-        self.agent_sockpath = ipc_base_path / f'agent.{os.getpid()}.sock'
+        process_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()
+        self.agent_sockpath = ipc_base_path / f'agent.{process_id}.sock'
         agent_sock.bind(f'ipc://{self.agent_sockpath}')
         _mount(self.agent_sockpath, '/opt/backend.ai/agent.sock', perm='rw')
 
