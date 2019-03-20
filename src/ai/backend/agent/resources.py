@@ -138,6 +138,9 @@ class KernelResourceSpec:
     while kernel containers are running.
     '''
 
+    '''The container ID to refer inside containers.'''
+    container_id: str
+
     '''Stores the original user-requested resource slots.'''
     slots: ResourceSlot
 
@@ -159,6 +162,7 @@ class KernelResourceSpec:
         '''
         Write the current resource specification into a file-like object.
         '''
+        file.write(f'CID={self.container_id}\n')
         file.write(f'SCRATCH_SIZE={BinarySize(self.scratch_disk_size):m}\n')
         mounts_str = ','.join(map(str, self.mounts))
         file.write(f'MOUNTS={mounts_str}\n')
@@ -209,6 +213,7 @@ class KernelResourceSpec:
                 allocations[device_type][slot_type] = per_device_alloc
         mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',') if m]
         return cls(
+            container_id=kvpairs.get('CID'),
             scratch_disk_size=BinarySize.from_str(kvpairs['SCRATCH_SIZE']),
             allocations=dict(allocations),
             slots=ResourceSlot(json.loads(kvpairs['SLOTS'])),

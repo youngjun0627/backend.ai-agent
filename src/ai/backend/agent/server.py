@@ -79,6 +79,7 @@ log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
 
 max_upload_size = 100 * 1024 * 1024  # 100 MB
 stat_cache_lifespan = 30.0  # 30 secs
+ipc_base_path = Path('/tmp/backend.ai/ipc')
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -219,6 +220,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.config = config
         self.config.app_name = 'backend.ai-agent'
         self.etcd = None
+        self.agent_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()[:12]
 
         self.docker = Docker()
         self.container_registry = {}
@@ -331,6 +333,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                               kernel_id / 'config').resolve()
                 with open(config_dir / 'resource.txt', 'r') as f:
                     resource_spec = KernelResourceSpec.read_from_file(f)
+                    # legacy handling
+                    if resource_spec.container_id is None:
+                        resource_spec.container_id = container._id
+                    else:
+                        assert container._id == resource_spec.container_id, \
+                               'Container ID from the container must match!'
                 service_ports = []
                 for item in labels.get('ai.backend.service-ports', '').split(','):
                     if not item:
@@ -461,6 +469,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await collect_agent_live_stat(self, self.stat_type)
 
     async def init(self, *, skip_detect_manager=False):
+        ipc_base_path.mkdir(parents=True, exist_ok=True)
         self.zmq_ctx = zmq.asyncio.Context()
 
         # Show Docker version info.
@@ -499,6 +508,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.scan_images(None)
         await self.scan_running_containers()
 
+        self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
+        self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
+
         self.redis_stat_pool = await aioredis.create_redis_pool(
             self.config.redis_addr.as_sockaddr(),
             password=(self.config.redis_password
@@ -515,8 +527,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.scan_images_timer = aiotools.create_timer(self.scan_images, 60.0)
 
         # Spawn stat collector task.
-        ipc_base_path = Path('/tmp/backend.ai/ipc')
-        ipc_base_path.mkdir(parents=True, exist_ok=True)
         self.stats_sockpath = ipc_base_path / f'stats.{os.getpid()}.sock'
         self.stats = dict()
         self.stat_collector_task = self.loop.create_task(self.collect_stats())
@@ -605,6 +615,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             self.redis_stat_pool.close()
             await self.redis_stat_pool.wait_closed()
 
+        # Stop handlign agent sock.
+        # (But we don't remove the socket file)
+        if self.agent_sock_task is not None:
+            self.agent_sock_task.cancel()
+            await self.agent_sock_task
+
         # Notify the gateway.
         if self.event_sock is not None:
             await self.send_event('instance_terminated', 'shutdown')
@@ -612,7 +628,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.zmq_ctx.term()
 
-    async def handle_agent_sock(self, container_id, sock):
+    async def handle_agent_socket(self):
         '''
         A simple request-reply socket handler for in-container processes.
         For ease of implementation in low-level languages such as C,
@@ -631,14 +647,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         All strings are UTF-8 encoded.
         '''
+        agent_sock = self.zmq_ctx.socket(zmq.REP)
+        agent_sock.bind(f'ipc://{self.agent_sockpath}')
         try:
             while True:
-                msg = await sock.recv_multipart()
+                msg = await agent_sock.recv_multipart()
                 if not msg:
                     break
                 try:
                     if msg[0] == b'host-pid-to-container-pid':
-                        host_pid = struct.unpack('i', msg[1])[0]
+                        container_id = msg[1].decode()
+                        host_pid = struct.unpack('i', msg[2])[0]
                         container_pid = await host_pid_to_container_pid(
                             container_id, host_pid)
                         reply = [
@@ -646,7 +665,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                             struct.pack('i', container_pid),
                         ]
                     elif msg[0] == b'container-pid-to-host-pid':
-                        container_pid = struct.unpack('i', msg[1])[0]
+                        container_id = msg[1].decode()
+                        container_pid = struct.unpack('i', msg[2])[0]
                         host_pid = await container_pid_to_host_pid(
                             container_id, container_pid)
                         reply = [
@@ -659,12 +679,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     raise
                 except Exception as e:
                     reply = [struct.pack('i', -1), f'Error: {e}'.encode('utf-8')]
-                await sock.send_multipart(reply)
+                await agent_sock.send_multipart(reply)
         except asyncio.CancelledError:
             pass
         finally:
-            sock.close()
-            self.agent_sockpath.unlink()
+            agent_sock.close()
 
     @aiotools.actxmgr
     async def handle_rpc_exception(self):
@@ -1023,6 +1042,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'ai.backend.agent', '../runner/roboto.ttf'))
         font_italic_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/roboto-italic.ttf'))
+        _mount(self.agent_sockpath,
+               '/opt/backend.ai/agent.sock', perm='rw')
         _mount(entrypoint_sh_path.resolve(),
                '/opt/backend.ai/bin/entrypoint.sh')
         _mount(suexec_path.resolve(),
@@ -1044,14 +1065,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         _mount(font_italic_path.resolve(),
                '/home/work/.jupyter/custom/roboto-italic.ttf')
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
-
-        agent_sock = self.zmq_ctx.socket(zmq.REP)
-        ipc_base_path = Path('/tmp/backend.ai/ipc')
-        ipc_base_path.mkdir(parents=True, exist_ok=True)
-        process_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()
-        self.agent_sockpath = ipc_base_path / f'agent.{process_id}.sock'
-        agent_sock.bind(f'ipc://{self.agent_sockpath}')
-        _mount(self.agent_sockpath, '/opt/backend.ai/agent.sock', perm='rw')
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args = {}
@@ -1192,8 +1205,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             container = await self.docker.containers.create(
                 config=container_config, name=kernel_name)
             cid = container._id
-            agent_tasks.append(self.loop.create_task(
-                self.handle_agent_sock(cid, agent_sock)))
 
             stat_type = get_preferred_stat_type()
             self.stats[cid] = StatCollectorState(kernel_id)
