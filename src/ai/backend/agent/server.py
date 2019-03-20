@@ -921,6 +921,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             vfolders = kernel_config['mounts']
             slots = slots.as_numeric(known_slot_types)
             resource_spec = KernelResourceSpec(
+                container_id=None,
                 allocations={},
                 slots={**slots},  # copy
                 mounts=[],
@@ -1205,6 +1206,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             container = await self.docker.containers.create(
                 config=container_config, name=kernel_name)
             cid = container._id
+
+            resource_spec.container_id = cid
+            # Write resource.txt again to update the contaienr id.
+            with open(config_dir / 'resource.txt', 'w') as f:
+                resource_spec.write_to_file(f)
 
             stat_type = get_preferred_stat_type()
             self.stats[cid] = StatCollectorState(kernel_id)
