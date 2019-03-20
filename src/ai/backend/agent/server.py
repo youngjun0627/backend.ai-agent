@@ -362,6 +362,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     'host_ports': [*port_map.values()],
                     'resource_spec': resource_spec,
                     'service_ports': service_ports,
+                    'agent_tasks': [],
                 }
             elif status in {'exited', 'dead', 'removing'}:
                 log.info('detected terminated kernel: {0}', kernel_id)
