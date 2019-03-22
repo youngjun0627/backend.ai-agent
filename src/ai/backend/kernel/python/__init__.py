@@ -118,6 +118,8 @@ class Runner(BaseRunner):
                 self.runtime_path, '-m', 'digits',
             ], {}
         elif service_info['name'] == 'tensorboard':
+            Path('/home/work/logs').mkdir(parents=True, exist_ok=True)
             return [
                 self.runtime_path, '-m', 'tensorboard.main',
+                '--logdir', '/home/work/logs',
             ], {}
