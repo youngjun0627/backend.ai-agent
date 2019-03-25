@@ -1,6 +1,26 @@
 Changes
 =======
 
+19.03.0rc2 (2018-03-26)
+-----------------------
+
+- NEW: Add (official) support for TensorBoard with the default logdir:
+  /home/work/logs
+
+- CHANGE: Use the same "dev" krunner-env image tags for all pre-release and
+  development versions to prevent hassles of tag renaming during development.
+
+- CHANGE: Now the idle timeout is applied per kernel to support
+  lablup/backend.ai-manager#92 implementation.
+
+- CHANGE: Rename "--redis-auth" option to "--redis-password" and its
+  environment variable equivalent as well.
+
+- Fix and update accelerator plugin support by adding an in-container socket
+  which provides host-only-available information to in-container programs.
+
+- Apply a customized look-and-feel to Jupyter notebooks in Python-based containers.
+
 19.03.0rc1 (2018-02-25)
 -----------------------
 
