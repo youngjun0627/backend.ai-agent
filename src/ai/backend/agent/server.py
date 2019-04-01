@@ -918,9 +918,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             with open(config_dir / 'resource.txt', 'r') as f:
                 resource_spec = KernelResourceSpec.read_from_file(f)
         else:
-            slots = ResourceSlot(kernel_config['resource_slots'])
+            # resource_slots is already sanitized by the manager.
+            slots = ResourceSlot.from_json(kernel_config['resource_slots'])
             vfolders = kernel_config['mounts']
-            slots = slots.as_numeric(known_slot_types)
             resource_spec = KernelResourceSpec(
                 container_id=None,
                 allocations={},
@@ -960,8 +960,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             for mount in resource_spec.mounts:
                 binds.append(str(mount))
         else:
-            # Ensure that we already converted all values to absolute real values.
-            assert slots.numeric
+            # Ensure that we have intrinsic slots.
             assert 'cpu' in slots
             assert 'mem' in slots
 
@@ -1566,9 +1565,7 @@ print(json.dumps(files))''' % {'path': path}
             for slot_key, slot_type in klass.slot_types:
                 res_slots[slot_key] = (
                     slot_type,
-                    str(ResourceSlot.value_as_numeric(
-                        self.slots.get(slot_key, 0),
-                        slot_type)),
+                    str(self.slots.get(slot_key, 0)),
                 )
         agent_info = {
             'ip': self.config.agent_host,
