@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.03.0 (2018-04-10)
+--------------------
+
+- Minor updates to match with the manager changes.
+
+- Update dependency: aioredis
+
 19.03.0rc2 (2018-03-26)
 -----------------------
 
