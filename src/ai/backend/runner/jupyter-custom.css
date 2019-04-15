@@ -152,7 +152,7 @@ div.running_list_info.toolbar_info {
  border-color: transparent;
 }
 #project_name > ul > li > a > i.fa.fa-home {
- color: #add6bb;
+ color: #5EAE7E;
  font-size: 17pt;
  display: inline-block;
  position: static;
@@ -558,7 +558,7 @@ div.navbar-text,
 p.navbar-text.indicator_area {
  margin-top: 8px !important;
  margin-bottom: 0px;
- color: #add6bb;
+ color: #5EAE7E;
 }
 .navbar-default {
  font-family: sans-serif;
@@ -721,10 +721,10 @@ div#notification_notebook.notification_widget.btn.btn-xs.navbar-btn {
 }
 #kernel_indicator {
  float: right !important;
- color: #add6bb;
+ color: #5EAE7E;
  background: #ffffff;
  background-color: #ffffff;
- border-left: 2px solid #add6bb;
+ border-left: 2px solid #5EAE7E;
  padding-top: 0px;
  padding-bottom: 4px;
  margin-top: 10px !important;
@@ -733,7 +733,7 @@ div#notification_notebook.notification_widget.btn.btn-xs.navbar-btn {
 }
 #kernel_indicator .kernel_indicator_name {
  font-size: 17px;
- color: #add6bb;
+ color: #5EAE7E;
  background: #ffffff;
  background-color: #ffffff;
  padding-left: 5px;
@@ -915,7 +915,7 @@ i.fa.fa-icon {
 .dropdown-submenu:active > a:after,
 .dropdown-submenu:focus > a:after,
 .dropdown-submenu:visited > a:after {
- color: #add6bb;
+ color: #5EAE7E;
  margin-right: -16px;
  display: inline-block !important;
 }
@@ -989,7 +989,7 @@ div.kse-dropdown > .dropdown-menu,
 .btn-default.active.focus {
  color: #3e872d !important;
  background-color: #f3f3f3;
- border-color: #add6bb !important;
+ border-color: #5EAE7E !important;
  transition: 2000ms ease;
 }
 .btn:focus,
@@ -1003,9 +1003,9 @@ div.kse-dropdown > .dropdown-menu,
  color: #3e872d !important;
  outline: none !important;
  outline-width: 0px !important;
- background: #add6bb !important;
- background-color: #add6bb !important;
- border-color: #add6bb !important;
+ background: #5EAE7E !important;
+ background-color: #5EAE7E !important;
+ border-color: #5EAE7E !important;
  transition: 200ms ease !important;
 }
 .item_buttons > .btn,
@@ -1031,7 +1031,7 @@ div.kse-dropdown > .dropdown-menu,
  padding-top: 4px !important;
  background-color: transparent;
  border: 0px solid transparent;
- border-bottom: 2px solid #add6bb;
+ border-bottom: 2px solid #5EAE7E;
  border-radius: 0px;
  transition: none;
 }
@@ -1135,7 +1135,7 @@ div.dynamic-buttons > button,
 .dropdown-header {
  font-family: sans-serif !important;
  font-size: 11.5pt !important;
- color: #add6bb !important;
+ color: #5EAE7E !important;
  border-bottom: none !important;
  padding: 0px !important;
  margin: 6px 6px 0px !important;
@@ -1409,7 +1409,7 @@ select.form-control.select-xs {
  border: 2px solid #f3f3f3 !important;
 }
 .form-control:focus {
- border-color: #add6bb;
+ border-color: #5EAE7E;
  outline: 2px solid rgba(240,147,43,.50);
  -webkit-box-shadow: none;
 }
@@ -1429,7 +1429,7 @@ select.form-control.select-xs {
  border: 2px solid #dedede !important;
 }
 [dir="ltr"] #find-and-replace .input-group-btn + .form-control:focus {
- border-color: #add6bb;
+ border-color: #5EAE7E;
  outline: 2px solid rgba(240,147,43,.50);
  -webkit-box-shadow: none;
  box-shadow: none;
@@ -1574,7 +1574,7 @@ box-shadow: 0 2px 2px 0 rgba(0, 0, 0, 0.14),
 }
 
 div.cell.code_cell.selected .input {
- border-left: 5px solid #add6bb !important;
+ border-left: 5px solid #5EAE7E !important;
  border-radius: 3px;
 }
 .edit_mode div.cell.code_cell.selected .input {
@@ -1600,7 +1600,7 @@ div.cell.selected.jupyter-soft-selected .input {
  border-left: 5px solid #f8f8f8 !important;
 }
 div.cell.selected.jupyter-soft-selected {
- border-left-color: #add6bb;
+ border-left-color: #5EAE7E;
  border-color: #ffffff;
  padding-left: 7px;
  border-radius: 6px;
@@ -1707,12 +1707,12 @@ div.code_cell:hover div.input .run_this_cell {
 div.cell.code_cell.rendered.selected .run_this_cell:hover {
  background-color: #e3e3e3;
  background: #e3e3e3;
- color: #add6bb !important;
+ color: #5EAE7E !important;
 }
 div.cell.code_cell.rendered.unselected .run_this_cell:hover {
  background-color: #e3e3e3;
  background: #e3e3e3;
- color: #add6bb !important;
+ color: #5EAE7E !important;
 }
 i.fa-step-forward.fa {
  display: inline-block;
@@ -2264,7 +2264,7 @@ div.widget-label {
 .rendered_html :link {
  font-family: sans-serif;
  font-size: 100%;
- color: #add6bb;
+ color: #5EAE7E;
  text-decoration: underline;
 }
 .rendered_html :visited,
@@ -2527,7 +2527,7 @@ div.collapsible_headings_toggle {
  color: rgba(180,180,180,.30) !important;
 }
 div.collapsible_headings_toggle:hover {
- color: #add6bb !important;
+ color: #5EAE7E !important;
 }
 .collapsible_headings_toggle .h1,
 .collapsible_headings_toggle .h2,
@@ -2603,7 +2603,7 @@ div.collapsible_headings_toggle .fa-caret-right:before {
  font-size: 11pt !important;
 }
 #toc-wrapper .toc-item-num {
- color: #add6bb !important;
+ color: #5EAE7E !important;
  font-size: 11pt !important;
 }
 input.raw_input {
@@ -2761,13 +2761,13 @@ body > div.modal.cmd-palette.in > div {
 }
 .typeahead-container strong {
  font-weight: bolder;
- color: #add6bb;
+ color: #5EAE7E;
 }
 #find-and-replace #replace-preview .match,
 #find-and-replace #replace-preview .insert {
  color: #ffffff;
- background-color: #add6bb;
- border-color: #add6bb;
+ background-color: #5EAE7E;
+ border-color: #5EAE7E;
  border-style: solid;
  border-width: 1px;
  border-radius: 0px;
@@ -2786,7 +2786,7 @@ body > div.modal.cmd-palette.in > div {
  font-family: 'FontAwesome' !important;
  content: '\f00c' !important;
  position: absolute !important;
- color: #add6bb !important;
+ color: #5EAE7E !important;
  left: 0px !important;
  top: 13px !important;
  font-size: 12px !important;
@@ -2859,7 +2859,7 @@ div#short-key-bindings-intro.well,
  overflow-y: auto;
 }
 .terminal .xterm-color-0 {
- color: #add6bb;
+ color: #5EAE7E;
 }
 .terminal .xterm-color-1 {
  color: #de143d;
@@ -2898,11 +2898,11 @@ div#short-key-bindings-intro.well,
  background-color: #f8f8f8;
 }
 .terminal:not(.xterm-cursor-style-underline):not(.xterm-cursor-style-bar) .terminal-cursor {
- background-color: #add6bb;
+ background-color: #5EAE7E;
  color: #f8f8f8;
 }
 .terminal:not(.focus) .terminal-cursor {
- outline: 1px solid #add6bb;
+ outline: 1px solid #5EAE7E;
  outline-offset: -1px;
 }
 .celltoolbar {
@@ -2953,9 +2953,9 @@ div#pager pre {
 div#pager .ui-resizable-handle {
  top: 0px;
  height: 8px;
- background: #add6bb !important;
- border-top: 1px solid #add6bb;
- border-bottom: 1px solid #add6bb;
+ background: #5EAE7E !important;
+ border-top: 1px solid #5EAE7E;
+ border-bottom: 1px solid #5EAE7E;
 }
 div.CodeMirror,
 div.CodeMirror pre {
@@ -3300,7 +3300,7 @@ span.save_widget span.filename {
  margin-left: 8px;
  height: initial;
  font-size: 22px;
- color: #add6bb;
+ color: #5EAE7E;
  background-color: #f8f8f8;
 }
 span.save_widget span.filename:hover {
