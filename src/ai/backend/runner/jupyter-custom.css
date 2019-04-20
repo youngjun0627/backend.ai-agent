@@ -37,9 +37,24 @@
     cursor: pointer;
     margin: 0 0.29em;
     line-height: inherit !important;
+    border-radius: 3px;
+    vertical-align: middle;   
+}
+#select-all {
+    margin-top: 6px;
+}
+/* File list */
+.nav-tabs {
 }
 
-/* File list */
+.nav-tabs li {
+    height: 100%;
+    transform: translateZ(0);
+      -webkit-transform: translateZ(0);
+    transition: opacity 0.1s cubic-bezier(0.4, 0.0, 1, 1);
+}
+
+
 .list_container {
     box-shadow: 0 2px 2px 0 rgba(0, 0, 0, 0.14),
         0 1px 5px 0 rgba(0, 0, 0, 0.12),
