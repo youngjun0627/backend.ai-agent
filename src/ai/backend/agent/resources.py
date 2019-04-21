@@ -198,7 +198,9 @@ class KernelResourceSpec:
                 device_type = slot_type.split('.')[0]
                 per_device_alloc = {}
                 for entry in val.split(','):
-                    dev_id, alloc = entry.split(':')
+                    dev_id, _, alloc = entry.partition(':')
+                    if not dev_id or not alloc:
+                        continue
                     try:
                         if known_slot_types[slot_type] == 'bytes':
                             value = BinarySize.from_str(alloc)
