@@ -2,7 +2,7 @@ import asyncio
 import base64
 import functools
 import hashlib
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 import logging, logging.config
 import os, os.path
 from pathlib import Path
@@ -72,6 +72,7 @@ from .utils import (
     current_loop, update_nested_dict, get_krunner_image_ref,
     host_pid_to_container_pid,
     container_pid_to_host_pid,
+    fetch_local_ipaddrs,
 )
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 
@@ -1142,6 +1143,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             exposed_ports.append(2003)
         log.debug('exposed ports: {!r}', exposed_ports)
 
+        subnet = await self.etcd.get('config/network/subnet')
+        if subnet is None:
+            container_external_ip = '0.0.0.0'
+        else:
+            subnet = ip_network(subnet)
+            if subnet.prefixlen == 0:
+                container_external_ip = '0.0.0.0'
+            else:
+                local_ipaddrs = [*fetch_local_ipaddrs(subnet)]
+                if local_ipaddrs:
+                    container_external_ip = str(local_ipaddrs[0])
+                else:
+                    container_external_ip = '0.0.0.0'
+
         if len(exposed_ports) > len(self.port_pool):
             raise RuntimeError('Container ports are not sufficiently available.')
         host_ports = []
@@ -1183,7 +1198,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'VolumesFrom': [f'kernel-env.{kernel_id}'],
                 'Binds': binds,
                 'PortBindings': {
-                    f'{eport}/tcp': [{'HostPort': str(hport)}]
+                    f'{eport}/tcp': [{'HostPort': str(hport),
+                                      'HostIp': container_external_ip}]
                     for eport, hport in zip(exposed_ports, host_ports)
                 },
                 'PublishAllPorts': False,  # we manage port mapping manually!
