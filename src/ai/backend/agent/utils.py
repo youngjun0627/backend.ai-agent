@@ -1,10 +1,15 @@
 import asyncio
+import ipaddress
 from pathlib import Path
-from typing import MutableMapping, Sequence
+from typing import Iterable, MutableMapping, Sequence, Union
 
+import netifaces
 from packaging import version
 
 from . import __version__ as VERSION
+
+IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 
 
 def update_nested_dict(dest, additions):
@@ -60,3 +65,16 @@ async def host_pid_to_container_pid(container_id, host_pid):
 async def container_pid_to_host_pid(container_id, container_pid):
     # TODO: implement
     return -1
+
+
+def fetch_local_ipaddrs(cidr: IPNetwork) -> Iterable[IPAddress]:
+    ifnames = netifaces.interfaces()
+    proto = netifaces.AF_INET if cidr.version == 4 else netifaces.AF_INET6
+    for ifname in ifnames:
+        addrs = netifaces.ifaddresses(ifname).get(proto, None)
+        if addrs is None:
+            continue
+        for entry in addrs:
+            addr = ipaddress.ip_address(entry['addr'])
+            if addr in cidr:
+                yield addr
