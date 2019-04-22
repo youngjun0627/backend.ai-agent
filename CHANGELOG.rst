@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.03.1 (2018-04-21)
+--------------------
+
+- Fix handling of empty resource allocation when rescanning running containers.
+  (The bug may happen when the CUDA plugin is installed in the nodes that do not have
+  CUDA-capable GPUs.)
+
 19.03.0 (2018-04-10)
 --------------------
 
