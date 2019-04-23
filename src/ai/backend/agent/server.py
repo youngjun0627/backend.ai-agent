@@ -213,6 +213,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         'hb_timer', 'clean_timer',
         'stats_monitor', 'error_monitor',
         'restarting_kernels', 'blocking_cleans',
+        'agent_sock_task',
     )
 
     def __init__(self, config, loop=None):
@@ -244,6 +245,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.stat_type = get_preferred_stat_type()
         self.live_stat = None
         self.ls_timer = None
+        self.agent_sock_task = None
 
         self.port_pool = set(range(
             config.container_port_range[0],
