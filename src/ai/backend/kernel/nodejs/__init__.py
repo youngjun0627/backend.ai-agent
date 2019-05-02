@@ -56,4 +56,9 @@ class Runner(BaseRunner):
         pass
 
     async def start_service(self, service_info):
-        return None, {}
+        print(service_info['name'])
+        if service_info['name'] == 'node':
+            return [
+                self.runtime_path, '-m', 'node',
+                ], {}
+
