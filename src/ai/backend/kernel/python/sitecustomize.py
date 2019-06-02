@@ -40,5 +40,5 @@ else:
         finally:
             sock.close()
         return userdata.decode()
-    builtins._raw_input = raw_input
+    builtins._raw_input = raw_input  # noqa
     builtins.raw_input = _raw_input

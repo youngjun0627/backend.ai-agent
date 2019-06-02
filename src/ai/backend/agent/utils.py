@@ -1,8 +1,10 @@
 import asyncio
+from decimal import Decimal
 import ipaddress
 from pathlib import Path
 from typing import Iterable, MutableMapping, Sequence, Union
 
+from aiodocker.docker import DockerContainer
 import netifaces
 from packaging import version
 
@@ -33,11 +35,39 @@ else:
     current_loop = asyncio.get_event_loop
 
 
+def numeric_list(s):
+    return [int(p) for p in s.split()]
+
+
+def remove_exponent(num: Decimal):
+    return num.quantize(Decimal(1)) if num == num.to_integral() else num.normalize()
+
+
+def read_sysfs(path, type_=int, default_val=0):
+    return type_(Path(path).read_text().strip())
+
+
 def get_krunner_image_ref(distro):
     v = version.parse(VERSION)
     if v.is_devrelease or v.is_prerelease:
         return f'lablup/backendai-krunner-env:dev-{distro}'
     return f'lablup/backendai-krunner-env:{VERSION}-{distro}'
+
+
+async def get_kernel_id_from_container(val):
+    if isinstance(val, DockerContainer):
+        if 'Name' not in val._container:
+            await val.show()
+        name = val['Name']
+    elif isinstance(val, str):
+        name = val
+    name = name.lstrip('/')
+    if not name.startswith('kernel.'):
+        return None
+    try:
+        return name.rsplit('.', 2)[-1]
+    except (IndexError, ValueError):
+        return None
 
 
 async def host_pid_to_container_pid(container_id, host_pid):

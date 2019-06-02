@@ -1,17 +1,31 @@
+import asyncio
+from decimal import Decimal
 import logging
+import os
 from pathlib import Path
+import platform
 from typing import Any, Collection, Mapping, Sequence
 
+import aiohttp
+from aiodocker.docker import DockerContainer
+from aiodocker.exceptions import DockerError
+import psutil
+
 from ai.backend.common.logging import BraceStyleAdapter
+from ai.backend.common.utils import nmget
 from .resources import (
     AbstractComputeDevice,
     AbstractComputePlugin,
     DiscretePropertyAllocMap,
     get_resource_spec_from_container,
 )
+from . import __version__
+from .stats import (
+    StatContext, NodeMeasurement, ContainerMeasurement,
+    StatModes, MetricTypes, Measurement,
+)
+from .utils import read_sysfs, current_loop
 from .vendor.linux import libnuma
-
-import psutil
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.intrinsic'))
 
@@ -23,6 +37,10 @@ class CPUDevice(AbstractComputeDevice):
 
 
 class CPUPlugin(AbstractComputePlugin):
+    '''
+    Represents the CPU.
+    '''
+
     key = 'cpu'
     slot_types = [
         ('cpu', 'count')
@@ -48,6 +66,99 @@ class CPUPlugin(AbstractComputePlugin):
         return {
             'cpu': sum(dev.processing_units for dev in devices),
         }
+
+    @classmethod
+    def get_version(cls) -> str:
+        return __version__
+
+    @classmethod
+    async def extra_info(cls) -> Mapping[str, str]:
+        return {
+            'agent_version': __version__,
+            'machine': platform.machine(),
+            'os_type': platform.system(),
+        }
+
+    @classmethod
+    async def gather_node_measures(cls, ctx: StatContext) -> Sequence[NodeMeasurement]:
+        _cstat = psutil.cpu_times(True)
+        q = Decimal('0.000')
+        total_cpu_used = sum((Decimal(c.user + c.system) * 1000).quantize(q) for c in _cstat)
+        now, interval = ctx.update_timestamp('cpu-node')
+        interval = Decimal(interval * 1000).quantize(q)
+
+        return [
+            NodeMeasurement(
+                'cpu_util', MetricTypes.UTILIZATION,
+                unit_hint='msec',
+                current_hook=lambda metric: metric.stats.diff,
+                per_node=Measurement(total_cpu_used, interval),
+                per_device={str(idx): Measurement((Decimal(c.user + c.system) * 1000).quantize(q),
+                                                  interval)
+                            for idx, c in enumerate(_cstat)},
+            ),
+        ]
+
+    @classmethod
+    async def gather_container_measures(cls, ctx: StatContext, container_ids: Sequence[str]) \
+            -> Sequence[ContainerMeasurement]:
+
+        async def sysfs_impl(container_id):
+            cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
+            try:
+                cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage') / 1e6
+            except IOError as e:
+                log.warning('cannot read stats: sysfs unreadable for container {0}\n{1!r}',
+                            container_id[:7], e)
+                return None
+            return cpu_used
+
+        async def api_impl(container_id):
+            try:
+                container = DockerContainer(ctx.agent.docker, id=container_id)
+                ret = await container.stats(stream=False)  # TODO: cache
+            except (DockerError, aiohttp.ClientError):
+                short_cid = container._id[:7]
+                log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')
+                return None
+            else:
+                # API returned successfully but actually the result may be empty!
+                if ret is None:
+                    return None
+                if ret['preread'].startswith('0001-01-01'):
+                    return None
+            cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
+            return cpu_used
+
+        if ctx.mode == StatModes.CGROUP:
+            impl = sysfs_impl
+        elif ctx.mode == StatModes.API:
+            impl = api_impl
+
+        q = Decimal('0.000')
+        per_container_cpu_used = {}
+        tasks = []
+        for cid in container_ids:
+            tasks.append(asyncio.ensure_future(impl(cid)))
+        results = await asyncio.gather(*tasks)
+        for cid, cpu_used in zip(container_ids, results):
+            if cpu_used is None:
+                continue
+            per_container_cpu_used[cid] = Measurement(Decimal(cpu_used).quantize(q))
+        return [
+            ContainerMeasurement(
+                'cpu_util', MetricTypes.UTILIZATION,
+                unit_hint='percent',
+                current_hook=lambda metric: metric.stats.diff,
+                stats_filter={'avg', 'max'},
+                per_container=per_container_cpu_used,
+            ),
+            ContainerMeasurement(
+                'cpu_used', MetricTypes.USAGE,
+                unit_hint='msec',
+                per_container=per_container_cpu_used.copy(),
+            ),
+        ]
 
     @classmethod
     async def create_alloc_map(cls) -> Mapping[str, str]:
@@ -94,6 +205,13 @@ class MemoryDevice(AbstractComputeDevice):
 
 
 class MemoryPlugin(AbstractComputePlugin):
+    '''
+    Represents the main memory.
+
+    When collecting statistics, it also measures network and I/O usage
+    in addition to the memory usage.
+    '''
+
     key = 'mem'
     slot_types = [
         ('mem', 'bytes')
@@ -117,6 +235,212 @@ class MemoryPlugin(AbstractComputePlugin):
         return {
             'mem': sum(dev.memory_size for dev in devices),
         }
+
+    @classmethod
+    def get_version(cls) -> str:
+        return __version__
+
+    @classmethod
+    async def extra_info(cls) -> Mapping[str, str]:
+        return {}
+
+    @classmethod
+    async def gather_node_measures(cls, ctx: StatContext) -> Sequence[NodeMeasurement]:
+        _mstat = psutil.virtual_memory()
+        total_mem_used_bytes = Decimal(_mstat.total - _mstat.available)
+        total_mem_capacity_bytes = Decimal(_mstat.total)
+        net_dev_stats = Path('/proc/net/dev').read_text()
+
+        def get_disk_stat():
+            pruned_disk_types = frozenset(['squashfs', 'vfat', 'tmpfs'])
+            total_disk_usage = Decimal(0)
+            total_disk_capacity = Decimal(0)
+            per_disk_stat = {}
+            for disk_info in psutil.disk_partitions():
+                if disk_info.fstype not in pruned_disk_types:
+                    dstat = os.statvfs(disk_info.mountpoint)
+                    disk_usage = Decimal(dstat.f_frsize * (dstat.f_blocks - dstat.f_bavail))
+                    disk_capacity = Decimal(dstat.f_frsize * dstat.f_blocks)
+                    per_disk_stat[disk_info.device] = Measurement(disk_usage, disk_capacity)
+                    total_disk_usage += disk_usage
+                    total_disk_capacity += disk_capacity
+            return total_disk_usage, total_disk_capacity, per_disk_stat
+
+        loop = current_loop()
+        total_disk_usage, total_disk_capacity, per_disk_stat = \
+            await loop.run_in_executor(None, get_disk_stat)
+        # example data:
+        #   Inter-|   Receive                                                |  Transmit                                                  # noqa: E501
+        #    face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed    # noqa: E501
+        #     eth0:     1296     16    0    0    0     0          0         0      816      10    0    0    0     0       0          0    # noqa: E501
+        #       lo:        0      0    0    0    0     0          0         0        0       0    0    0    0     0       0          0    # noqa: E501
+        net_rx_bytes = 0
+        net_tx_bytes = 0
+        for line in net_dev_stats.splitlines():
+            if '|' in line:
+                continue
+            data = line.strip().split()
+            if data[0].startswith('eth') or data[0].startswith('enp') or data[0].startswith('ib'):
+                net_rx_bytes += int(data[1])
+                net_tx_bytes += int(data[9])
+        return [
+            NodeMeasurement(
+                'mem', MetricTypes.USAGE,
+                unit_hint='bytes',
+                stats_filter={'max'},
+                per_node=Measurement(total_mem_used_bytes, total_mem_capacity_bytes),
+                per_device={'root': Measurement(total_mem_used_bytes, total_mem_capacity_bytes)},
+            ),
+            NodeMeasurement(
+                'disk', MetricTypes.USAGE,
+                unit_hint='bytes',
+                per_node=Measurement(total_disk_usage, total_disk_capacity),
+                per_device=per_disk_stat,
+            ),
+            NodeMeasurement(
+                'net_rx', MetricTypes.RATE,
+                unit_hint='bps',
+                current_hook=lambda metric: metric.stats.rate,
+                per_node=Measurement(Decimal(net_rx_bytes)),
+                per_device={'node': Measurement(Decimal(net_rx_bytes))},
+            ),
+            NodeMeasurement(
+                'net_tx', MetricTypes.RATE,
+                unit_hint='bps',
+                current_hook=lambda metric: metric.stats.rate,
+                per_node=Measurement(Decimal(net_tx_bytes)),
+                per_device={'node': Measurement(Decimal(net_tx_bytes))},
+            ),
+        ]
+
+    @classmethod
+    async def gather_container_measures(cls, ctx: StatContext, container_ids: Sequence[str]) \
+            -> Sequence[ContainerMeasurement]:
+
+        def get_scratch_size(container_id: str) -> int:
+            for kernel_id, info in ctx.agent.container_registry.items():
+                if info['container_id'] == container_id:
+                    break
+            else:
+                return 0
+            work_dir = ctx.agent.config.scratch_root / kernel_id / 'work'
+            total_size = 0
+            for path in work_dir.rglob('*'):
+                if path.is_symlink():
+                    total_size += path.lstat().st_size
+                elif path.is_file():
+                    total_size += path.stat().st_size
+            return total_size
+
+        async def sysfs_impl(container_id):
+            mem_prefix = f'/sys/fs/cgroup/memory/docker/{container_id}/'
+            io_prefix = f'/sys/fs/cgroup/blkio/docker/{container_id}/'
+            try:
+                mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes')
+                io_stats = Path(io_prefix + 'blkio.throttle.io_service_bytes').read_text()
+                # example data:
+                #   8:0 Read 13918208
+                #   8:0 Write 0
+                #   8:0 Sync 0
+                #   8:0 Async 13918208
+                #   8:0 Total 13918208
+                #   Total 13918208
+                io_read_bytes = 0
+                io_write_bytes = 0
+                for line in io_stats.splitlines():
+                    if line.startswith('Total '):
+                        continue
+                    dev, op, nbytes = line.strip().split()
+                    if op == 'Read':
+                        io_read_bytes += int(nbytes)
+                    elif op == 'Write':
+                        io_write_bytes += int(nbytes)
+            except IOError as e:
+                log.warning('cannot read stats: sysfs unreadable for container {0}\n{1!r}',
+                            container_id[:7], e)
+                return None
+            loop = current_loop()
+            scratch_sz = await loop.run_in_executor(
+                None, get_scratch_size, container_id)
+            return mem_cur_bytes, io_read_bytes, io_write_bytes, scratch_sz
+
+        async def api_impl(container_id):
+            try:
+                container = DockerContainer(ctx.agent.docker, id=container_id)
+                ret = await container.stats(stream=False)  # TODO: cache
+            except (DockerError, aiohttp.ClientError):
+                short_cid = container._id[:7]
+                log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')
+                return None
+            else:
+                # API returned successfully but actually the result may be empty!
+                if ret is None:
+                    return None
+                if ret['preread'].startswith('0001-01-01'):
+                    return None
+            mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
+            io_read_bytes = 0
+            io_write_bytes = 0
+            for item in nmget(ret, 'blkio_stats.io_service_bytes_recursive', []):
+                if item['op'] == 'Read':
+                    io_read_bytes += item['value']
+                elif item['op'] == 'Write':
+                    io_write_bytes += item['value']
+            loop = current_loop()
+            scratch_sz = await loop.run_in_executor(
+                None, get_scratch_size, container_id)
+            return mem_cur_bytes, io_read_bytes, io_write_bytes, scratch_sz
+
+        if ctx.mode == StatModes.CGROUP:
+            impl = sysfs_impl
+        elif ctx.mode == StatModes.API:
+            impl = api_impl
+
+        per_container_mem_used_bytes = {}
+        per_container_io_read_bytes = {}
+        per_container_io_write_bytes = {}
+        per_container_io_scratch_size = {}
+        tasks = []
+        for cid in container_ids:
+            tasks.append(asyncio.ensure_future(impl(cid)))
+        results = await asyncio.gather(*tasks)
+        for cid, result in zip(container_ids, results):
+            if result is None:
+                continue
+            per_container_mem_used_bytes[cid] = Measurement(
+                Decimal(result[0]))
+            per_container_io_read_bytes[cid] = Measurement(
+                Decimal(result[1]))
+            per_container_io_write_bytes[cid] = Measurement(
+                Decimal(result[2]))
+            per_container_io_scratch_size[cid] = Measurement(
+                Decimal(result[3]))
+        return [
+            ContainerMeasurement(
+                'mem', MetricTypes.USAGE,
+                unit_hint='bytes',
+                stats_filter={'max'},
+                per_container=per_container_mem_used_bytes,
+            ),
+            ContainerMeasurement(
+                'io_read', MetricTypes.USAGE,
+                unit_hint='bytes',
+                stats_filter={'rate'},
+                per_container=per_container_io_read_bytes,
+            ),
+            ContainerMeasurement(
+                'io_write', MetricTypes.USAGE,
+                unit_hint='bytes',
+                stats_filter={'rate'},
+                per_container=per_container_io_write_bytes,
+            ),
+            ContainerMeasurement(
+                'io_scratch_size', MetricTypes.USAGE,
+                unit_hint='bytes',
+                stats_filter={'max'},
+                per_container=per_container_io_scratch_size,
+            ),
+        ]
 
     @classmethod
     async def create_alloc_map(cls) -> Mapping[str, str]:

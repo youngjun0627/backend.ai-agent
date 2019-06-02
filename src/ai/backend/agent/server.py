@@ -52,24 +52,22 @@ from . import __version__ as VERSION
 from .exception import InitializationError, InsufficientResource
 from .files import scandir, upload_output_files_to_s3
 from .stats import (
-    get_preferred_stat_type, collect_agent_live_stat,
-    spawn_stat_collector, StatCollectorState,
-    AgentLiveStat
+    StatContext,
+    spawn_stat_synchronizer, StatSyncState,
 )
 from .resources import (
-    known_slot_types,
-    compute_device_types,
+    detect_resources,
     AbstractComputeDevice,
     AbstractComputePlugin,
     KernelResourceSpec,
     Mount,
     bitmask2set,
     AbstractAllocMap,
-    detect_slots,
 )
 from .kernel import KernelRunner, KernelFeatures
 from .utils import (
     current_loop, update_nested_dict, get_krunner_image_ref,
+    get_kernel_id_from_container,
     host_pid_to_container_pid,
     container_pid_to_host_pid,
     fetch_local_ipaddrs,
@@ -79,7 +77,6 @@ from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
 
 max_upload_size = 100 * 1024 * 1024  # 100 MB
-stat_cache_lifespan = 30.0  # 30 secs
 ipc_base_path = Path('/tmp/backend.ai/ipc')
 
 
@@ -98,7 +95,7 @@ class RestartTracker:
 
 
 @attr.s(auto_attribs=True, slots=True)
-class ComputerSet:
+class ComputerContext:
     klass: AbstractComputePlugin
     devices: Collection[AbstractComputeDevice]
     alloc_map: AbstractAllocMap
@@ -150,22 +147,6 @@ async def get_env_cid(container: DockerContainer):
     return None, None
 
 
-async def get_kernel_id_from_container(val):
-    if isinstance(val, DockerContainer):
-        if 'Name' not in val._container:
-            await val.show()
-        name = val['Name']
-    elif isinstance(val, str):
-        name = val
-    name = name.lstrip('/')
-    if not name.startswith('kernel.'):
-        return None
-    try:
-        return name.rsplit('.', 2)[-1]
-    except (IndexError, ValueError):
-        return None
-
-
 def parse_service_port(s: str) -> dict:
     try:
         name, protocol, port = s.split(':')
@@ -206,11 +187,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     __slots__ = (
         'loop',
         'docker', 'container_registry', 'container_cpu_map',
+        'agent_sockpath', 'agent_sock_task',
         'redis_stat_pool',
         'etcd', 'config', 'slots', 'images',
         'rpc_server', 'event_sock',
-        'monitor_fetch_task', 'monitor_handle_task', 'stat_collector_task',
-        'stat_type', 'live_stat', 'ls_timer',
+        'monitor_fetch_task', 'monitor_handle_task',
+        'stat_ctx', 'live_stat_timer',
+        'stat_sync_states', 'stat_sync_task',
         'hb_timer', 'clean_timer',
         'stats_monitor', 'error_monitor',
         'restarting_kernels', 'blocking_cleans',
@@ -230,7 +213,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.restarting_kernels = {}
         self.blocking_cleans = {}
 
-        self.computers: Mapping[str, ComputerSet] = {}
+        self.computers: Mapping[str, ComputerContext] = {}
         self.images: Mapping[str, str] = {}  # repoTag -> digest
 
         self.rpc_server = None
@@ -240,18 +223,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.monitor_handle_task = None
         self.hb_timer = None
         self.clean_timer = None
-        self.stat_collector_task = None
+        self.stat_sync_task = None
 
-        self.stat_type = get_preferred_stat_type()
-        self.live_stat = None
-        self.ls_timer = None
+        self.stat_ctx = StatContext(self)
+        self.live_stat_timer = None
 
         self.port_pool = set(range(
             config.container_port_range[0],
             config.container_port_range[1] + 1,
         ))
 
-        self.stats_monitor = DummyStatsMonitor()
+        self.stat_sync_states_monitor = DummyStatsMonitor()
         self.error_monitor = DummyErrorMonitor()
 
         self.runner_lock = asyncio.Lock()
@@ -273,7 +255,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     break
         log.info('detecting the manager: OK ({0})', manager_id)
 
-    async def read_etcd_configs(self):
+    async def read_agent_config(self):
         self.config.redis_addr = host_port_pair(await self.etcd.get('nodes/redis'))
         self.config.redis_password = await self.etcd.get('nodes/redis/password')
         self.config.event_addr = host_port_pair(
@@ -371,9 +353,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                                       'self-terminated', None)
 
         log.info('starting with resource allocations')
-        for computer_name, computer_set in self.computers.items():
+        for computer_name, computer_ctx in self.computers.items():
             log.info('{}: {!r}', computer_name,
-                     dict(computer_set.alloc_map.allocations))
+                     dict(computer_ctx.alloc_map.allocations))
 
     async def scan_images(self, interval):
         all_images = await self.docker.images.list()
@@ -437,38 +419,37 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if runner is not None:
             await runner.close()
 
-    async def collect_stats(self):
-        stats_sock = self.zmq_ctx.socket(zmq.PULL)
-        stats_sock.setsockopt(zmq.LINGER, 1000)
-        stats_sock.bind('ipc://' + str(self.stats_sockpath))
-        log.info('collecting stats at port {}', self.stats_sockpath)
+    async def sync_container_stats(self):
+        stat_sync_sock = self.zmq_ctx.socket(zmq.REP)
+        stat_sync_sock.setsockopt(zmq.LINGER, 1000)
+        stat_sync_sock.bind('ipc://' + str(self.stat_sync_sockpath))
+        log.info('opened stat-sync socket at {}', self.stat_sync_sockpath)
         try:
-            recv = functools.partial(stats_sock.recv_serialized,
-                                     lambda vs: [msgpack.unpackb(v) for v in vs])
+            recv = functools.partial(stat_sync_sock.recv_serialized,
+                                     lambda frames: [*map(msgpack.unpackb, frames)])
+            send = functools.partial(stat_sync_sock.send_serialized,
+                                     serialize=lambda msgs: [*map(msgpack.packb, msgs)])
             async for msg in aiotools.aiter(lambda: recv(), None):
                 cid = msg[0]['cid']
                 status = msg[0]['status']
-                if cid not in self.stats:
-                    # If the agent has restarted, the events dict may be empty.
+                if cid not in self.stat_sync_states:
+                    # If the agent has restarted, the state-tracking dict may be empty.
                     container = self.docker.containers.container(cid)
                     kernel_id = await get_kernel_id_from_container(container)
-                    self.stats[cid] = StatCollectorState(kernel_id)
-                self.stats[cid].last_stat = msg[0]['data']
-                kernel_id = self.stats[cid].kernel_id
-                pipe = self.redis_stat_pool.pipeline()
-                pipe.hmset_dict(kernel_id, msg[0]['data'])
-                pipe.expire(kernel_id, stat_cache_lifespan)
-                await pipe.execute()
+                    self.stat_sync_states[cid] = StatSyncState(kernel_id)
+                cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
+                await send([{'status': 'ok'}])
                 if status == 'terminated':
-                    self.stats[cid].terminated.set()
+                    self.stat_sync_states[cid].last_stat = cstat
+                    self.stat_sync_states[cid].terminated.set()
         except asyncio.CancelledError:
             pass
         finally:
-            stats_sock.close()
-            self.stats_sockpath.unlink()
+            stat_sync_sock.close()
+            self.stat_sync_sockpath.unlink()
 
-    async def collect_live_stat(self, interval):
-        await collect_agent_live_stat(self, self.stat_type)
+    async def collect_node_stat(self, interval):
+        await asyncio.shield(self.stat_ctx.collect_node_stat())
 
     async def init(self, *, skip_detect_manager=False):
         ipc_base_path.mkdir(parents=True, exist_ok=True)
@@ -490,19 +471,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                               self.config.namespace,
                               credentials=etcd_credentials)
 
-        # detect_slots() loads accelerator plugins and updates compute_device_types
-        self.slots = await detect_slots(
-            self.etcd,
-            self.config.limit_cpus,
-            self.config.limit_gpus)
-        for name, klass in compute_device_types.items():
+        computers, self.slots = await detect_resources(self.etcd)
+        for name, klass in computers.items():
             devices = await klass.list_devices()
             alloc_map = await klass.create_alloc_map()
-            self.computers[name] = ComputerSet(klass, devices, alloc_map)
+            self.computers[name] = ComputerContext(klass, devices, alloc_map)
 
         if not skip_detect_manager:
             await self.detect_manager()
-        await self.read_etcd_configs()
+        await self.read_agent_config()
         await self.update_status('starting')
         # scan_images task should be done before heartbeat,
         # so call it here although we spawn a scheduler
@@ -529,21 +506,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.scan_images_timer = aiotools.create_timer(self.scan_images, 60.0)
 
         # Spawn stat collector task.
-        self.stats_sockpath = ipc_base_path / f'stats.{os.getpid()}.sock'
-        self.stats = dict()
-        self.stat_collector_task = self.loop.create_task(self.collect_stats())
+        self.stat_sync_sockpath = ipc_base_path / f'stats.{os.getpid()}.sock'
+        self.stat_sync_states = dict()
+        self.stat_sync_task = self.loop.create_task(self.sync_container_stats())
 
         # Start container stats collector for existing containers.
-        stat_type = get_preferred_stat_type()
         for kernel_id, info in self.container_registry.items():
             cid = info['container_id']
-            self.stats[cid] = StatCollectorState(kernel_id)
-            async with spawn_stat_collector(self.stats_sockpath, stat_type, cid):
+            self.stat_sync_states[cid] = StatSyncState(kernel_id)
+            async with spawn_stat_synchronizer(self.stat_sync_sockpath, self.stat_ctx.mode, cid):
                 pass
 
         # Start collecting agent live stat.
-        self.live_stat = AgentLiveStat()
-        self.ls_timer = aiotools.create_timer(self.collect_live_stat, 2.0)
+        self.live_stat_timer = aiotools.create_timer(self.collect_node_stat, 2.0)
 
         # Spawn docker monitoring tasks.
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
@@ -589,9 +564,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         if self.hb_timer is not None:
             self.hb_timer.cancel()
             await self.hb_timer
-        if self.ls_timer is not None:
-            self.ls_timer.cancel()
-            await self.ls_timer
+        if self.live_stat_timer is not None:
+            self.live_stat_timer.cancel()
+            await self.live_stat_timer
         if self.clean_timer is not None:
             self.clean_timer.cancel()
             await self.clean_timer
@@ -609,9 +584,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.docker.close()
 
         # Stop stat collector task.
-        if self.stat_collector_task is not None:
-            self.stat_collector_task.cancel()
-            await self.stat_collector_task
+        if self.stat_sync_task is not None:
+            self.stat_sync_task.cancel()
+            await self.stat_sync_task
 
         if self.redis_stat_pool is not None:
             self.redis_stat_pool.close()
@@ -766,7 +741,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     log.warning('timeout detected while restarting kernel {0}!',
                                 kernel_id)
                     self.restarting_kernels.pop(kernel_id, None)
-                    asyncio.ensure_future(self._clean_kernel(kernel_id))
+                    asyncio.ensure_future(self.clean_kernel(kernel_id))
                     raise
                 else:
                     tracker.destroy_event.clear()
@@ -1228,16 +1203,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             with open(config_dir / 'resource.txt', 'w') as f:
                 resource_spec.write_to_file(f)
                 for dev_type, device_alloc in resource_spec.allocations.items():
-                    computer_set = self.computers[dev_type]
+                    computer_ctx = self.computers[dev_type]
                     kvpairs = \
-                        await computer_set.klass.generate_resource_data(device_alloc)
+                        await computer_ctx.klass.generate_resource_data(device_alloc)
                     for k, v in kvpairs.items():
                         f.write(f'{k}={v}\n')
 
-            stat_type = get_preferred_stat_type()
-            self.stats[cid] = StatCollectorState(kernel_id)
-            async with spawn_stat_collector(self.stats_sockpath, stat_type, cid):
+            self.stat_sync_states[cid] = StatSyncState(kernel_id)
+            async with spawn_stat_synchronizer(self.stat_sync_sockpath, self.stat_ctx.mode, cid):
                 await container.start()
+        except asyncio.CancelledError:
+            raise
         except Exception:
             # Oops, we have to restore the allocated resources!
             if sys.platform == 'linux' and self.config.scratch_in_memory:
@@ -1310,23 +1286,33 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except KeyError:
             log.warning('_destroy_kernel({0}) kernel missing (already dead?)',
                         kernel_id)
-            await self.clean_kernel(kernel_id)
-            await self.send_event('kernel_terminated',
-                                  kernel_id, 'self-terminated',
-                                  None)
-            return
+
+            async def force_cleanup():
+                await self.clean_kernel(kernel_id)
+                await self.send_event('kernel_terminated',
+                                      kernel_id, 'self-terminated',
+                                      None)
+
+            await asyncio.shield(force_cleanup())
+            return None
         container = self.docker.containers.container(cid)
         await self.clean_runner(kernel_id)
         try:
             await container.kill()
             # Collect the last-moment statistics.
-            last_stat = None
-            if cid in self.stats:
-                await self.stats[cid].terminated.wait()
-                last_stat = self.stats[cid].last_stat
-                del self.stats[cid]
+            if cid in self.stat_sync_states:
+                await self.stat_sync_states[cid].terminated.wait()
+                last_stat = self.stat_sync_states[cid].last_stat
+                del self.stat_sync_states[cid]
+                last_stat = {
+                    key: metric.to_serializable_dict()
+                    for key, metric in last_stat.items()
+                }
+                # make it client compatible with legacy
+                last_stat['version'] = 2
+                return last_stat
             # The container will be deleted in the docker monitoring coroutine.
-            return last_stat
+            return None
         except DockerError as e:
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
@@ -1577,8 +1563,8 @@ print(json.dumps(files))''' % {'path': path}
         Send my status information and available kernel images.
         '''
         res_slots = {}
-        for klass in compute_device_types.values():
-            for slot_key, slot_type in klass.slot_types:
+        for cctx in self.computers.values():
+            for slot_key, slot_type in cctx.klass.slot_types:
                 res_slots[slot_key] = (
                     slot_type,
                     str(self.slots.get(slot_key, 0)),
@@ -1588,6 +1574,14 @@ print(json.dumps(files))''' % {'path': path}
             'region': self.config.region,
             'addr': f'tcp://{self.config.agent_host}:{self.config.agent_port}',
             'resource_slots': res_slots,
+            'version': VERSION,
+            'compute_plugins': {
+                key: {
+                    'version': computer.klass.get_version(),
+                    **(await computer.klass.extra_info())
+                }
+                for key, computer in self.computers.items()
+            },
             'images': snappy.compress(msgpack.packb([
                 (repo_tag, digest) for repo_tag, digest in self.images.items()
             ])),

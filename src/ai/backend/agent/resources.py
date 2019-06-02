@@ -19,11 +19,10 @@ from ai.backend.common.types import (
 )
 from ai.backend.common.logging import BraceStyleAdapter
 from .exception import InsufficientResource
+from .stats import StatContext, NodeMeasurement, ContainerMeasurement
 
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
-
-compute_device_types = {}
 
 known_slot_types = {}
 
@@ -58,6 +57,45 @@ class AbstractComputePlugin(metaclass=ABCMeta):
         Return available slot amounts for each slot key.
         '''
         return []
+
+    @classmethod
+    @abstractmethod
+    def get_version(cls) -> str:
+        '''
+        Return the version string of the plugin.
+        '''
+        return ''
+
+    @classmethod
+    @abstractmethod
+    async def extra_info(cls) -> Mapping[str, str]:
+        '''
+        Return extra information related to this plugin,
+        such as the underlying driver version and feature flags.
+        '''
+        return {}
+
+    @classmethod
+    @abstractmethod
+    async def gather_node_measures(cls, ctx: StatContext) -> Sequence[NodeMeasurement]:
+        '''
+        Return the system-level and device-level statistic metrics.
+
+        It may return any number of metrics using different statistics key names in the
+        returning map.
+        Note that the key must not conflict with other accelerator plugins and must not
+        contain dots.
+        '''
+        return {}
+
+    @classmethod
+    @abstractmethod
+    async def gather_container_measures(cls, ctx: StatContext, container_ids: Sequence[str]) \
+            -> Sequence[ContainerMeasurement]:
+        '''
+        Return the container-level statistic metrics.
+        '''
+        return {}
 
     @classmethod
     @abstractmethod
@@ -244,6 +282,8 @@ class KernelResourceSpec:
 
 class AbstractAllocMap(metaclass=ABCMeta):
 
+    allocations: Mapping[str, Decimal]
+
     def __init__(self, *, devices: Container[AbstractComputeDevice] = None,
                  device_mask: Container[DeviceId] = None):
         self.devices = {dev.device_id: dev for dev in devices}
@@ -401,9 +441,10 @@ def bitmask2set(mask):
     return frozenset(bset)
 
 
-async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
+async def detect_resources(etcd):
     '''
-    Detect available resource slots of the system.
+    Detect available computing resource of the system.
+    It also loads the accelerator plugins.
 
     limit_cpus, limit_gpus are deprecated.
     '''
@@ -412,14 +453,17 @@ async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
 
     from .intrinsic import CPUPlugin, MemoryPlugin
 
+    compute_device_types = {}
     compute_device_types[CPUPlugin.key] = CPUPlugin
     compute_device_types[MemoryPlugin.key] = MemoryPlugin
 
-    entry_prefix = 'backendai_accelerator_v11'
+    entry_prefix = 'backendai_accelerator_v12'
     for entrypoint in pkg_resources.iter_entry_points(entry_prefix):
         log.info('loading accelerator plugin: {}', entrypoint.module_name)
         plugin = entrypoint.load()
-        accel_klass = await plugin.init(etcd)
+        plugin_config = await etcd.get_prefix_dict(f'config/plugins/{plugin.PREFIX}')
+        # TODO: scaling group-specific configs
+        accel_klass = await plugin.init(plugin_config)
         if accel_klass is None:
             # plugin init failed. skip!
             continue
@@ -441,7 +485,7 @@ async def detect_slots(etcd, limit_cpus=None, limit_gpus=None):
 
     log.info('Resource slots: {!r}', slots)
     log.info('Slot types: {!r}', known_slot_types)
-    return slots
+    return compute_device_types, slots
 
 
 async def get_resource_spec_from_container(container):

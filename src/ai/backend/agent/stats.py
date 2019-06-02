@@ -8,35 +8,35 @@ import asyncio
 import argparse
 from contextlib import closing, contextmanager
 from ctypes import CDLL, get_errno
-from dataclasses import asdict, dataclass, field
-import functools
+from decimal import Decimal
+import enum
 import logging
 import os
 from pathlib import Path
 import sys
 import time
+from typing import Callable, List, Mapping, FrozenSet, Tuple, Optional
 
-import aiohttp
-from aiodocker.docker import Docker, DockerContainer
-from aiodocker.exceptions import DockerError
+import attr
 import aiotools
 from setproctitle import setproctitle
 import zmq
 import zmq.asyncio
 
-from ai.backend.common import msgpack
-from ai.backend.common.utils import nmget
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.identity import is_containerized
-from .vendor.linux import libnuma
+from ai.backend.common import msgpack
+from .utils import (
+    numeric_list, remove_exponent,
+)
+from .types import DeviceId, KernelId, MetricKey
 
 __all__ = (
-    'ContainerStat',
-    'StatCollectorState',
+    'StatContext', 'StatModes',
+    'MetricTypes', 'NodeMeasurement', 'ContainerMeasurement', 'Measurement',
+    'StatSyncState',
     'check_cgroup_available',
-    'get_preferred_stat_type',
-    'spawn_stat_collector',
-    'numeric_list', 'read_sysfs',
+    'spawn_stat_synchronizer',
 )
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.stats'))
@@ -57,202 +57,398 @@ def check_cgroup_available():
     return (not is_containerized() and sys.platform.startswith('linux'))
 
 
-def get_preferred_stat_type():
+class StatModes(enum.Enum):
+    CGROUP = 'cgroup'
+    API = 'api'
+
+    def get_preferred_mode():
+        '''
+        Returns the most preferred statistics collector type for the host OS.
+        '''
+        if check_cgroup_available():
+            return StatModes.CGROUP
+        return StatModes.API
+
+
+class MetricTypes(enum.Enum):
+    USAGE = 0        # for instant snapshot (e.g., used memory bytes, used cpu msec)
+    RATE = 1         # for rate of increase (e.g., I/O bps)
+    UTILIZATION = 2  # for ratio of resource occupation time per measurement interval (e.g., CPU util)
+    ACCUMULATED = 3  # for accumulated value (e.g., total number of events)
+
+
+@attr.s(auto_attribs=True, slots=True)
+class Measurement:
+    value: Decimal
+    capacity: Optional[Decimal] = None
+
+
+@attr.s(auto_attribs=True, slots=True)
+class NodeMeasurement:
     '''
-    Returns the most preferred statistics collector type for the host OS.
+    Collection of per-node and per-agent statistics for a specific metric.
     '''
-    if check_cgroup_available():
-        return 'cgroup'
-    return 'api'
+    # 2-tuple of Decimals mean raw values for (usage, available)
+    # Percent values are calculated from them.
+    key: str
+    type: MetricTypes
+    per_node: Measurement
+    per_device: Mapping[DeviceId, Measurement] = attr.Factory(dict)
+    unit_hint: Optional[str] = None
+    stats_filter: FrozenSet[str] = attr.Factory(frozenset)
+    current_hook: Callable[['Metric'], Decimal] = None
 
 
-@dataclass(frozen=False)
-class ContainerStat:
-    precpu_used: int = 0
-    cpu_used: int = 0
-    precpu_system_used: int = 0
-    cpu_system_used: int = 0
-    mem_max_bytes: int = 0
-    mem_cur_bytes: int = 0
-    net_rx_bytes: int = 0
-    net_tx_bytes: int = 0
-    io_read_bytes: int = 0
-    io_write_bytes: int = 0
-    io_max_scratch_size: int = 0
-    io_cur_scratch_size: int = 0
-
-    def update(self, stat: 'ContainerStat'):
-        if stat is None:
-            return
-        self.precpu_used = self.cpu_used
-        self.cpu_used = stat.cpu_used
-        self.precpu_system_used = self.cpu_system_used
-        self.cpu_system_used = stat.cpu_system_used
-        self.mem_max_bytes = stat.mem_max_bytes
-        self.mem_cur_bytes = stat.mem_cur_bytes
-        self.net_rx_bytes = max(self.net_rx_bytes, stat.net_rx_bytes)
-        self.net_tx_bytes = max(self.net_tx_bytes, stat.net_tx_bytes)
-        self.io_read_bytes = max(self.io_read_bytes, stat.io_read_bytes)
-        self.io_write_bytes = max(self.io_write_bytes, stat.io_write_bytes)
-        self.io_max_scratch_size = max(self.io_max_scratch_size,
-                                       stat.io_cur_scratch_size)
-        self.io_cur_scratch_size = stat.io_cur_scratch_size
+@attr.s(auto_attribs=True, slots=True)
+class ContainerMeasurement:
+    '''
+    Collection of per-container statistics for a specific metric.
+    '''
+    key: str
+    type: MetricTypes
+    per_container: Mapping[str, Measurement] = attr.Factory(dict)
+    unit_hint: Optional[str] = None
+    stats_filter: FrozenSet[str] = attr.Factory(frozenset)
+    current_hook: Callable[['Metric'], Decimal] = None
 
 
-@dataclass(frozen=False)
-class StatCollectorState:
+class MovingStatistics:
+    __slots__ = (
+        '_sum', '_count',
+        '_min', '_max', '_last',
+    )
+    _sum: Decimal
+    _count: int
+    _min: Decimal
+    _max: Decimal
+    _last: List[Tuple[Decimal, float]]
+
+    def __init__(self, initial_value: Decimal = None):
+        self._last = []
+        if initial_value is None:
+            self._sum = Decimal(0)
+            self._min = Decimal('inf')
+            self._max = Decimal('-inf')
+            self._count = 0
+        else:
+            self._sum = initial_value
+            self._min = initial_value
+            self._max = initial_value
+            self._count = 1
+            point = (initial_value, time.perf_counter())
+            self._last.append(point)
+
+    def update(self, value: Decimal):
+        self._sum += value
+        self._min = min(self._min, value)
+        self._max = max(self._max, value)
+        self._count += 1
+        point = (value, time.perf_counter())
+        self._last.append(point)
+        # keep only the latest two data points
+        if len(self._last) > 2:
+            self._last.pop(0)
+
+    @property
+    def min(self) -> Decimal:
+        return self._min
+
+    @property
+    def max(self) -> Decimal:
+        return self._max
+
+    @property
+    def sum(self) -> Decimal:
+        return self._sum
+
+    @property
+    def avg(self) -> Decimal:
+        return self._sum / self._count
+
+    @property
+    def diff(self) -> Decimal:
+        if len(self._last) == 2:
+            return self._last[-1][0] - self._last[-2][0]
+        return Decimal(0)
+
+    @property
+    def rate(self) -> Decimal:
+        if len(self._last) == 2:
+            return ((self._last[-1][0] - self._last[-2][0]) /
+                    Decimal(self._last[-1][1] - self._last[-2][1]))
+        return Decimal(0)
+
+    def to_serializable_dict(self) -> Mapping[str, str]:
+        q = Decimal('0.000')
+        return {
+            'min': str(remove_exponent(self.min.quantize(q))),
+            'max': str(remove_exponent(self.max.quantize(q))),
+            'sum': str(remove_exponent(self.sum.quantize(q))),
+            'avg': str(remove_exponent(self.avg.quantize(q))),
+            'diff': str(remove_exponent(self.diff.quantize(q))),
+            'rate': str(remove_exponent(self.rate.quantize(q))),
+        }
+
+
+@attr.s(auto_attribs=True, slots=True)
+class Metric:
+    key: str
+    type: MetricTypes
+    stats: MovingStatistics
+    stats_filter: FrozenSet[str]
+    current: Decimal
+    capacity: Optional[Decimal] = None
+    unit_hint: Optional[str] = None
+    current_hook: Callable[['Metric'], Decimal] = None
+
+    def update(self, value: Measurement):
+        if value.capacity is not None:
+            self.capacity = value.capacity
+        self.stats.update(value.value)
+        self.current = value.value
+        if self.current_hook is not None:
+            self.current = self.current_hook(self)
+
+    def to_serializable_dict(self) -> Mapping[str, str]:
+        q = Decimal('0.000')
+        q_pct = Decimal('0.00')
+        return {
+            'current': str(remove_exponent(self.current.quantize(q))),
+            'capacity': (str(remove_exponent(self.capacity.quantize(q)))
+                         if self.capacity is not None else None),
+            'pct': (
+                str(remove_exponent(
+                    (Decimal(self.current) / Decimal(self.capacity) * 100).quantize(q_pct)))
+                if (self.capacity is not None and
+                    self.capacity.is_normal() and
+                    self.capacity > 0)
+                else None),
+            'unit_hint': self.unit_hint,
+            **{f'stats.{k}': v
+               for k, v in self.stats.to_serializable_dict().items()
+               if k in self.stats_filter},
+        }
+
+
+@attr.s(auto_attribs=True, slots=True)
+class StatSyncState:
     kernel_id: str
-    last_stat: ContainerStat = None
-    terminated: asyncio.Event = field(default_factory=lambda: asyncio.Event())
+    terminated: asyncio.Event = attr.Factory(asyncio.Event)
+    last_stat: Mapping[MetricKey, Metric] = None
 
 
-@dataclass(frozen=False)
-class AgentLiveStat:
-    precpu_used_sum: int = 0
-    cpu_used_sum: int = 0
-    mem_cur_bytes_sum: int = 0
-    cpu_dict: dict = field(default_factory=dict)
+class StatContext:
 
-    def update(self, stat: 'AgentLiveStat'):
-        self.precpu_used_sum = stat.precpu_used_sum
-        self.cpu_used_sum = stat.cpu_used_sum
-        self.mem_cur_bytes_sum = stat.mem_cur_bytes_sum
-        self.cpu_dict = stat.cpu_dict
+    def __init__(self, agent: object, mode: StatModes = None, *,
+                 cache_lifespan: float = 30.0):
+        self.agent = agent
+        self.mode: StatModes = mode if mode is not None else StatModes.get_preferred_mode()
+        self.cache_lifespan = cache_lifespan
 
+        self.node_metrics: Mapping[MetricKey, Metric] = {}
+        self.device_metrics: Mapping[MetricKey, Mapping[DeviceId, Metric]] = {}
+        self.kernel_metrics: Mapping[KernelId, Mapping[MetricKey, Metric]] = {}
 
-@dataclass(frozen=False)
-class PerContainerLiveStat:
-    container_id: str
-    cpu_used: int = 0
-    mem_cur_bytes: int = 0
+        self._lock = asyncio.Lock()
+        self._container_stat_api_cache = {}
+        self._timestamps = {}
 
+    def update_timestamp(self, timestamp_key: str) -> Tuple[float, float]:
+        '''
+        Update the timestamp for the given key and return a pair of the current timestamp and
+        the interval from the last update of the same key.
 
-async def collect_agent_live_stat(agent, stat_type):
-    from .server import stat_cache_lifespan
-    stat = agent.live_stat
-    container_ids = []
-    for info in agent.container_registry.items():
-        container_ids.append(info[1]['container_id'])
-    if stat_type == 'cgroup':
-        new_stat = _collect_agent_live_stats_sysfs(container_ids, stat)
-    elif stat_type == 'api':
-        containers = [DockerContainer(agent.docker, id=cid) for cid in container_ids]
-        new_stat = await _collect_agent_live_stats_api(containers, stat)
-    else:
-        log.error("stat_type is neither cgroup nor api")
-        return
-    stat.update(new_stat)
-    cpu_pct = float(stat.cpu_used_sum - stat.precpu_used_sum) / 2000.0 * 100.0
-    # cpu_used_sum(ms), interval = 2s, cpu_pct(%)
-    mem_cur_bytes = stat.mem_cur_bytes_sum
-    agent_live_info = {
-        'cpu_pct': round(cpu_pct, 2),
-        'mem_cur_bytes': mem_cur_bytes,
-    }
-    pipe = agent.redis_stat_pool.pipeline()
-    pipe.hmset_dict(agent.config.instance_id, agent_live_info)
-    pipe.expire(agent.config.instance_id, stat_cache_lifespan)
-    await pipe.execute()
+        If the last timestamp for the given key does not exist, the interval becomes "NaN".
 
+        Intended to be used by compute plugins.
+        '''
+        now = time.perf_counter()
+        last = self._timestamps.get(timestamp_key, None)
+        self._timestamps[timestamp_key] = now
+        if last is None:
+            return now, float('NaN')
+        return now, now - last
 
-def _collect_agent_live_stats_sysfs(container_ids, prev_stat):
-    precpu_used_sum = prev_stat.cpu_used_sum
-    for cid, cpu_used in prev_stat.cpu_dict.items():
-        if cid not in container_ids:
-            precpu_used_sum -= cpu_used
+    async def collect_node_stat(self):
+        '''
+        Collect the per-node, per-device, and per-container statistics.
 
-    cpu_used_sum = 0
-    mem_cur_bytes_sum = 0
-    cpu_dict = {}
-    results = [_per_container_live_stat_sysfs(cid) for cid in container_ids]
-    for _stat in results:
-        if _stat is not None:
-            cpu_used_sum += _stat.cpu_used
-            mem_cur_bytes_sum += _stat.mem_cur_bytes
-            cpu_dict[_stat.container_id] = _stat.cpu_used
+        Intended to be used by the agent.
+        '''
+        async with self._lock:
+            self._container_stat_api_cache.clear()
 
-    return AgentLiveStat(
-        precpu_used_sum,
-        cpu_used_sum,
-        mem_cur_bytes_sum,
-        cpu_dict,
-    )
+            # gather node/device metrics from compute plugins
+            _tasks = []
+            for computer in self.agent.computers.values():
+                _tasks.append(computer.klass.gather_node_measures(self))
+            for node_measures in (await asyncio.gather(*_tasks, return_exceptions=True)):
+                if isinstance(node_measures, Exception):
+                    log.error('gather_node_measures error',
+                              exc_info=node_measures)
+                    continue
+                for node_measure in node_measures:
+                    metric_key = node_measure.key
+                    # update node metric
+                    if metric_key not in self.node_metrics:
+                        self.node_metrics[metric_key] = Metric(
+                            metric_key, node_measure.type,
+                            current=node_measure.per_node.value,
+                            capacity=node_measure.per_node.capacity,
+                            unit_hint=node_measure.unit_hint,
+                            stats=MovingStatistics(node_measure.per_node.value),
+                            stats_filter=frozenset(node_measure.stats_filter),
+                            current_hook=node_measure.current_hook,
+                        )
+                    else:
+                        self.node_metrics[metric_key].update(node_measure.per_node)
+                    # update per-device metric
+                    # NOTE: device IDs are defined by each metric keys.
+                    for dev_id, measure in node_measure.per_device.items():
+                        dev_id = str(dev_id)
+                        if metric_key not in self.device_metrics:
+                            self.device_metrics[metric_key] = {}
+                        if dev_id not in self.device_metrics[metric_key]:
+                            self.device_metrics[metric_key][dev_id] = Metric(
+                                metric_key, node_measure.type,
+                                current=measure.value,
+                                capacity=measure.capacity,
+                                unit_hint=node_measure.unit_hint,
+                                stats=MovingStatistics(measure.value),
+                                stats_filter=frozenset(node_measure.stats_filter),
+                                current_hook=node_measure.current_hook,
+                            )
+                        else:
+                            self.device_metrics[metric_key][dev_id].update(measure)
 
+            # gather container metrics from compute plugins
+            container_ids = []
+            kernel_id_map = {}
+            used_kernel_ids = set()
+            for kid, info in self.agent.container_registry.items():
+                cid = info['container_id']
+                container_ids.append(cid)
+                kernel_id_map[cid] = kid
+                used_kernel_ids.add(kid)
+            unused_kernel_ids = set(self.kernel_metrics.keys()) - used_kernel_ids
+            for unused_kernel_id in unused_kernel_ids:
+                log.debug('removing kernel_metric for {}', unused_kernel_id)
+                self.kernel_metrics.pop(unused_kernel_id, None)
+            _tasks = []
+            for computer in self.agent.computers.values():
+                _tasks.append(computer.klass.gather_container_measures(self, container_ids))
+            for ctnr_measures in (await asyncio.gather(*_tasks, return_exceptions=True)):
+                if isinstance(ctnr_measures, Exception):
+                    log.error('gather_container_measures error',
+                              exc_info=ctnr_measures)
+                    continue
+                for ctnr_measure in ctnr_measures:
+                    metric_key = ctnr_measure.key
+                    # update per-container metric
+                    for cid, measure in ctnr_measure.per_container.items():
+                        kernel_id = kernel_id_map[cid]
+                        if kernel_id not in self.kernel_metrics:
+                            self.kernel_metrics[kernel_id] = {}
+                        if metric_key not in self.kernel_metrics[kernel_id]:
+                            self.kernel_metrics[kernel_id][metric_key] = Metric(
+                                metric_key, ctnr_measure.type,
+                                current=measure.value,
+                                capacity=measure.value,
+                                unit_hint=ctnr_measure.unit_hint,
+                                stats=MovingStatistics(measure.value),
+                                stats_filter=frozenset(ctnr_measure.stats_filter),
+                                current_hook=ctnr_measure.current_hook,
+                            )
+                        else:
+                            self.kernel_metrics[kernel_id][metric_key].update(measure)
 
-async def _collect_agent_live_stats_api(containers, prev_stat):
-    container_ids = [c._id for c in containers]
-    precpu_used_sum = prev_stat.cpu_used_sum
-    for cid, cpu_used in prev_stat.cpu_dict.items():
-        if cid not in container_ids:
-            precpu_used_sum -= cpu_used
+            # push to the Redis server
+            pipe = self.agent.redis_stat_pool.pipeline()
+            redis_agent_updates = {
+                'node': {
+                    key: obj.to_serializable_dict()
+                    for key, obj in self.node_metrics.items()
+                },
+                'devices': {
+                    metric_key: {dev_id: obj.to_serializable_dict()
+                                 for dev_id, obj in per_device.items()}
+                    for metric_key, per_device in self.device_metrics.items()
+                },
+            }
+            log.debug('stats: node_updates: {0}: {1}',
+                      self.agent.config.instance_id, redis_agent_updates['node'])
+            pipe.set(self.agent.config.instance_id, msgpack.packb(redis_agent_updates))
+            pipe.expire(self.agent.config.instance_id, self.cache_lifespan)
+            for kernel_id, metrics in self.kernel_metrics.items():
+                serialized_metrics = {
+                    key: obj.to_serializable_dict()
+                    for key, obj in metrics.items()
+                }
+                log.debug('stats: kernel_updates: {0}: {1}',
+                          kernel_id, serialized_metrics)
+                pipe.set(kernel_id, msgpack.packb(serialized_metrics))
+                pipe.expire(kernel_id, self.cache_lifespan)
+            await pipe.execute()
 
-    cpu_used_sum = 0
-    mem_cur_bytes_sum = 0
-    cpu_dict = {}
-    tasks = []
-    for c in containers:
-        tasks.append(asyncio.ensure_future(_per_container_live_stat_api(c)))
-    results = await asyncio.gather(*tasks)
-    for _stat in results:
-        if _stat is not None:
-            cpu_used_sum += _stat.cpu_used
-            mem_cur_bytes_sum += _stat.mem_cur_bytes
-            cpu_dict[_stat.container_id] = _stat.cpu_used
+    async def collect_container_stat(self, container_id: str) -> Mapping[MetricKey, Metric]:
+        '''
+        Collect the per-container statistics only,
 
-    return AgentLiveStat(
-        precpu_used_sum,
-        cpu_used_sum,
-        mem_cur_bytes_sum,
-        cpu_dict
-    )
+        Intended to be used by the agent and triggered by container cgroup synchronization processes.
+        '''
+        async with self._lock:
+            kernel_id_map = {}
+            for kid, info in self.agent.container_registry.items():
+                cid = info['container_id']
+                kernel_id_map[cid] = kid
 
+            _tasks = []
+            for computer in self.agent.computers.values():
+                _tasks.append(
+                    computer.klass.gather_container_measures(self, [container_id]))
+            for ctnr_measures in (await asyncio.gather(*_tasks, return_exceptions=True)):
+                if isinstance(ctnr_measures, Exception):
+                    log.error('gather_cotnainer_measures error',
+                              exc_info=ctnr_measures)
+                    continue
+                for ctnr_measure in ctnr_measures:
+                    metric_key = ctnr_measure.key
+                    # update per-container metric
+                    for cid, measure in ctnr_measure.per_container.items():
+                        assert cid == container_id
+                        kernel_id = kernel_id_map[cid]
+                        if kernel_id not in self.kernel_metrics:
+                            self.kernel_metrics[kernel_id] = {}
+                        if metric_key not in self.kernel_metrics[kernel_id]:
+                            self.kernel_metrics[kernel_id][metric_key] = Metric(
+                                metric_key, ctnr_measure.type,
+                                current=measure.value,
+                                capacity=measure.value,
+                                unit_hint=ctnr_measure.unit_hint,
+                                stats=MovingStatistics(measure.value),
+                                stats_filter=frozenset(ctnr_measure.stats_filter),
+                                current_hook=ctnr_measure.current_hook,
+                            )
+                        else:
+                            self.kernel_metrics[kernel_id][metric_key].update(measure)
 
-def _per_container_live_stat_sysfs(container_id):
-    cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
-    mem_prefix = f'/sys/fs/cgroup/memory/docker/{container_id}/'
-    try:
-        cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage') / 1e6
-        mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes')
-    except IOError as e:
-        short_cid = container_id[:7]
-        log.warning('cannot read stats: '
-                    f'sysfs unreadable for container {short_cid}!'
-                    f'\n{e!r}')
-        return None
-
-    return PerContainerLiveStat(
-        container_id,
-        cpu_used,
-        mem_cur_bytes
-    )
-
-
-async def _per_container_live_stat_api(container):
-    try:
-        ret = await container.stats(stream=False)
-    except (DockerError, aiohttp.ClientResponseError):
-        short_cid = container._id[:7]
-        log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')
-        return None
-    else:
-        # API returned successfully but actually the result may be empty!
-        if ret is None:
-            return None
-        if ret['preread'].startswith('0001-01-01'):
-            return None
-    cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
-    mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
-
-    return PerContainerLiveStat(
-        container._id,
-        cpu_used,
-        mem_cur_bytes
-    )
+            pipe = self.agent.redis_stat_pool.pipeline()
+            metrics = self.kernel_metrics[kernel_id]
+            serialized_metrics = {
+                key: obj.to_serializable_dict()
+                for key, obj in metrics.items()
+            }
+            log.debug('kernel_updates: {0}: {1}',
+                      kernel_id, serialized_metrics)
+            pipe.set(kernel_id, msgpack.packb(serialized_metrics))
+            pipe.expire(kernel_id, self.cache_lifespan)
+            await pipe.execute()
+            return metrics
 
 
 @aiotools.actxmgr
-async def spawn_stat_collector(stats_sockpath, stat_type, cid, *,
-                               exec_opts=None):
+async def spawn_stat_synchronizer(sync_sockpath: Path, stat_type: MetricTypes, cid: str, *,
+                                  exec_opts=None):
     # Spawn high-perf stats collector process for Linux native setups.
     # NOTE: We don't have to keep track of this process,
     #       as they will self-terminate when the container terminates.
@@ -265,7 +461,7 @@ async def spawn_stat_collector(stats_sockpath, stat_type, cid, *,
 
     proc = await asyncio.create_subprocess_exec(*[
         sys.executable, '-m', 'ai.backend.agent.stats',
-        str(stats_sockpath), cid, '--type', stat_type,
+        str(sync_sockpath), cid, '--type', stat_type.value,
     ], **exec_opts)
 
     signal_sockpath = ipc_base_path / f'stat-start-{proc.pid}.sock'
@@ -280,146 +476,8 @@ async def spawn_stat_collector(stats_sockpath, stat_type, cid, *,
         context.term()
 
 
-def _collect_stats_sysfs(container_id):
-    cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
-    mem_prefix = f'/sys/fs/cgroup/memory/docker/{container_id}/'
-    io_prefix = f'/sys/fs/cgroup/blkio/docker/{container_id}/'
-
-    try:
-        cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage') / 1e6
-        cpu_system_used = read_sysfs('/sys/fs/cgroup/cpuacct/cpuacct.usage') / 1e6
-        mem_max_bytes = read_sysfs(mem_prefix + 'memory.max_usage_in_bytes')
-        mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes')
-
-        io_stats = Path(io_prefix + 'blkio.throttle.io_service_bytes').read_text()
-        # example data:
-        #   8:0 Read 13918208
-        #   8:0 Write 0
-        #   8:0 Sync 0
-        #   8:0 Async 13918208
-        #   8:0 Total 13918208
-        #   Total 13918208
-        io_read_bytes = 0
-        io_write_bytes = 0
-        for line in io_stats.splitlines():
-            if line.startswith('Total '):
-                continue
-            dev, op, nbytes = line.strip().split()
-            if op == 'Read':
-                io_read_bytes += int(nbytes)
-            elif op == 'Write':
-                io_write_bytes += int(nbytes)
-        io_max_scratch_size = 0
-        io_cur_scratch_size = 0
-
-        net_dev_stats = Path('/proc/net/dev').read_text()
-        # example data:
-        #   Inter-|   Receive                                                |  Transmit                                                  # noqa: E501
-        #    face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed    # noqa: E501
-        #     eth0:     1296     16    0    0    0     0          0         0      816      10    0    0    0     0       0          0    # noqa: E501
-        #       lo:        0      0    0    0    0     0          0         0        0       0    0    0    0     0       0          0    # noqa: E501
-        net_rx_bytes = 0
-        net_tx_bytes = 0
-        for line in net_dev_stats.splitlines():
-            if '|' in line:
-                continue
-            data = line.strip().split()
-            if data[0].startswith('eth'):
-                net_rx_bytes += int(data[1])
-                net_tx_bytes += int(data[9])
-    except IOError as e:
-        short_cid = container_id[:7]
-        log.warning('cannot read stats: '
-                    f'sysfs unreadable for container {short_cid}!'
-                    f'\n{e!r}')
-        return None
-
-    return ContainerStat(
-        0,  # precpu_used calculated automatically
-        cpu_used,
-        0,  # precpu_system_used calculated autmatically
-        cpu_system_used,
-        mem_max_bytes,
-        mem_cur_bytes,
-        net_rx_bytes,
-        net_tx_bytes,
-        io_read_bytes,
-        io_write_bytes,
-        io_max_scratch_size,
-        io_cur_scratch_size,
-    )
-
-
-async def _collect_stats_api(container):
-    try:
-        ret = await container.stats(stream=False)
-    except (DockerError, aiohttp.ClientResponseError):
-        short_cid = container._id[:7]
-        log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')
-        return None
-    else:
-        # API returned successfully but actually the result may be empty!
-        if ret is None:
-            return None
-        if ret['preread'].startswith('0001-01-01'):
-            return None
-        cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
-        cpu_system_used = nmget(ret, 'cpu_stats.system_cpu_usage', 0) / 1e6
-        mem_max_bytes = nmget(ret, 'memory_stats.max_usage', 0)
-        mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
-
-        io_read_bytes = 0
-        io_write_bytes = 0
-        for item in nmget(ret, 'blkio_stats.io_service_bytes_recursive', []):
-            if item['op'] == 'Read':
-                io_read_bytes += item['value']
-            elif item['op'] == 'Write':
-                io_write_bytes += item['value']
-        io_max_scratch_size = 0
-        io_cur_scratch_size = 0
-
-        net_rx_bytes = 0
-        net_tx_bytes = 0
-        for dev in nmget(ret, 'networks', {}).values():
-            net_rx_bytes += dev['rx_bytes']
-            net_tx_bytes += dev['tx_bytes']
-    return ContainerStat(
-        0,  # precpu_used calculated automatically
-        cpu_used,
-        0,  # precpu_system_used calculated autmatically
-        cpu_system_used,
-        mem_max_bytes,
-        mem_cur_bytes,
-        net_rx_bytes,
-        net_tx_bytes,
-        io_read_bytes,
-        io_write_bytes,
-        io_max_scratch_size,
-        io_cur_scratch_size,
-    )
-
-
-async def collect_stats(containers):
-    if check_cgroup_available():
-        results = tuple(_collect_stats_sysfs(c._id) for c in containers)
-    else:
-        tasks = []
-        for c in containers:
-            tasks.append(asyncio.ensure_future(_collect_stats_api(c)))
-        results = await asyncio.gather(*tasks)
-    return results
-
-
-def numeric_list(s):
-    return [int(p) for p in s.split()]
-
-
-def read_sysfs(path, type_=int, default_val=0):
-    return type_(Path(path).read_text().strip())
-
-
 @contextmanager
-def join_cgroup_and_namespace(cid, initial_stat, send_stat, signal_sock):
+def join_cgroup_and_namespace(cid, trigger_and_wait_collection, signal_sock):
     libc = CDLL('libc.so.6', use_errno=True)
     libc.setns.errcheck = _errcheck
     mypid = os.getpid()
@@ -460,10 +518,9 @@ def join_cgroup_and_namespace(cid, initial_stat, send_stat, signal_sock):
         print('Cannot read cgroup filesystem.\n'
               'The container did not start or may have already terminated.',
               file=sys.stderr)
-        send_stat({
+        trigger_and_wait_collection({
             'cid': args.cid,
             'status': 'terminated',
-            'data': asdict(initial_stat),
         })
         sys.exit(0)
 
@@ -482,10 +539,9 @@ def join_cgroup_and_namespace(cid, initial_stat, send_stat, signal_sock):
         sys.exit(1)
     except (FileNotFoundError, KeyError):
         print('The container has already terminated.', file=sys.stderr)
-        send_stat({
+        trigger_and_wait_collection({
             'cid': args.cid,
             'status': 'terminated',
-            'data': asdict(initial_stat),
         })
         sys.exit(0)
 
@@ -512,6 +568,9 @@ def is_cgroup_running(cid):
 
 
 def main(args):
+    '''
+    The stat collector daemon.
+    '''
     context = zmq.Context.instance()
     mypid = os.getpid()
 
@@ -522,60 +581,37 @@ def main(args):
     signal_sock.bind('ipc://' + str(signal_sockpath))
     try:
 
-        stats_sock = context.socket(zmq.PUSH)
-        stats_sock.setsockopt(zmq.LINGER, 2000)
-        stats_sock.connect('ipc://' + args.sockpath)
-        send_stat = functools.partial(
-            stats_sock.send_serialized,
-            serialize=lambda v: [msgpack.packb(v)])
-        stat = ContainerStat()
+        sync_sock = context.socket(zmq.REQ)
+        sync_sock.setsockopt(zmq.LINGER, 2000)
+        sync_sock.connect('ipc://' + args.sockpath)
+
+        def trigger_and_wait_collection(msg):
+            sync_sock.send_serialized([msg], lambda msgs: [*map(msgpack.packb, msgs)])
+            sync_sock.recv_serialized(lambda frames: [*map(msgpack.unpackb, frames)])
+
         log.info('started statistics collection for {}', args.cid)
 
         if args.type == 'cgroup':
-            with closing(stats_sock), join_cgroup_and_namespace(args.cid, stat,
-                                                                send_stat,
-                                                                signal_sock):
+            with closing(sync_sock), join_cgroup_and_namespace(args.cid,
+                                                               trigger_and_wait_collection,
+                                                               signal_sock):
                 # Agent notification is done inside join_cgroup_and_namespace
                 while True:
-                    new_stat = _collect_stats_sysfs(args.cid)
-                    stat.update(new_stat)
-                    msg = {
-                        'cid': args.cid,
-                        'data': asdict(stat),
-                    }
-                    if is_cgroup_running(args.cid) and new_stat is not None:
-                        msg['status'] = 'running'
-                        send_stat(msg)
-                    else:
-                        msg['status'] = 'terminated'
-                        send_stat(msg)
+                    if not is_cgroup_running(args.cid):
+                        msg = {'status': 'terminated', 'cid': args.cid}
+                        trigger_and_wait_collection(msg)
                         break
-                    time.sleep(1.0)
+                    # Agent periodically collects container stats.
+                    time.sleep(0.3)
         elif args.type == 'api':
-            loop = asyncio.get_event_loop()
-            docker = Docker()
-            with closing(stats_sock), closing(loop):
-                container = DockerContainer(docker, id=args.cid)
+            with closing(sync_sock):
                 # Notify the agent to start the container.
                 signal_sock.send_multipart([b''])
                 # Wait for the container to be actually started.
                 signal_sock.recv_multipart()
                 while True:
-                    new_stat = loop.run_until_complete(_collect_stats_api(container))
-                    stat.update(new_stat)
-                    msg = {
-                        'cid': args.cid,
-                        'data': asdict(stat),
-                    }
-                    if new_stat is not None:
-                        msg['status'] = 'running'
-                        send_stat(msg)
-                    else:
-                        msg['status'] = 'terminated'
-                        send_stat(msg)
-                        break
+                    # Agent periodically collects container stats.
                     time.sleep(1.0)
-                loop.run_until_complete(docker.close())
 
     except (KeyboardInterrupt, SystemExit):
         sys.exit(1)
