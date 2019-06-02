@@ -1,6 +1,17 @@
 Changes
 =======
 
+19.06.0a1 (2018-06-03)
+----------------------
+
+- Add support for live collection of for node-level, per-device, and per-kernel resource metrics.
+  (#109)
+
+- Include version and compute plugin information in heartbeats.
+
+- Make it possible to use specific IP address ranges for public ports of kernel containers.
+  (lablup/backend.ai#37)
+
 19.03.1 (2018-04-21)
 --------------------
 
