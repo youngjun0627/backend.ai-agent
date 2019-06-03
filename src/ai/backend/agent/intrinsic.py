@@ -249,7 +249,9 @@ class MemoryPlugin(AbstractComputePlugin):
         _mstat = psutil.virtual_memory()
         total_mem_used_bytes = Decimal(_mstat.total - _mstat.available)
         total_mem_capacity_bytes = Decimal(_mstat.total)
-        net_dev_stats = Path('/proc/net/dev').read_text()
+        _nstat = psutil.net_io_counters()
+        net_rx_bytes = _nstat.bytes_recv
+        net_tx_bytes = _nstat.bytes_sent
 
         def get_disk_stat():
             pruned_disk_types = frozenset(['squashfs', 'vfat', 'tmpfs'])
@@ -269,20 +271,6 @@ class MemoryPlugin(AbstractComputePlugin):
         loop = current_loop()
         total_disk_usage, total_disk_capacity, per_disk_stat = \
             await loop.run_in_executor(None, get_disk_stat)
-        # example data:
-        #   Inter-|   Receive                                                |  Transmit                                                  # noqa: E501
-        #    face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed    # noqa: E501
-        #     eth0:     1296     16    0    0    0     0          0         0      816      10    0    0    0     0       0          0    # noqa: E501
-        #       lo:        0      0    0    0    0     0          0         0        0       0    0    0    0     0       0          0    # noqa: E501
-        net_rx_bytes = 0
-        net_tx_bytes = 0
-        for line in net_dev_stats.splitlines():
-            if '|' in line:
-                continue
-            data = line.strip().split()
-            if data[0].startswith('eth') or data[0].startswith('enp') or data[0].startswith('ib'):
-                net_rx_bytes += int(data[1])
-                net_tx_bytes += int(data[9])
         return [
             NodeMeasurement(
                 'mem', MetricTypes.USAGE,
