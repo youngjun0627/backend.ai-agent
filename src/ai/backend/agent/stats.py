@@ -28,7 +28,6 @@ from ai.backend.common import msgpack
 from ai.backend.common.utils import nmget
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.identity import is_containerized
-from .vendor.linux import libnuma
 
 __all__ = (
     'ContainerStat',

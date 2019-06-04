@@ -57,7 +57,6 @@ from .stats import (
     AgentLiveStat
 )
 from .resources import (
-    known_slot_types,
     compute_device_types,
     AbstractComputeDevice,
     AbstractComputePlugin,
