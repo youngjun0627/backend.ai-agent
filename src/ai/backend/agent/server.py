@@ -197,6 +197,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         'hb_timer', 'clean_timer',
         'stats_monitor', 'error_monitor',
         'restarting_kernels', 'blocking_cleans',
+        'agent_sock_task',
     )
 
     def __init__(self, config, loop=None):
@@ -227,6 +228,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         self.stat_ctx = StatContext(self)
         self.live_stat_timer = None
+        self.agent_sock_task = None
 
         self.port_pool = set(range(
             config.container_port_range[0],
@@ -917,8 +919,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         binds = [
             f'{config_dir}:/home/config:ro',
             f'{work_dir}:/home/work/:rw',
-            f'{tmp_dir}:/tmp:rw',
         ]
+        if sys.platform == 'linux' and self.config.scratch_in_memory:
+            binds.append(f'{tmp_dir}:/tmp:rw')
         binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
                      for v in extra_mount_list)
 
@@ -1068,8 +1071,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             pass
         else:
             os.makedirs(scratch_dir, exist_ok=True)
-            os.makedirs(tmp_dir, exist_ok=True)
             if sys.platform == 'linux' and self.config.scratch_in_memory:
+                os.makedirs(tmp_dir, exist_ok=True)
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
             os.makedirs(work_dir, exist_ok=True)
@@ -1219,8 +1222,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if sys.platform == 'linux' and self.config.scratch_in_memory:
                 await destroy_scratch_filesystem(scratch_dir)
                 await destroy_scratch_filesystem(tmp_dir)
+                shutil.rmtree(tmp_dir)
             shutil.rmtree(scratch_dir)
-            shutil.rmtree(tmp_dir)
             self.port_pool.update(host_ports)
             for dev_type, device_alloc in resource_spec.allocations.items():
                 self.computers[dev_type].alloc_map.free(device_alloc)
@@ -1700,8 +1703,8 @@ print(json.dumps(files))''' % {'path': path}
                 if sys.platform == 'linux' and self.config.scratch_in_memory:
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
+                    shutil.rmtree(tmp_dir)
                 shutil.rmtree(scratch_dir)
-                shutil.rmtree(tmp_dir)
             except FileNotFoundError:
                 pass
             try:
