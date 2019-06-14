@@ -40,7 +40,7 @@ from ai.backend.common import utils, identity, msgpack
 from ai.backend.common.argparse import (
     port_no, port_range, HostPortPair,
     host_port_pair, non_negative_int)
-from ai.backend.common.etcd import AsyncEtcd
+from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
 from ai.backend.common.plugin import install_plugins, add_plugin_args
@@ -469,8 +469,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'user': self.config.etcd_user,
                 'password': self.config.etcd_password,
             }
+
+        scope_prefix_map = {
+            ConfigScopes.GLOBAL: '',
+            ConfigScopes.SGROUP: 'sgroup/default',
+            ConfigScopes.NODE: f'node/{self.agent_id}',
+        }
         self.etcd = AsyncEtcd(self.config.etcd_addr,
                               self.config.namespace,
+                              scope_prefix_map,
                               credentials=etcd_credentials)
 
         computers, self.slots = await detect_resources(self.etcd)
