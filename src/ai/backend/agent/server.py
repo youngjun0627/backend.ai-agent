@@ -379,13 +379,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.images = updated_images
 
     async def update_status(self, status):
-        await self.etcd.put(f'nodes/agents/{self.config.instance_id}', status)
+        await self.etcd.put('', status, scope=ConfigScopes.NODE)
 
     async def deregister_myself(self):
-        if self.etcd is None:
-            # maybe there was an error during initialization
-            return
-        await self.etcd.delete_prefix(f'nodes/agents/{self.config.instance_id}')
+        # TODO: reimplement using Redis heartbeat stream
+        pass
 
     async def send_event(self, event_name, *args):
         if self.event_sock is None:
@@ -473,7 +471,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         scope_prefix_map = {
             ConfigScopes.GLOBAL: '',
             ConfigScopes.SGROUP: 'sgroup/default',
-            ConfigScopes.NODE: f'node/{self.agent_id}',
+            ConfigScopes.NODE: f'nodes/agents/{self.config.instance_id}',
         }
         self.etcd = AsyncEtcd(self.config.etcd_addr,
                               self.config.namespace,
@@ -544,8 +542,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('serving at {0}', agent_addr)
 
         # Ready.
-        await self.etcd.put(f'nodes/agents/{self.config.instance_id}/ip',
-                            self.config.agent_host)
+        await self.etcd.put('ip', self.config.agent_host, scope=ConfigScopes.NODE)
         await self.update_status('running')
 
         # Notify the gateway.
