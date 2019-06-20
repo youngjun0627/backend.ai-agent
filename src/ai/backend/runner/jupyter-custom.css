@@ -25,6 +25,10 @@
     font-family: "Source Code Pro", "Menlo", "Consolas", monospace !important;
 }
 
+.output button .fa {
+    font-family: "FontAwesome" !important;
+}
+
 .btn {
     -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
     -webkit-tap-highlight-color: transparent;
