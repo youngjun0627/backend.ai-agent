@@ -43,6 +43,7 @@ from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
 from ai.backend.common.plugin import install_plugins
 from ai.backend.common.types import (
+    HostPortPair,
     ResourceSlot,
     MountPermission,
 )
@@ -539,13 +540,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
 
         # Start serving requests.
-        agent_addr = f"tcp://*:{self.config['agent']['port']}"
+        rpc_addr = self.config['agent']['rpc-listen-addr']
+        agent_addr = f"tcp://{rpc_addr}"
         self.rpc_server = await aiozmq.rpc.serve_rpc(self, bind=agent_addr)
         self.rpc_server.transport.setsockopt(zmq.LINGER, 200)
-        log.info('serving at {0}', agent_addr)
+        log.info('started handling RPC requests at {}', rpc_addr)
 
         # Ready.
-        await self.etcd.put('ip', self.config['agent']['host'], scope=ConfigScopes.NODE)
+        await self.etcd.put('ip', rpc_addr.host, scope=ConfigScopes.NODE)
         await self.update_status('running')
 
         # Notify the gateway.
@@ -1579,9 +1581,9 @@ print(json.dumps(files))''' % {'path': path}
                     str(self.slots.get(slot_key, 0)),
                 )
         agent_info = {
-            'ip': self.config['agent']['host'],
+            'ip': str(self.config['agent']['rpc-listen-addr'].host),
             'region': self.config['agent']['region'],
-            'addr': f"tcp://{self.config['agent']['host']}:{self.config['agent']['port']}",
+            'addr': f"tcp://{self.config['agent']['rpc-listen-addr']}",
             'resource_slots': res_slots,
             'version': VERSION,
             'compute_plugins': {
@@ -1771,14 +1773,20 @@ async def server_main(loop, pidx, _args):
         config['agent']['id'] = await identity.get_instance_id()
     if not config['agent']['instance-type']:
         config['agent']['instance-type'] = await identity.get_instance_type()
-    if not config['agent']['host']:
-        config['agent']['host'] = await identity.get_instance_ip()
+    rpc_addr = config['agent']['rpc-listen-addr']
+    if not rpc_addr.host:
+        config['agent']['rpc-listen-addr'] = HostPortPair(
+            await identity.get_instance_ip(),
+            rpc_addr.port,
+        )
     if not config['container']['kernel-host']:
-        config['container']['kernel-host'] = config['agent']['host']
+        config['container']['kernel-host'] = config['container']['kernel-host']
     if not config['agent']['region']:
         config['agent']['region'] = await identity.get_instance_region()
     log.info('Node ID: {0} (machine-type: {1}, host: {2})',
-             config['agent']['id'], config['agent']['instance-type'], config['agent']['host'])
+             config['agent']['id'],
+             config['agent']['instance-type'],
+             rpc_addr.host)
 
     # Start RPC server.
     try:
@@ -1806,12 +1814,11 @@ async def server_main(loop, pidx, _args):
 @click.option('--debug', is_flag=True,
               help='Enable the debug mode and override the global log level to DEBUG.')
 @click.pass_context
-def main(ctx, config_path, debug):
+def main(cli_ctx, config_path, debug):
 
     agent_config_iv = t.Dict({
         t.Key('agent'): t.Dict({
-            t.Key('host', default=''): t.String(allow_blank=True),
-            t.Key('port', default=6001): t.Int[1:65535],
+            t.Key('rpc-listen-addr', default=('', 6001)): tx.HostPortPair(allow_blank_host=True),
             t.Key('id', default=None): t.Null | t.String,
             t.Key('region', default=None): t.Null | t.String,
             t.Key('instance-type', default=None): t.Null | t.String,
@@ -1825,7 +1832,7 @@ def main(ctx, config_path, debug):
             t.Key('kernel-host', default=''): t.String(allow_blank=True),
             t.Key('port-range', default=(30000, 31000)): tx.PortRange,
             t.Key('sandbox-type'): t.Enum('docker', 'jail'),
-            t.Key('jail-args'): t.List(t.String),
+            t.Key('jail-args', default=[]): t.List(t.String),
             t.Key('scratch-type'): t.Enum('hostdir', 'memory'),
             t.Key('scratch-root', default='./scratches'): tx.Path(type='dir', auto_create=True),
             t.Key('scratch-size', default='0'): tx.BinarySize,
@@ -1840,7 +1847,7 @@ def main(ctx, config_path, debug):
             t.Key('enabled', default=False): t.Bool,
             t.Key('skip-container-deletion', default=False): t.Bool,
         }).allow_extra('*'),
-    }).allow_extra('*').merge(config.etcd_config_iv)
+    }).merge(config.etcd_config_iv).allow_extra('*')
 
     # Determine where to read configuration.
     raw_cfg, cfg_src_path = config.read_from_file(config_path, 'agent')
@@ -1850,8 +1857,10 @@ def main(ctx, config_path, debug):
     config.override_with_env(raw_cfg, ('etcd', 'addr'), 'BACKEND_ETCD_ADDR')
     config.override_with_env(raw_cfg, ('etcd', 'user'), 'BACKEND_ETCD_USER')
     config.override_with_env(raw_cfg, ('etcd', 'password'), 'BACKEND_ETCD_PASSWORD')
-    config.override_with_env(raw_cfg, ('agent', 'port'), 'BACKEND_AGENT_PORT')
-    config.override_with_env(raw_cfg, ('agent', 'host'), 'BACKEND_AGENT_HOST_OVERRIDE')
+    config.override_with_env(raw_cfg, ('agent', 'rpc-listen-addr', 'host'),
+                             'BACKEND_AGENT_HOST_OVERRIDE')
+    config.override_with_env(raw_cfg, ('agent', 'rpc-listen-addr', 'port'),
+                             'BACKEND_AGENT_PORT')
     config.override_with_env(raw_cfg, ('agent', 'pid-file'), 'BACKEND_PID_FILE')
     config.override_with_env(raw_cfg, ('container', 'port-range'), 'BACKEND_CONTAINER_PORT_RANGE')
     config.override_with_env(raw_cfg, ('container', 'kernel-host'), 'BACKEND_KERNEL_HOST_OVERRIDE')
@@ -1875,13 +1884,13 @@ def main(ctx, config_path, debug):
         print(pformat(e.invalid_data), file=sys.stderr)
         raise click.Abort()
 
-    if ctx.invoked_subcommand is None:
+    if cli_ctx.invoked_subcommand is None:
         cfg['agent']['pid-file'].write_text(str(os.getpid()))
         try:
             logger = Logger(cfg['logging'])
             with logger:
                 ns = cfg['etcd']['namespace']
-                setproctitle(f"backend.ai: agent {ns} *:{cfg['agent']['port']}")
+                setproctitle(f"backend.ai: agent {ns}")
                 log.info('Backend.AI Agent {0}', VERSION)
                 log.info('runtime: {0}', utils.env_info())
 
