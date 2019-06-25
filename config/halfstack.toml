@@ -39,6 +39,7 @@ drivers = ["console"]
 "" = "WARNING"
 "aiodocker" = "INFO"
 "aiotools" = "INFO"
+"aiohttp" = "INFO"
 "ai.backend" = "INFO"
 
 [logging.console]
