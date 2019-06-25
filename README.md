@@ -29,9 +29,9 @@ Clone [the meta repository](https://github.com/lablup/backend.ai) and install a 
 The halfstack configuration installs and runs dependency daemons such as etcd in the background.
 
 ```console
-~$ git clone https://github.com/lablup/backend.ai halfstack
-~$ cd halfstack
-~/halfstack$ docker-compose -f docker-compose.halfstack.yml up -d
+$ git clone https://github.com/lablup/backend.ai halfstack
+$ cd halfstack
+$ docker-compose -f docker-compose.halfstack.yml up -d
 ```
 
 Then prepare the source clone of the agent as follows.
@@ -132,10 +132,8 @@ command = /home/user/run-agent.sh
 
 ```sh
 #!/bin/sh
-source /home/user/venv/bin/activate
-exec python -m ai.backend.agent.server \
-     --etcd-addr localhost:2379 \
-     --namespace my-cluster
+source /home/user/venv-agent/bin/activate
+exec python -m ai.backend.agent.server
 ```
 
 ## Networking
