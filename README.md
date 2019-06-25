@@ -25,17 +25,14 @@ Please visit [the installation guides](https://github.com/lablup/backend.ai/wiki
 and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv) (optional but recommneded)
 * Docker 18.03 or later with docker-compose (18.09 or later is recommended)
 
-Clone [the meta repository](https://github.com/lablup/backend.ai) and install a "halfstack" configuration.
-The halfstack configuration installs and runs dependency daemons such as etcd in the background.
+First, you need **a working manager installation**.
+For the detailed instructions on installing the manager, please refer
+[the manager's README](https://github.com/lablup/backend.ai-manager/blob/master/README.md)
+and come back here again.
 
-```console
-$ git clone https://github.com/lablup/backend.ai halfstack
-$ cd halfstack
-$ docker-compose -f docker-compose.halfstack.yml up -d
-```
+#### Common steps
 
-Then prepare the source clone of the agent as follows.
-First install the current working copy.
+Next, prepare the source clone of the agent and install from it as follows.
 
 ```console
 $ git clone https://github.com/lablup/backend.ai-agent agent
@@ -73,12 +70,24 @@ Note that you need a working manager running with the halfstack already!
 
 ```console
 $ mkdir -p "./scratches"
-$ cp config/halfstack.toml ./manager.toml
+$ cp config/halfstack.toml ./agent.toml
 ```
 
+Then, run it (for debugging, append a `--debug` flag):
+
 ```console
-$ python -m ai.backend.agent.server --debug
+$ python -m ai.backend.agent.server
 ```
+
+To run the agent-watcher:
+
+```console
+$ python -m ai.backend.agent.watcher
+```
+
+The watcher shares the same configuration TOML file with the agent.
+Note that the watcher is only meaningful if the agent is installed as a systemd service
+named `backendai-agent.service`.
 
 To run tests:
 
@@ -121,6 +130,7 @@ The minimal command to execute:
 
 ```sh
 python -m ai.backend.agent.server
+python -m ai.backend.agent.watcher
 ```
 
 For more arguments and options, run the command with `--help` option.
