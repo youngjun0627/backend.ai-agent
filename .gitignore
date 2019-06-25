@@ -72,3 +72,6 @@ venv*/
 
 # Development files
 scratches/
+
+# Local config
+agent.toml

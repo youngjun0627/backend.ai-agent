@@ -11,7 +11,7 @@ password = ""				    # env: BACKEND_ETCD_PASSWORD
 # If empty or unspecified, the agent tries to auto-detect it with a fallback to "127.0.0.1".
 # For mobile environments such as developer laptops which roam around different networks,
 # it is HIGHLY RECOMMENDED to set this to "127.0.0.1" manually.
-# host = "127.0.0.1"          # env: BACKEND_AGENT_HOST_OVERRIDE
+host = "127.0.0.1"          # env: BACKEND_AGENT_HOST_OVERRIDE
 
 # The RPC port number of the agent.
 port = 6001                 # env: BACKEND_AGENT_PORT
@@ -20,7 +20,7 @@ port = 6001                 # env: BACKEND_AGENT_PORT
 # If empty or unspecified, the agent builds this from the hostname by prefixing it with "i-",
 # like "i-hostname".  The "i-" prefix is not mandatory, though.
 # This affects the per-node configuration scope.
-# id = "i-something-special"
+id = "i-travis"
 
 # Set the scaling group of this agent.
 # This affects the per-sgroup configuration scope.
@@ -64,7 +64,7 @@ scratch-type = "hostdir"        # env: BACKEND_SANDBOX_TYPE
 
 # Only meaningful when scratch-type = "hostdir"
 # If not exists, it is auto-created.
-scratch-root = "./scratches"    # env: BACKEND_SCRATCH_ROOT
+scratch-root = "/tmp/scratches"    # env: BACKEND_SCRATCH_ROOT
 
 # Limit the maximum size of the scratch space.
 # If set zero, it is unlimited.

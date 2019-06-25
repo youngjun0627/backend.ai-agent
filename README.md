@@ -23,7 +23,7 @@ Please visit [the installation guides](https://github.com/lablup/backend.ai/wiki
 * `libnsappy-dev` or `snappy-devel` system package depending on your distro
 * Python 3.6 or higher with [pyenv](https://github.com/pyenv/pyenv)
 and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv) (optional but recommneded)
-* Docker 17.03 or later with docker-compose (18.03 or later is recommended)
+* Docker 18.03 or later with docker-compose (18.09 or later is recommended)
 
 Clone [the meta repository](https://github.com/lablup/backend.ai) and install a "halfstack" configuration.
 The halfstack configuration installs and runs dependency daemons such as etcd in the background.
@@ -38,13 +38,15 @@ Then prepare the source clone of the agent as follows.
 First install the current working copy.
 
 ```console
-~$ git clone https://github.com/lablup/backend.ai-agent agent
-~$ cd agent
-~/agent$ pyenv virtualenv venv-agent
-~/agent$ pyenv local venv-agent
-~/agent (venv-agent) $ pip install -U pip setuptools   # ensure latest versions
-~/agent (venv-agent) $ pip install -U -r requirements-dev.txt
+$ git clone https://github.com/lablup/backend.ai-agent agent
+$ cd agent
+$ pyenv virtualenv venv-agent
+$ pyenv local venv-agent
+$ pip install -U pip setuptools
+$ pip install -U -r requirements-dev.txt
 ```
+
+From now on, let's assume all shell commands are executed inside the virtualenv.
 
 Before running, you first need to prepare "the kernel runner environment", which is
 composed of a dedicated Docker image that is mounted into kernel containers at
@@ -54,37 +56,36 @@ you need to build/download the krunner-env images twice as follows.
 
 For development:
 ```console
-~/agent (venv-agent) $ python -m ai.backend.agent.kernel build-krunner-env alpine3.8
-~/agent (venv-agent) $ python -m ai.backend.agent.kernel build-krunner-env ubuntu16.04
+$ python -m ai.backend.agent.kernel build-krunner-env alpine3.8
+$ python -m ai.backend.agent.kernel build-krunner-env ubuntu16.04
 ```
 or you pull the matching version from the Docker Hub (only supported for already
 released versions):
 ```console
-~/agent (venv-agent) $ docker pull lablup/backendai-krunner-env:19.03-alpine3.8
-~/agent (venv-agent) $ docker pull lablup/backendai-krunner-env:19.03-ubuntu16.04
+$ docker pull lablup/backendai-krunner-env:19.03-alpine3.8
+$ docker pull lablup/backendai-krunner-env:19.03-ubuntu16.04
 ```
 
-With the halfstack, you can run the agent simply like
-(note that you need a working manager running with the halfstack already):
+### Halfstack (single-node testing)
+
+With the halfstack, you can run the agent simply.
+Note that you need a working manager running with the halfstack already!
 
 ```console
-~/agent (venv-agent) $ scripts/run-with-halfstack.sh python -m ai.backend.agent.server \
-                     >                                      --scratch-root=/tmp --debug
+$ cp config/halfstack.toml ./manager.toml
+$ cp config/halfstack.alembic.ini alembic.ini
+```
+
+```console
+$ mkdir -p "$HOME/scratches"
+$ python -m ai.backend.agent.server --scratch-root=$HOME/scratches --debug
 ```
 
 To run tests:
 
 ```console
-~/agent (venv-agent) $ scripts/run-with-halfstack.sh python -m pytest -m 'not integration'
-```
-
-To run tests including integration tests, you first need to install the manager in the same virtualenv.
-
-```console
-~$ git clone https://github.com/lablup/backend.ai-manager manager
-~$ cd agent
-~/agent (venv-agent) $ pip install -e ../manager
-~/agent (venv-agent) $ scripts/run-with-halfstack.sh python -m pytest
+$ python -m flake8 src tests
+$ python -m pytest -m 'not integration' tests
 ```
 
 
@@ -95,7 +96,7 @@ To run tests including integration tests, you first need to install the manager 
 The minimal command to execute:
 
 ```sh
-python -m ai.backend.agent.server --etcd-addr localhost:2379 --namespace my-cluster
+python -m ai.backend.agent.server
 ```
 
 The agent reads most configurations from the given etcd v3 server where
