@@ -74,7 +74,6 @@ Note that you need a working manager running with the halfstack already!
 ```console
 $ mkdir -p "./scratches"
 $ cp config/halfstack.toml ./manager.toml
-$ cp config/halfstack.alembic.ini alembic.ini
 ```
 
 ```console
@@ -114,7 +113,7 @@ By default the agent uses `/var/cache/scratches` directory for making temporary
 home directories used by kernel containers (the `/home/work` volume mounted in
 containers).  Note that the directory must exist in prior and the agent-running
 user must have ownership of it.  You can change the location by
-`scratch-root` option in `manager.toml`.
+`scratch-root` option in `agent.toml`.
 
 ### Running from a command line
 
