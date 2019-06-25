@@ -9,7 +9,10 @@ The Backend.AI Agent is a small daemon that does:
 ## Package Structure
 
 * `ai.backend`
-  - `agent`: The agent daemon implementation
+  - `agent`: The agent package
+    - `server`: The agent daemon which communicates with the manager and the Docker daemon
+    - `watcher`: A side-by-side daemon which provides a separate HTTP endpoint for accessing the status
+      information of the agent daemon and manipulation of the agent's systemd service
 
 
 ## Installation
