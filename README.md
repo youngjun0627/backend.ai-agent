@@ -66,19 +66,19 @@ $ docker pull lablup/backendai-krunner-env:19.03-alpine3.8
 $ docker pull lablup/backendai-krunner-env:19.03-ubuntu16.04
 ```
 
-### Halfstack (single-node testing)
+### Halfstack (single-node development & testing)
 
 With the halfstack, you can run the agent simply.
 Note that you need a working manager running with the halfstack already!
 
 ```console
+$ mkdir -p "./scratches"
 $ cp config/halfstack.toml ./manager.toml
 $ cp config/halfstack.alembic.ini alembic.ini
 ```
 
 ```console
-$ mkdir -p "$HOME/scratches"
-$ python -m ai.backend.agent.server --scratch-root=$HOME/scratches --debug
+$ python -m ai.backend.agent.server --debug
 ```
 
 To run tests:
@@ -91,17 +91,19 @@ $ python -m pytest -m 'not integration' tests
 
 ## Deployment
 
-### Running from a command line
+### Configuration
 
-The minimal command to execute:
+Put a TOML-formatted manager configuration (see the sample in `config/sample.toml`)
+in one of the following locations:
 
-```sh
-python -m ai.backend.agent.server
-```
+ * `agent.toml` (current working directory)
+ * `~/.config/backend.ai/agent.toml` (user-config directory)
+ * `/etc/backend.ai/agent.toml` (system-config directory)
 
-The agent reads most configurations from the given etcd v3 server where
-the cluster administrator or the Backend.AI manager stores all the necessary
-settings.
+Only the first found one is used by the daemon.
+
+The agent reads most other configurations from the etcd v3 server where the cluster
+administrator or the Backend.AI manager stores all the necessary settings.
 
 The etcd address and namespace must match with the manager to make the agent
 paired and activated.
@@ -112,9 +114,17 @@ By default the agent uses `/var/cache/scratches` directory for making temporary
 home directories used by kernel containers (the `/home/work` volume mounted in
 containers).  Note that the directory must exist in prior and the agent-running
 user must have ownership of it.  You can change the location by
-`--scratch-root` option.
+`scratch-root` option in `manager.toml`.
 
-For more arguments and options, run the command with ``--help`` option.
+### Running from a command line
+
+The minimal command to execute:
+
+```sh
+python -m ai.backend.agent.server
+```
+
+For more arguments and options, run the command with `--help` option.
 
 ### Example config for agent server/instances
 
