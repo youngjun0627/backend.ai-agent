@@ -60,5 +60,4 @@ class Runner(BaseRunner):
         if service_info['name'] == 'node':
             return [
                 self.runtime_path, '-m', 'node',
-                ], {}
-
+            ], {}

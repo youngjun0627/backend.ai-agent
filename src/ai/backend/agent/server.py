@@ -2,14 +2,13 @@ import asyncio
 import base64
 import functools
 import hashlib
-from ipaddress import ip_address, ip_network
+from ipaddress import ip_network
 import logging, logging.config
 import os, os.path
 from pathlib import Path
 import platform
-from pprint import pformat
 import pkg_resources
-import pwd
+from pprint import pformat, pprint
 import secrets
 import shlex
 import signal
@@ -28,7 +27,7 @@ import aiotools
 import aiozmq, aiozmq.rpc
 from async_timeout import timeout
 import attr
-import configargparse
+import click
 from setproctitle import setproctitle
 import snappy
 import trafaret as t
@@ -36,16 +35,15 @@ import uvloop
 import zmq
 import zmq.asyncio
 
-from ai.backend.common import utils, identity, msgpack
-from ai.backend.common.argparse import (
-    port_no, port_range, HostPortPair,
-    host_port_pair, non_negative_int)
+from ai.backend.common import config, utils, identity, msgpack
+from ai.backend.common import validators as tx
+from ai.backend.common.docker import ImageRef
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
-from ai.backend.common.plugin import install_plugins, add_plugin_args
+from ai.backend.common.plugin import install_plugins
 from ai.backend.common.types import (
-    ImageRef, ResourceSlot,
+    ResourceSlot,
     MountPermission,
 )
 from . import __version__ as VERSION
@@ -61,7 +59,6 @@ from .resources import (
     AbstractComputePlugin,
     KernelResourceSpec,
     Mount,
-    bitmask2set,
     AbstractAllocMap,
 )
 from .kernel import KernelRunner, KernelFeatures
@@ -78,6 +75,11 @@ log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
 
 max_upload_size = 100 * 1024 * 1024  # 100 MB
 ipc_base_path = Path('/tmp/backend.ai/ipc')
+
+redis_config_iv = t.Dict({
+    t.Key('addr', default=('127.0.0.1', 6379)): tx.HostPortPair,
+    t.Key('password', default=None): t.Null | t.String,
+})
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -203,7 +205,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     def __init__(self, config, loop=None):
         self.loop = loop if loop else current_loop()
         self.config = config
-        self.config.app_name = 'backend.ai-agent'
         self.etcd = None
         self.agent_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()[:12]
 
@@ -231,8 +232,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.agent_sock_task = None
 
         self.port_pool = set(range(
-            config.container_port_range[0],
-            config.container_port_range[1] + 1,
+            config['container']['port-range'][0],
+            config['container']['port-range'][1] + 1,
         ))
 
         self.stat_sync_states_monitor = DummyStatsMonitor()
@@ -258,24 +259,27 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('detecting the manager: OK ({0})', manager_id)
 
     async def read_agent_config(self):
-        self.config.redis_addr = host_port_pair(await self.etcd.get('nodes/redis'))
-        self.config.redis_password = await self.etcd.get('nodes/redis/password')
-        self.config.event_addr = host_port_pair(
-            await self.etcd.get('nodes/manager/event_addr'))
-        log.info('configured redis_addr: {0}', self.config.redis_addr)
-        log.info('configured event_addr: {0}', self.config.event_addr)
+        # Fill up runtime configurations from etcd.
+        redis_config = await self.etcd.get_prefix('config/redis')
+        self.config['redis'] = redis_config_iv.check(redis_config)
+        self.config['event'] = {
+            'addr': tx.HostPortPair().check(await self.etcd.get('nodes/manager/event_addr')),
+        }
+        log.info('configured redis_addr: {0}', self.config['redis']['addr'])
+        log.info('configured event_addr: {0}', self.config['event']['addr'])
 
         vfolder_mount = await self.etcd.get('volumes/_mount')
         if vfolder_mount is None:
             vfolder_mount = '/mnt'
-        self.config.vfolder_mount = Path(vfolder_mount)
-        log.info('configured vfolder mount base: {0}', self.config.vfolder_mount)
-
         vfolder_fsprefix = await self.etcd.get('volumes/_fsprefix')
         if vfolder_fsprefix is None:
             vfolder_fsprefix = ''
-        self.config.vfolder_fsprefix = Path(vfolder_fsprefix.lstrip('/'))
-        log.info('configured vfolder fs prefix: {0}', self.config.vfolder_fsprefix)
+        self.config['vfolder'] = {
+            'mount': Path(vfolder_mount),
+            'fsprefix': Path(vfolder_fsprefix.lstrip('/')),
+        }
+        log.info('configured vfolder mount base: {0}', self.config['vfolder']['mount'])
+        log.info('configured vfolder fs prefix: {0}', self.config['vfolder']['fsprefix'])
 
     async def scan_running_containers(self):
         env_containers = {}
@@ -310,11 +314,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 for computer_set in self.computers.values():
                     await computer_set.klass.restore_from_container(
                         container, computer_set.alloc_map)
-                if self.config.kernel_host_override:
-                    kernel_host = self.config.kernel_host_override
-                else:
-                    kernel_host = '127.0.0.1'
-                config_dir = (self.config.scratch_root /
+                kernel_host = self.config['container']['kernel-host']
+                config_dir = (self.config['container']['scratch-root'] /
                               kernel_id / 'config').resolve()
                 with open(config_dir / 'resource.txt', 'r') as f:
                     resource_spec = KernelResourceSpec.read_from_file(f)
@@ -391,7 +392,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug('send_event({0})', event_name)
         self.event_sock.write((
             event_name.encode('ascii'),
-            self.config.instance_id.encode('utf8'),
+            self.config['agent']['id'].encode('utf8'),
             msgpack.packb(args),
         ))
 
@@ -462,19 +463,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.check_images()
 
         etcd_credentials = None
-        if self.config.etcd_user:
+        if self.config['etcd']['user']:
             etcd_credentials = {
-                'user': self.config.etcd_user,
-                'password': self.config.etcd_password,
+                'user': self.config['etcd']['user'],
+                'password': self.config['etcd']['password'],
             }
 
         scope_prefix_map = {
             ConfigScopes.GLOBAL: '',
-            ConfigScopes.SGROUP: 'sgroup/default',
-            ConfigScopes.NODE: f'nodes/agents/{self.config.instance_id}',
+            ConfigScopes.SGROUP: f"sgroup/{self.config['agent']['scaling-group']}",
+            ConfigScopes.NODE: f"nodes/agents/{self.config['agent']['id']}",
         }
-        self.etcd = AsyncEtcd(self.config.etcd_addr,
-                              self.config.namespace,
+        self.etcd = AsyncEtcd(self.config['etcd']['addr'],
+                              self.config['etcd']['namespace'],
                               scope_prefix_map,
                               credentials=etcd_credentials)
 
@@ -498,15 +499,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
 
         self.redis_stat_pool = await aioredis.create_redis_pool(
-            self.config.redis_addr.as_sockaddr(),
-            password=(self.config.redis_password
-                      if self.config.redis_password else None),
+            self.config['redis']['addr'].as_sockaddr(),
+            password=(self.config['redis']['password']
+                      if self.config['redis']['password'] else None),
             timeout=3.0,
             encoding='utf8',
             db=0)  # REDIS_STAT_DB in backend.ai-manager
 
         self.event_sock = await aiozmq.create_zmq_stream(
-            zmq.PUSH, connect=f'tcp://{self.config.event_addr}')
+            zmq.PUSH, connect=f"tcp://{self.config['event']['addr']}")
         self.event_sock.transport.setsockopt(zmq.LINGER, 50)
 
         # Spawn image scanner task.
@@ -521,7 +522,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         for kernel_id, info in self.container_registry.items():
             cid = info['container_id']
             self.stat_sync_states[cid] = StatSyncState(kernel_id)
-            async with spawn_stat_synchronizer(self.stat_sync_sockpath, self.stat_ctx.mode, cid):
+            async with spawn_stat_synchronizer(self.config['_src'],
+                                               self.stat_sync_sockpath,
+                                               self.stat_ctx.mode, cid):
                 pass
 
         # Start collecting agent live stat.
@@ -536,13 +539,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
 
         # Start serving requests.
-        agent_addr = f'tcp://*:{self.config.agent_port}'
+        agent_addr = f"tcp://*:{self.config['agent']['port']}"
         self.rpc_server = await aiozmq.rpc.serve_rpc(self, bind=agent_addr)
         self.rpc_server.transport.setsockopt(zmq.LINGER, 200)
         log.info('serving at {0}', agent_addr)
 
         # Ready.
-        await self.etcd.put('ip', self.config.agent_host, scope=ConfigScopes.NODE)
+        await self.etcd.put('ip', self.config['agent']['host'], scope=ConfigScopes.NODE)
         await self.update_status('running')
 
         # Notify the gateway.
@@ -888,8 +891,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         envs_corecount = envs_corecount.split(',') if envs_corecount else []
         kernel_features = set(image_labels.get('ai.backend.features', '').split())
 
-        scratch_dir = (self.config.scratch_root / kernel_id).resolve()
-        tmp_dir = (self.config.scratch_root / f'{kernel_id}_tmp').resolve()
+        scratch_dir = (self.config['container']['scratch-root'] / kernel_id).resolve()
+        tmp_dir = (self.config['container']['scratch-root'] / f'{kernel_id}_tmp').resolve()
         config_dir = scratch_dir / 'config'
         work_dir = scratch_dir / 'work'
         agent_tasks = []
@@ -916,7 +919,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
-            uid = self.config.kernel_uid
+            uid = self.config['container']['kernel-uid']
             environ['LOCAL_USER_ID'] = str(uid)
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
@@ -924,7 +927,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             f'{config_dir}:/home/config:ro',
             f'{work_dir}:/home/work/:rw',
         ]
-        if sys.platform == 'linux' and self.config.scratch_in_memory:
+        if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
             binds.append(f'{tmp_dir}:/tmp:rw')
         binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
                      for v in extra_mount_list)
@@ -980,8 +983,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 else:
                     raise RuntimeError(
                         'Unexpected number of vfolder mount detail tuple size')
-                host_path = (self.config.vfolder_mount / folder_host /
-                             self.config.vfolder_fsprefix / folder_id)
+                host_path = (self.config['vfolder']['mount'] / folder_host /
+                             self.config['vfolder']['fsprefix'] / folder_id)
                 kernel_path = Path(f'/home/work/{folder_name}')
                 folder_perm = MountPermission(folder_perm)
                 if folder_perm == MountPermission.RW_DELETE:
@@ -1075,7 +1078,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             pass
         else:
             os.makedirs(scratch_dir, exist_ok=True)
-            if sys.platform == 'linux' and self.config.scratch_in_memory:
+            if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
                 os.makedirs(tmp_dir, exist_ok=True)
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
@@ -1149,13 +1152,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         runtime_type = image_labels.get('ai.backend.runtime-type', 'python')
         runtime_path = image_labels.get('ai.backend.runtime-path', None)
         cmdargs = []
-        if self.config.sandbox_type == 'jail':
+        if self.config['container']['sandbox-type'] == 'jail':
             cmdargs += [
                 "/opt/backend.ai/bin/jail",
                 "-policy", "/etc/backend.ai/jail/policy.yml",
             ]
-            if self.config.jail_arg:
-                cmdargs += map(lambda s: s.strip(), self.config.jail_arg)
+            if self.config['container']['jail-args']:
+                cmdargs += map(lambda s: s.strip(), self.config['container']['jail-args'])
         cmdargs += [
             "/opt/backend.ai/bin/python",
             "-m", "ai.backend.kernel", runtime_type,
@@ -1187,7 +1190,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 'PublishAllPorts': False,  # we manage port mapping manually!
             },
         }
-        if self.config.sandbox_type == 'jail':
+        if self.config['container']['sandbox-type'] == 'jail':
             container_config['HostConfig']['SecurityOpt'] = [
                 'seccomp=unconfined',
                 'apparmor=unconfined',
@@ -1217,13 +1220,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         f.write(f'{k}={v}\n')
 
             self.stat_sync_states[cid] = StatSyncState(kernel_id)
-            async with spawn_stat_synchronizer(self.stat_sync_sockpath, self.stat_ctx.mode, cid):
+            async with spawn_stat_synchronizer(self.config['_src'],
+                                               self.stat_sync_sockpath,
+                                               self.stat_ctx.mode, cid):
                 await container.start()
         except asyncio.CancelledError:
             raise
         except Exception:
             # Oops, we have to restore the allocated resources!
-            if sys.platform == 'linux' and self.config.scratch_in_memory:
+            if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
                 await destroy_scratch_filesystem(scratch_dir)
                 await destroy_scratch_filesystem(tmp_dir)
                 shutil.rmtree(tmp_dir)
@@ -1248,10 +1253,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 stdin_port = host_port
             elif port == 2003:  # legacy
                 stdout_port = host_port
-        if self.config.kernel_host_override:
-            kernel_host = self.config.kernel_host_override
-        else:
-            kernel_host = self.config.agent_host
+        kernel_host = self.config['container']['kernel-host']
 
         self.container_registry[kernel_id] = {
             'lang': image_ref,
@@ -1370,7 +1372,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                        flush_timeout):
         # Save kernel-generated output files in a separate sub-directory
         # (to distinguish from user-uploaded files)
-        output_dir = self.config.scratch_root / kernel_id / 'work' / '.output'
+        output_dir = self.config['container']['scratch-root'] / kernel_id / 'work' / '.output'
 
         restart_tracker = self.restarting_kernels.get(kernel_id)
         if restart_tracker:
@@ -1480,7 +1482,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def _accept_file(self, kernel_id, filename, filedata):
         loop = current_loop()
-        work_dir = self.config.scratch_root / kernel_id / 'work'
+        work_dir = self.config['container']['scratch-root'] / kernel_id / 'work'
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
@@ -1577,9 +1579,9 @@ print(json.dumps(files))''' % {'path': path}
                     str(self.slots.get(slot_key, 0)),
                 )
         agent_info = {
-            'ip': self.config.agent_host,
-            'region': self.config.region,
-            'addr': f'tcp://{self.config.agent_host}:{self.config.agent_port}',
+            'ip': self.config['agent']['host'],
+            'region': self.config['agent']['region'],
+            'addr': f"tcp://{self.config['agent']['host']}:{self.config['agent']['port']}",
             'resource_slots': res_slots,
             'version': VERSION,
             'compute_plugins': {
@@ -1681,7 +1683,7 @@ print(json.dumps(files))''' % {'path': path}
                 # When the agent restarts with a different port range, existing
                 # containers' host ports may not belong to the new port range.
                 try:
-                    if not self.config.debug_skip_container_deletion:
+                    if not self.config['debug']['skip-container-deletion']:
                         await container.delete()
                         await env_container.delete()
                 except DockerError as e:
@@ -1692,7 +1694,7 @@ print(json.dumps(files))''' % {'path': path}
                     else:
                         log.warning('container deletion: {0!r}', e)
                 finally:
-                    port_range = self.config.container_port_range
+                    port_range = self.config['container']['port-range']
                     restored_ports = [*filter(
                         lambda p: port_range[0] <= p <= port_range[1],
                         kernel_info['host_ports'])]
@@ -1701,10 +1703,10 @@ print(json.dumps(files))''' % {'path': path}
         if kernel_id in self.restarting_kernels:
             self.restarting_kernels[kernel_id].destroy_event.set()
         else:
-            scratch_dir = self.config.scratch_root / kernel_id
-            tmp_dir = self.config.scratch_root / f'{kernel_id}_tmp'
+            scratch_dir = self.config['container']['scratch-root'] / kernel_id
+            tmp_dir = self.config['container']['scratch-root'] / f'{kernel_id}_tmp'
             try:
-                if sys.platform == 'linux' and self.config.scratch_in_memory:
+                if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
                     shutil.rmtree(tmp_dir)
@@ -1764,18 +1766,23 @@ print(json.dumps(files))''' % {'path': path}
 @aiotools.server
 async def server_main(loop, pidx, _args):
 
-    args = _args[0]
-    args.instance_id = await identity.get_instance_id()
-    args.inst_type = await identity.get_instance_type()
-    if not args.agent_host:
-        args.agent_host = await identity.get_instance_ip()
-    args.region = await identity.get_instance_region()
+    config = _args[0]
+    if not config['agent']['id']:
+        config['agent']['id'] = await identity.get_instance_id()
+    if not config['agent']['instance-type']:
+        config['agent']['instance-type'] = await identity.get_instance_type()
+    if not config['agent']['host']:
+        config['agent']['host'] = await identity.get_instance_ip()
+    if not config['container']['kernel-host']:
+        config['container']['kernel-host'] = config['agent']['host']
+    if not config['agent']['region']:
+        config['agent']['region'] = await identity.get_instance_region()
     log.info('Node ID: {0} (machine-type: {1}, host: {2})',
-             args.instance_id, args.inst_type, args.agent_host)
+             config['agent']['id'], config['agent']['instance-type'], config['agent']['host'])
 
     # Start RPC server.
     try:
-        agent = AgentRPCServer(args, loop=loop)
+        agent = AgentRPCServer(config, loop=loop)
         await agent.init()
     except InitializationError as e:
         log.error('Agent initialization failed: {}', e)
@@ -1793,147 +1800,108 @@ async def server_main(loop, pidx, _args):
         await agent.shutdown(stop_signal)
 
 
-def main():
-    parser = configargparse.ArgumentParser()
-    parser.add('--namespace', type=str, default='local',
-               env_var='BACKEND_NAMESPACE',
-               help='The namespace of this Backend.AI cluster. (default: local)')
-    parser.add('--agent-host-override', type=str, default=None,
-               dest='agent_host',
-               env_var='BACKEND_AGENT_HOST_OVERRIDE',
-               help='Manually set the IP address of this agent to report to the '
-                    'manager.')
-    parser.add('--kernel-host-override', type=str, default=None,
-               env_var='BACKEND_KERNEL_HOST_OVERRIDE',
-               help='Manually set the IP address of kernels spawned by this agent '
-                    'to report to the manager.')
-    parser.add('--agent-port', type=port_no, default=6001,
-               env_var='BACKEND_AGENT_PORT',
-               help='The port number to listen on.')
-    parser.add('--container-port-range', type=port_range, default=(30000, 31000),
-               env_var='BACKEND_CONTAINER_PORT_RANGE',
-               help='The range of host public ports to be used by containers '
-                    '(inclusive)')
-    parser.add('--etcd-addr', type=host_port_pair,
-               env_var='BACKEND_ETCD_ADDR',
-               default=HostPortPair(ip_address('127.0.0.1'), 2379),
-               help='The host:port pair of the etcd cluster or its proxy.')
-    parser.add('--etcd-user', type=str,
-               env_var='BACKEND_ETCD_USER',
-               default=None,
-               help='The username for the etcd cluster.')
-    parser.add('--etcd-password', type=str,
-               env_var='BACKEND_ETCD_PASSWORD',
-               default=None,
-               help='The password the user for the etcd cluster.')
-    parser.add('--idle-timeout', type=non_negative_int, default=None,
-               help='Depreacted. Use keypair resource policy to control this.')
-    parser.add('--sandbox-type', type=str,
-               choices=['docker', 'jail'], default='docker',
-               env_var='BACKEND_SANDBOX_TYPE',
-               help='Choose the additional security sandboxing layer for contaiers.')
-    parser.add('--jail-arg', action='append', default=[],
-               help='Additional arguments to the jail to change its behavior.')
-    parser.add('--kernel-uid', type=str, default=None,
-               help='The username/UID to run kernel containers. '
-                    '(default: the same user where the agent runs)')
-    parser.add('--scratch-in-memory', action='store_true', default=False,
-               help='Keep the scratch and tmp directory in memory '
-                    '(only available at Linux)')
-    parser.add('--debug-kernel', type=Path, default=None,
-               env_var='DEBUG_KERNEL',
-               help='Deprecated.')
-    parser.add('--debug-jail', type=Path, default=None,
-               env_var='DEBUG_JAIL',
-               help='Deprecated.')
-    parser.add('--debug-hook', type=Path, default=None,
-               env_var='DEBUG_HOOK',
-               help='Deprecated.')
-    parser.add('--debug-skip-container-deletion', action='store_true', default=False,
-               help='If specified, skips container deletion when container is dead '
-                    'or killed.  You may check the container logs for additional '
-                    'in-container debugging, but also need to manaully remove them.')
-    parser.add('--kernel-aliases', type=str, default=None,
-               help='The filename for additional kernel aliases')
-    parser.add('--limit-cpus', type=str, default=None,
-               help='The hexademical mask to limit available CPUs '
-                    'reported to the manager (default: not limited)')
-    parser.add('--limit-gpus', type=str, default=None,
-               help='The hexademical mask to limit available CUDA GPUs '
-                    'reported to the manager (default: not limited)')
-    parser.add('--pid-file', type=Path, default=None,
-               env_var='BACKEND_PID_FILE',
-               help='The path to the pid file.  If not set, it does not '
-                    'create the pid file.')
-    parser.add('--scratch-root', type=Path,
-               default=Path('/var/cache/scratches'),
-               env_var='BACKEND_SCRATCH_ROOT',
-               help='The scratch directory to store container working directories.')
+@click.group(invoke_without_command=True)
+@click.option('-f', '--config-path', '--config', type=Path, default=None,
+              help='The config file path. (default: ./agent.conf and /etc/backend.ai/agent.conf)')
+@click.option('--debug', is_flag=True,
+              help='Enable the debug mode and override the global log level to DEBUG.')
+@click.pass_context
+def main(ctx, config_path, debug):
 
-    plugins = [
-        'stats_monitor',
-        'error_monitor',
-    ]
-    add_plugin_args(parser, plugins)
+    agent_config_iv = t.Dict({
+        t.Key('agent'): t.Dict({
+            t.Key('host', default=''): t.String(allow_blank=True),
+            t.Key('port', default=6001): t.Int[1:65535],
+            t.Key('id', default=None): t.Null | t.String,
+            t.Key('region', default=None): t.Null | t.String,
+            t.Key('instance-type', default=None): t.Null | t.String,
+            t.Key('scaling-group', default='default'): t.String,
+            t.Key('pid-file', default=os.devnull): tx.Path(type='file',
+                                                           allow_nonexisting=True,
+                                                           allow_devnull=True),
+        }).allow_extra('*'),
+        t.Key('container'): t.Dict({
+            t.Key('kernel-uid', default=-1): tx.UID,
+            t.Key('kernel-host', default=''): t.String(allow_blank=True),
+            t.Key('port-range', default=(30000, 31000)): tx.PortRange,
+            t.Key('sandbox-type'): t.Enum('docker', 'jail'),
+            t.Key('jail-args'): t.List(t.String),
+            t.Key('scratch-type'): t.Enum('hostdir', 'memory'),
+            t.Key('scratch-root', default='./scratches'): tx.Path(type='dir', auto_create=True),
+            t.Key('scratch-size', default='0'): tx.BinarySize,
+        }).allow_extra('*'),
+        t.Key('logging'): t.Any,  # checked in ai.backend.common.logging
+        t.Key('resource'): t.Dict({
+            t.Key('reserved-cpu', default=1): t.Int,
+            t.Key('reserved-mem', default="1G"): tx.BinarySize,
+            t.Key('reserved-disk', default="8G"): tx.BinarySize,
+        }).allow_extra('*'),
+        t.Key('debug'): t.Dict({
+            t.Key('enabled', default=False): t.Bool,
+            t.Key('skip-container-deletion', default=False): t.Bool,
+        }).allow_extra('*'),
+    }).allow_extra('*').merge(config.etcd_config_iv)
 
-    Logger.update_log_args(parser)
-    args = parser.parse_args()
+    # Determine where to read configuration.
+    raw_cfg, cfg_src_path = config.read_from_file(config_path, 'agent')
 
-    assert args.scratch_root.exists()
-    assert args.scratch_root.is_dir()
+    # Override the read config with environment variables (for legacy).
+    config.override_with_env(raw_cfg, ('etcd', 'namespace'), 'BACKEND_NAMESPACE')
+    config.override_with_env(raw_cfg, ('etcd', 'addr'), 'BACKEND_ETCD_ADDR')
+    config.override_with_env(raw_cfg, ('etcd', 'user'), 'BACKEND_ETCD_USER')
+    config.override_with_env(raw_cfg, ('etcd', 'password'), 'BACKEND_ETCD_PASSWORD')
+    config.override_with_env(raw_cfg, ('agent', 'port'), 'BACKEND_AGENT_PORT')
+    config.override_with_env(raw_cfg, ('agent', 'host'), 'BACKEND_AGENT_HOST_OVERRIDE')
+    config.override_with_env(raw_cfg, ('agent', 'pid-file'), 'BACKEND_PID_FILE')
+    config.override_with_env(raw_cfg, ('container', 'port-range'), 'BACKEND_CONTAINER_PORT_RANGE')
+    config.override_with_env(raw_cfg, ('container', 'kernel-host'), 'BACKEND_KERNEL_HOST_OVERRIDE')
+    config.override_with_env(raw_cfg, ('container', 'sandbox-type'), 'BACKEND_SANDBOX_TYPE')
+    config.override_with_env(raw_cfg, ('container', 'scratch-root'), 'BACKEND_SCRATCH_ROOT')
+    if debug:
+        config.override_key(raw_cfg, ('debug', 'enabled'), True)
+        config.override_key(raw_cfg, ('logging', 'level'), 'DEBUG')
+        config.override_key(raw_cfg, ('logging', 'pkg-ns', 'ai.backend'), 'DEBUG')
 
-    if args.debug_kernel is not None:
-        args.debug_kernel = args.debug_kernel.resolve()
-        assert args.debug_kernel.match('ai/backend'), \
-               'debug-kernel path must end with "ai/backend".'
-    if args.debug_jail is not None:
-        args.debug_jail = args.debug_jail.resolve()
-    if args.debug_hook is not None:
-        args.debug_hook = args.debug_hook.resolve()
-
-    if args.limit_cpus is not None:
-        args.limit_cpus = int(args.limit_cpus, 16)
-        args.limit_cpus = bitmask2set(args.limit_cpus)
-    if args.limit_gpus is not None:
-        args.limit_gpus = int(args.limit_gpus, 16)
-        args.limit_gpus = bitmask2set(args.limit_gpus)
-
+    # Validate and fill configurations
+    # (allow_extra will make configs to be forward-copmatible)
     try:
-        if args.kernel_uid is None:
-            args.kernel_uid = os.getuid()
-        else:
-            args.kernel_uid = int(args.kernel_uid)
-        # Note that this uid may not exist in the host
-        # as it might be only valid in containers
-        # depending on the user setup.
-    except ValueError:
-        # But when the string is given, we must be able
-        # to find it in our host's password db.
-        args.kernel_uid = pwd.getpwnam(args.kernel_uid).pw_uid
+        cfg = config.check(raw_cfg, agent_config_iv)
+        if 'debug'in cfg and cfg['debug']['enabled']:
+            print('== Agent configuration ==')
+            pprint(cfg)
+        cfg['_src'] = cfg_src_path
+    except config.ConfigurationError as e:
+        print('Validation of agent configuration has failed:', file=sys.stderr)
+        print(pformat(e.invalid_data), file=sys.stderr)
+        raise click.Abort()
 
-    logger = Logger(args)
-    logger.add_pkg('aiodocker')
-    logger.add_pkg('aiotools')
-    logger.add_pkg('ai.backend')
-    setproctitle(f'backend.ai: agent {args.namespace} *:{args.agent_port}')
-    if args.pid_file is not None:
-        args.pid_file.write_text(str(os.getpid()))
+    if ctx.invoked_subcommand is None:
+        cfg['agent']['pid-file'].write_text(str(os.getpid()))
+        try:
+            logger = Logger(cfg['logging'])
+            with logger:
+                ns = cfg['etcd']['namespace']
+                setproctitle(f"backend.ai: agent {ns} *:{cfg['agent']['port']}")
+                log.info('Backend.AI Agent {0}', VERSION)
+                log.info('runtime: {0}', utils.env_info())
 
-    with logger:
-        log.info('Backend.AI Agent {0}', VERSION)
-        log.info('runtime: {0}', utils.env_info())
+                log_config = logging.getLogger('ai.backend.agent.config')
+                if debug:
+                    log_config.debug('debug mode enabled.')
 
-        log_config = logging.getLogger('ai.backend.agent.config')
-        if args.debug:
-            log_config.debug('debug mode enabled.')
-
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-        aiotools.start_server(server_main, num_workers=1,
-                              use_threading=True, args=(args, ))
-        log.info('exit.')
-        if args.pid_file is not None:
-            args.pid_file.unlink()
+                asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+                aiotools.start_server(server_main, num_workers=1,
+                                      use_threading=True, args=(cfg, ))
+                log.info('exit.')
+        finally:
+            if cfg['agent']['pid-file'].is_file():
+                # check is_file() to prevent deleting /dev/null!
+                cfg['agent']['pid-file'].unlink()
+    else:
+        # Click is going to invoke a subcommand.
+        pass
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

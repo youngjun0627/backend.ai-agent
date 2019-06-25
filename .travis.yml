@@ -1,16 +1,11 @@
 language: python
 dist: xenial
 sudo: required
-before_cache:
-  - rm -f $HOME/.cache/pip/log/debug.log
 cache:
   directories:
     - $HOME/.cache/pip
-addons:
-  postgresql: "9.6"
 services:
   - docker
-  - postgresql
   - redis-server
 addons:
   apt:
@@ -26,32 +21,18 @@ stages:
 # build matrix for test stage
 os:
   - linux
-env:
-  global:
-    - BACKEND_ETCD_ADDR=localhost:2379
-    - BACKEND_NAMESPACE=testing
-    - BACKEND_REDIS_ADDR=localhost:6379
-    - BACKEND_DB_ADDR=localhost:5432
-    - BACKEND_DB_USER=postgres
-    - BACKEND_DB_PASSWORD=
-    - BACKEND_DB_NAME=testing
 python:
   - "3.6"
+  - "3.7"
 
 # default test job
-before_install:
-  # escape from TravisCI's default virtualenv
-  - type -t deactivate && deactivate || true
-  - export PATH=/opt/python/3.6/bin:$PATH
 install:
-  - if [[ $TRAVIS_BRANCH == "develop" ]]; then BRANCH="develop"; else BRANCH="master"; fi
-  # install backend.ai-agent
   - |
-    python -m venv ~/virtualenv/agent
-    source ~/virtualenv/agent/bin/activate
     pip install -U pip setuptools
-    sed -i'' -e "s/{BRANCH}/$BRANCH/g" requirements-ci.txt
     pip install -U -r requirements-ci.txt
+  - |
+    mkdir -p ~/.config/backend.ai
+    cp config/ci.toml ~/.config/backend.ai/agent.toml
 before_script:
   # load etcd server
   - mkdir -p /tmp/etcd
@@ -70,9 +51,11 @@ before_script:
      --initial-cluster-token backendai-etcd-token
      --initial-cluster-state new
      --auto-compaction-retention 1
+  - docker exec -it backendai-etcd /bin/ash -c 'ETCDCTL_API=3 etcdctl put /sorna/testing/config/redis/addr 127.0.0.1:6379'
+  - sudo setcap cap_sys_ptrace,cap_sys_admin,cap_dac_override+eip $(readlink -f $(which python))
 script:
-  - source ~/virtualenv/agent/bin/activate; python -m flake8 src tests
-  - sudo bash -c 'source ~/virtualenv/agent/bin/activate; python -m pytest --cov=src'
+  - python -m flake8 src tests
+  - python -m pytest --cov=src
 after_success:
   - codecov
 after_script:
@@ -81,8 +64,7 @@ after_script:
 # stage def.
 jobs:
   include:
-    - stage: test
-
+    # test stage is implicitly included.
     - stage: deploy
       python: "3.6"
       before_install: skip
@@ -100,6 +82,8 @@ jobs:
         user: lablup
         password:
           secure: "TdL1VbJ/eLyFT3Aq9xz9M7m6c2At5BgLoKYEjjQB0mCo67aTrI8M2japAQ7wafVeBGGP4Mo8nnY+90tjmINg/x8bXvxCv7avEf9eq0HU6u+DIgeTYVPtZMNRbPWl8z7MPxOQBIwwszSV0dw9EHHTx14oSKtEnd9v9210+HJJtnNujo00QiNgU8NQVqAcBKCMyrqAeNlG4K0clZ1sD77W58gfCYfbIcYXNFV7n/J8ke/aSyBnow/n4JSj9kDUJgOojfg8jQ+d0/sUFxaYoaakvozz6zGvlRm57+NlBic1onMrHF7nuOLBFNDZguMTuemxDXqv7fZXp2QATA7u9WZtS2kW3alebQcbXq+SW9omG8uhbhHRkPiXMBUPvBz59fMPvy29zpN6b7f+ihA9QP47zi4pt6N6Z7Xovm3R+RctTSqZkWqc47eajVWZRevJ5Iw68woF0/p1w6pGm84eWonJDUlmofuwcmeYduj+J+y5bEPt9gHdUKM14uzhWQzsiV4NkapTWoX2IGILp/svJUTUrB2D7BrUrPKZ3NLKFjlVdXmhJZdcZ6ovsxh8C+Ls3i+fDAd3TKxy0TugwKXYScs26vRWcLx8mRlDCoY/BFyb7LtzDv/4/vyHvmJBY9XTxoz7PJRV1C2zUK1XOXjbh4iy4SYNIDB70izlswetRUgKlNQ="
+  allow_failures:
+    - python: "3.7"
 
 notifications:
   webhooks:

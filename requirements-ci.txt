@@ -1,3 +1,2 @@
--e git+https://github.com/aio-libs/aiodocker@master#egg=aiodocker
--e git+https://github.com/lablup/backend.ai-common@{BRANCH}#egg=backend.ai-common
+-e git+https://github.com/lablup/backend.ai-common@master#egg=backend.ai-common
 -e .[build,test,ci]

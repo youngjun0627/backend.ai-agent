@@ -28,7 +28,7 @@ known_slot_types = {}
 
 
 @attr.s(auto_attribs=True)
-class AbstractComputeDevice(metaclass=ABCMeta):
+class AbstractComputeDevice():
     device_id: DeviceId
     hw_location: str            # either PCI bus ID or arbitrary string
     numa_node: Optional[int]    # NUMA node ID (None if not applicable)

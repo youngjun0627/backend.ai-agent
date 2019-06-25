@@ -23,6 +23,7 @@ from setproctitle import setproctitle
 import zmq
 import zmq.asyncio
 
+from ai.backend.common import config
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.identity import is_containerized
 from ai.backend.common import msgpack
@@ -376,9 +377,9 @@ class StatContext:
                 },
             }
             log.debug('stats: node_updates: {0}: {1}',
-                      self.agent.config.instance_id, redis_agent_updates['node'])
-            pipe.set(self.agent.config.instance_id, msgpack.packb(redis_agent_updates))
-            pipe.expire(self.agent.config.instance_id, self.cache_lifespan)
+                      self.agent.config['agent']['id'], redis_agent_updates['node'])
+            pipe.set(self.agent.config['agent']['id'], msgpack.packb(redis_agent_updates))
+            pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
             for kernel_id, metrics in self.kernel_metrics.items():
                 serialized_metrics = {
                     key: obj.to_serializable_dict()
@@ -447,8 +448,9 @@ class StatContext:
 
 
 @aiotools.actxmgr
-async def spawn_stat_synchronizer(sync_sockpath: Path, stat_type: MetricTypes, cid: str, *,
-                                  exec_opts=None):
+async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
+                                  stat_type: MetricTypes, cid: str,
+                                  *, exec_opts=None):
     # Spawn high-perf stats collector process for Linux native setups.
     # NOTE: We don't have to keep track of this process,
     #       as they will self-terminate when the container terminates.
@@ -461,7 +463,7 @@ async def spawn_stat_synchronizer(sync_sockpath: Path, stat_type: MetricTypes, c
 
     proc = await asyncio.create_subprocess_exec(*[
         sys.executable, '-m', 'ai.backend.agent.stats',
-        str(sync_sockpath), cid, '--type', stat_type.value,
+        str(config_path), str(sync_sockpath), cid, '--type', stat_type.value,
     ], **exec_opts)
 
     signal_sockpath = ipc_base_path / f'stat-start-{proc.pid}.sock'
@@ -626,6 +628,7 @@ def main(args):
 if __name__ == '__main__':
     # The entry point for stat collector daemon
     parser = argparse.ArgumentParser()
+    parser.add_argument('config_path', type=str)
     parser.add_argument('sockpath', type=str)
     parser.add_argument('cid', type=str)
     parser.add_argument('-t', '--type', choices=['cgroup', 'api'],
@@ -633,9 +636,17 @@ if __name__ == '__main__':
     args = parser.parse_args()
     setproctitle(f'backend.ai: stat-collector {args.cid[:7]}')
 
-    log_config = argparse.Namespace()
-    log_config.log_file = None
-    log_config.debug = False
-    logger = Logger(log_config)
+    raw_cfg, _ = config.read_from_file(args.config_path, 'agent')
+    raw_logging_cfg = raw_cfg.get('logging', None)
+    if raw_logging_cfg:
+        # To prevent corruption of file logs which requires only a single writer.
+        raw_logging_cfg['drivers'].remove('file')
+    fallback_logging_cfg = {
+        'level': 'INFO',
+        'drivers': ['console'],
+        'pkg-ns': {'ai.backend': 'INFO'},
+        'console': {'colored': True, 'format': 'verbose'},
+    }
+    logger = Logger(raw_logging_cfg or fallback_logging_cfg)
     with logger:
         main(args)
