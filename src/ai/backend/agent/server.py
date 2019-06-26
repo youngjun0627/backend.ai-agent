@@ -2,7 +2,7 @@ import asyncio
 import base64
 import functools
 import hashlib
-from ipaddress import ip_network
+from ipaddress import ip_network, _BaseAddress as BaseIPAddress
 import logging, logging.config
 import os, os.path
 from pathlib import Path
@@ -1882,6 +1882,13 @@ def main(cli_ctx, config_path, debug):
     except config.ConfigurationError as e:
         print('Validation of agent configuration has failed:', file=sys.stderr)
         print(pformat(e.invalid_data), file=sys.stderr)
+        raise click.Abort()
+
+    rpc_host = cfg['agent']['rpc-listen-addr'].host
+    if (isinstance(rpc_host, BaseIPAddress) and
+        (rpc_host.is_unspecified or rpc_host.is_link_local)):
+        print('Cannot use link-local or unspecified IP address as the RPC listening host.',
+              file=sys.stderr)
         raise click.Abort()
 
     if cli_ctx.invoked_subcommand is None:
