@@ -210,7 +210,12 @@ def main(cli_ctx, config_path, debug):
         print(pformat(e.invalid_data), file=sys.stderr)
         raise click.Abort()
 
+    # Change the filename from the logging config's file section.
     logger = Logger(cfg['logging'])
+    if 'file' in cfg['logging']['drivers']:
+        fn = Path(cfg['logging']['file']['filename'])
+        cfg['logging']['file']['filename'] = f"{fn.stem}-watcher{fn.suffix}"
+
     setproctitle(f"backend.ai: watcher {cfg['etcd']['namespace']}")
     with logger:
         log.info('Backend.AI Agent Watcher {0}', VERSION)
