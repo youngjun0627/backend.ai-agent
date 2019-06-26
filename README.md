@@ -76,7 +76,7 @@ Note that you need a working manager running with the halfstack already!
 * `backend.ai-dev`
   - `manager` (git clone from [the manager repo](https://github.com/lablup/backend.ai-manager))
   - `agent` (git clone from here)
-  - `common` (git clone from [the client-py repo](https://github.com/lablup/backend.ai-common))
+  - `common` (git clone from [the common repo](https://github.com/lablup/backend.ai-common))
 
 Install `backend.ai-common` as an editable package in the agent (and the manager) virtualenvs
 to keep the codebase up-to-date.
