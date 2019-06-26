@@ -68,7 +68,6 @@ from .utils import (
     get_kernel_id_from_container,
     host_pid_to_container_pid,
     container_pid_to_host_pid,
-    fetch_local_ipaddrs,
 )
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 
@@ -203,10 +202,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         'agent_sock_task',
     )
 
-    def __init__(self, config, loop=None):
+    def __init__(self, etcd, config, loop=None):
         self.loop = loop if loop else current_loop()
         self.config = config
-        self.etcd = None
+        self.etcd = etcd
         self.agent_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()[:12]
 
         self.docker = Docker()
@@ -462,23 +461,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('running with Docker {0} with API {1}',
                  docker_version['Version'], docker_version['ApiVersion'])
         await self.check_images()
-
-        etcd_credentials = None
-        if self.config['etcd']['user']:
-            etcd_credentials = {
-                'user': self.config['etcd']['user'],
-                'password': self.config['etcd']['password'],
-            }
-
-        scope_prefix_map = {
-            ConfigScopes.GLOBAL: '',
-            ConfigScopes.SGROUP: f"sgroup/{self.config['agent']['scaling-group']}",
-            ConfigScopes.NODE: f"nodes/agents/{self.config['agent']['id']}",
-        }
-        self.etcd = AsyncEtcd(self.config['etcd']['addr'],
-                              self.config['etcd']['namespace'],
-                              scope_prefix_map,
-                              credentials=etcd_credentials)
 
         computers, self.slots = await detect_resources(self.etcd)
         for name, klass in computers.items():
@@ -1130,7 +1112,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             exposed_ports.append(2003)
         log.debug('exposed ports: {!r}', exposed_ports)
 
-        subnet = await self.etcd.get('config/network/subnet')
+        subnet = await self.etcd.get('config/network/subnet/container')
         if subnet is None:
             container_external_ip = '0.0.0.0'
         else:
@@ -1138,7 +1120,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             if subnet.prefixlen == 0:
                 container_external_ip = '0.0.0.0'
             else:
-                local_ipaddrs = [*fetch_local_ipaddrs(subnet)]
+                local_ipaddrs = [*identity.fetch_local_ipaddrs(subnet)]
                 if local_ipaddrs:
                     container_external_ip = str(local_ipaddrs[0])
                 else:
@@ -1767,8 +1749,27 @@ print(json.dumps(files))''' % {'path': path}
 
 @aiotools.server
 async def server_main(loop, pidx, _args):
-
     config = _args[0]
+
+    etcd_credentials = None
+    if config['etcd']['user']:
+        etcd_credentials = {
+            'user': config['etcd']['user'],
+            'password': config['etcd']['password'],
+        }
+    scope_prefix_map = {
+        ConfigScopes.GLOBAL: '',
+        ConfigScopes.SGROUP: f"sgroup/{config['agent']['scaling-group']}",
+        ConfigScopes.NODE: f"nodes/agents/{config['agent']['id']}",
+    }
+    etcd = AsyncEtcd(config['etcd']['addr'],
+                     config['etcd']['namespace'],
+                     scope_prefix_map,
+                     credentials=etcd_credentials)
+    subnet_hint = await etcd.get('config/network/subnet/agent')
+    if subnet_hint is not None:
+        subnet_hint = ip_network(subnet_hint)
+
     if not config['agent']['id']:
         config['agent']['id'] = await identity.get_instance_id()
     if not config['agent']['instance-type']:
@@ -1776,7 +1777,7 @@ async def server_main(loop, pidx, _args):
     rpc_addr = config['agent']['rpc-listen-addr']
     if not rpc_addr.host:
         config['agent']['rpc-listen-addr'] = HostPortPair(
-            await identity.get_instance_ip(),
+            await identity.get_instance_ip(subnet_hint),
             rpc_addr.port,
         )
     if not config['container']['kernel-host']:
@@ -1790,7 +1791,7 @@ async def server_main(loop, pidx, _args):
 
     # Start RPC server.
     try:
-        agent = AgentRPCServer(config, loop=loop)
+        agent = AgentRPCServer(etcd, config, loop=loop)
         await agent.init()
     except InitializationError as e:
         log.error('Agent initialization failed: {}', e)
