@@ -71,6 +71,23 @@ $ docker pull lablup/backendai-krunner-env:19.03-ubuntu16.04
 With the halfstack, you can run the agent simply.
 Note that you need a working manager running with the halfstack already!
 
+#### Recommended directory structure
+
+* `backend.ai-dev`
+  - `manager` (git clone from [the manager repo](https://github.com/lablup/backend.ai-manager))
+  - `agent` (git clone from here)
+  - `common` (git clone from [the client-py repo](https://github.com/lablup/backend.ai-common))
+
+Install `backend.ai-common` as an editable package in the agent (and the manager) virtualenvs
+to keep the codebase up-to-date.
+
+```console
+$ cd agent
+$ pip install -U -e ../common
+```
+
+#### Steps
+
 ```console
 $ mkdir -p "./scratches"
 $ cp config/halfstack.toml ./agent.toml
