@@ -638,7 +638,7 @@ if __name__ == '__main__':
 
     raw_cfg, _ = config.read_from_file(args.config_path, 'agent')
     raw_logging_cfg = raw_cfg.get('logging', None)
-    if raw_logging_cfg:
+    if raw_logging_cfg and 'file' in raw_logging_cfg['drivers']:
         # To prevent corruption of file logs which requires only a single writer.
         raw_logging_cfg['drivers'].remove('file')
     fallback_logging_cfg = {
