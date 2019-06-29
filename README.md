@@ -175,14 +175,14 @@ source /home/user/venv-agent/bin/activate
 exec python -m ai.backend.agent.server
 ```
 
-## Networking
+### Networking
 
 The manager and agent should run in the same local network or different
 networks reachable via VPNs, whereas the manager's API service must be exposed to
 the public network or another private network that users have access to.
 
-The manager must be able to access TCP ports 6001, 6009, and 30000 to 31000 in default configurations.
-(You can of course change those port numbers and ranges in the configuration.)
+The manager must be able to access TCP ports 6001, 6009, and 30000 to 31000 of the agents in default
+configurations.  You can of course change those port numbers and ranges in the configuration.
 
 | Manager-to-Agent TCP Ports | Usage |
 |:--------------------------:|-------|
