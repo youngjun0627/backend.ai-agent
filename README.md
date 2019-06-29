@@ -121,7 +121,7 @@ $ python -m pytest -m 'not integration' tests
 
 ### Configuration
 
-Put a TOML-formatted manager configuration (see the sample in `config/sample.toml`)
+Put a TOML-formatted agent configuration (see the sample in `config/sample.toml`)
 in one of the following locations:
 
  * `agent.toml` (current working directory)
@@ -177,14 +177,27 @@ exec python -m ai.backend.agent.server
 
 ## Networking
 
-Basically all TCP ports must be transparently open to the manager.
 The manager and agent should run in the same local network or different
-networks reachable via VPNs.
+networks reachable via VPNs, whereas the manager's API service must be exposed to
+the public network or another private network that users have access to.
+
+The manager must be able to access TCP ports 6001, 6009, and 30000 to 31000 in default configurations.
+(You can of course change those port numbers and ranges in the configuration.)
+
+| Manager-to-Agent TCP Ports | Usage |
+|:--------------------------:|-------|
+| 6001                       | ZeroMQ-based RPC calls from managers to agents |
+| 6009                       | HTTP watcher API |
+| 30000-31000                | Port pool for in-container services |
 
 The operation of agent itself does not require both incoming/outgoing access to
-the public Internet, but if the user's computation programs need, the docker
-containers should be able to access the public Internet (maybe via some
-corporate firewalls).
+the public Internet, but if the user's computation programs need the Internet, the docker containers
+should be able to access the public Internet (maybe via some corporate firewalls).
 
-Several optional features such as automatic kernel image updates may require
-outgoing public Internet access from the agent as well.
+| Agent-to-X TCP Ports     | Usage |
+|:------------------------:|-------|
+| manager:5002             | ZeroMQ-based event push from agents to the manager |
+| etcd:2379                | etcd API access |
+| redis:6379               | Redis API access |
+| docker-registry:{80,443} | HTTP watcher API |
+| (Other hosts)            | Depending on user program requirements |
