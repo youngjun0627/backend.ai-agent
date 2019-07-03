@@ -1829,7 +1829,7 @@ def main(cli_ctx, config_path, debug):
                                                            allow_devnull=True),
         }).allow_extra('*'),
         t.Key('container'): t.Dict({
-            t.Key('kernel-uid', default=-1): tx.UID,
+            t.Key('kernel-uid', default=-1): tx.UserID,
             t.Key('kernel-host', default=''): t.String(allow_blank=True),
             t.Key('port-range', default=(30000, 31000)): tx.PortRange,
             t.Key('sandbox-type'): t.Enum('docker', 'jail'),
