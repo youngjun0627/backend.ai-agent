@@ -1072,6 +1072,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 uid = int(environ['LOCAL_USER_ID'])
                 if os.getuid() == 0:  # only possible when I am root.
                     os.chown(work_dir, uid, uid)
+                    os.chown(work_dir / '.jupyter', uid, uid)
             os.makedirs(config_dir, exist_ok=True)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
