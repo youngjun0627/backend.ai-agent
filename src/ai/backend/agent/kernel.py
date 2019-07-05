@@ -189,11 +189,14 @@ class KernelRunner:
             json.dumps(service_info).encode('utf8'),
         ])
         try:
-            result = await self.service_queue.get()
+            with timeout(30):
+                result = await self.service_queue.get()
             self.service_queue.task_done()
             return json.loads(result)
         except asyncio.CancelledError:
             return {'status': 'failed', 'error': 'cancelled'}
+        except asyncio.TimeoutError:
+            return {'status': 'failed', 'error': 'timeout'}
 
     async def watchdog(self):
         try:
