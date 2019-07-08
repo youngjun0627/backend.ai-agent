@@ -17,8 +17,9 @@ import sys
 import time
 from typing import Callable, List, Mapping, FrozenSet, Tuple, Optional
 
-import attr
+import aiodocker
 import aiotools
+import attr
 from setproctitle import setproctitle
 import zmq
 import zmq.asyncio
@@ -433,17 +434,23 @@ class StatContext:
                         else:
                             self.kernel_metrics[kernel_id][metric_key].update(measure)
 
-            pipe = self.agent.redis_stat_pool.pipeline()
-            metrics = self.kernel_metrics[kernel_id]
-            serialized_metrics = {
-                key: obj.to_serializable_dict()
-                for key, obj in metrics.items()
-            }
-            log.debug('kernel_updates: {0}: {1}',
-                      kernel_id, serialized_metrics)
-            pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-            pipe.expire(kernel_id, self.cache_lifespan)
-            await pipe.execute()
+            try:
+                pipe = self.agent.redis_stat_pool.pipeline()
+                metrics = self.kernel_metrics[kernel_id]
+                serialized_metrics = {
+                    key: obj.to_serializable_dict()
+                    for key, obj in metrics.items()
+                }
+                log.debug('kernel_updates: {0}: {1}',
+                          kernel_id, serialized_metrics)
+                pipe.set(kernel_id, msgpack.packb(serialized_metrics))
+                pipe.expire(kernel_id, self.cache_lifespan)
+                await pipe.execute()
+            except UnboundLocalError:
+                # TODO: In Mac, ctnr_measure.per_container is empty, resulting error in updating stats to
+                #       redis. This results in timeout when destroying a conatiner in mac. For now, we
+                #       just return empty metrics to circumvent the timeout.
+                return {}
             return metrics
 
 
@@ -569,6 +576,18 @@ def is_cgroup_running(cid):
         return (len(pids) > 1)
 
 
+async def is_container_running(cid):
+    docker = aiodocker.Docker()
+    try:
+        container = await docker.containers.get(cid)
+        stats = await container.show(stream=False)
+        return stats['State']['Running']
+    except (aiodocker.exceptions.DockerError, Exception):
+        return False
+    finally:
+        await docker.close()
+
+
 def main(args):
     '''
     The stat collector daemon.
@@ -582,7 +601,6 @@ def main(args):
     signal_sock = context.socket(zmq.PAIR)
     signal_sock.bind('ipc://' + str(signal_sockpath))
     try:
-
         sync_sock = context.socket(zmq.REQ)
         sync_sock.setsockopt(zmq.LINGER, 2000)
         sync_sock.connect('ipc://' + args.sockpath)
@@ -606,14 +624,22 @@ def main(args):
                     # Agent periodically collects container stats.
                     time.sleep(0.3)
         elif args.type == 'api':
+            loop = asyncio.get_event_loop()
             with closing(sync_sock):
                 # Notify the agent to start the container.
                 signal_sock.send_multipart([b''])
                 # Wait for the container to be actually started.
                 signal_sock.recv_multipart()
                 while True:
+                    # TODO: very last_stat is not collected in Mac environment.
+                    is_running = loop.run_until_complete(is_container_running(args.cid))
+                    if not is_running:
+                        msg = {'status': 'terminated', 'cid': args.cid}
+                        trigger_and_wait_collection(msg)
+                        break
                     # Agent periodically collects container stats.
                     time.sleep(1.0)
+            loop.close()
 
     except (KeyboardInterrupt, SystemExit):
         sys.exit(1)
