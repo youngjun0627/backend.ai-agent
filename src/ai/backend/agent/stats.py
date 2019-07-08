@@ -447,9 +447,9 @@ class StatContext:
                 pipe.expire(kernel_id, self.cache_lifespan)
                 await pipe.execute()
             except UnboundLocalError:
-                # TODO: In Mac, ctnr_measure.per_container is empty, resulting error in updating stats to
-                #       redis. This results in timeout when destroying a conatiner in mac. For now, we
-                #       just return empty metrics to circumvent the timeout.
+                # NOTE: If a container is terminated just after the start, there may be no time to report
+                #       container stats to Redis. In that case, `Kernel_id`, and/or `metrics` is not
+                #       defined in this scope. If that's the case, we just return empty metric.
                 return {}
             return metrics
 
@@ -631,7 +631,6 @@ def main(args):
                 # Wait for the container to be actually started.
                 signal_sock.recv_multipart()
                 while True:
-                    # TODO: very last_stat is not collected in Mac environment.
                     is_running = loop.run_until_complete(is_container_running(args.cid))
                     if not is_running:
                         msg = {'status': 'terminated', 'cid': args.cid}
