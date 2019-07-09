@@ -433,16 +433,21 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             async for msg in aiotools.aiter(lambda: recv(), None):
                 cid = msg[0]['cid']
                 status = msg[0]['status']
-                if cid not in self.stat_sync_states:
-                    # If the agent has restarted, the state-tracking dict may be empty.
-                    container = self.docker.containers.container(cid)
-                    kernel_id = await get_kernel_id_from_container(container)
-                    self.stat_sync_states[cid] = StatSyncState(kernel_id)
-                cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
-                await send([{'status': 'ok'}])
-                if status == 'terminated':
-                    self.stat_sync_states[cid].last_stat = cstat
-                    self.stat_sync_states[cid].terminated.set()
+                try:
+                    if cid not in self.stat_sync_states:
+                        # If the agent has restarted, the state-tracking dict may be empty.
+                        container = self.docker.containers.container(cid)
+                        kernel_id = await get_kernel_id_from_container(container)
+                        self.stat_sync_states[cid] = StatSyncState(kernel_id)
+                    if status == 'terminated':
+                        self.stat_sync_states[cid].terminated.set()
+                    elif status == 'collect-stat':
+                        cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
+                        self.stat_sync_states[cid].last_stat = cstat
+                    else:
+                        log.warning('unrecognized stat sync status: {}', status)
+                finally:
+                    await send([{'ack': True}])
         except asyncio.CancelledError:
             pass
         finally:

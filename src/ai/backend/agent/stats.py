@@ -236,7 +236,7 @@ class Metric:
 class StatSyncState:
     kernel_id: str
     terminated: asyncio.Event = attr.Factory(asyncio.Event)
-    last_stat: Mapping[MetricKey, Metric] = None
+    last_stat: Mapping[MetricKey, Metric] = attr.Factory(dict)
 
 
 class StatContext:
@@ -486,7 +486,7 @@ async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
 
 
 @contextmanager
-def join_cgroup_and_namespace(cid, trigger_and_wait_collection, signal_sock):
+def join_cgroup_and_namespace(cid, ping_agent, signal_sock):
     libc = CDLL('libc.so.6', use_errno=True)
     libc.setns.errcheck = _errcheck
     mypid = os.getpid()
@@ -527,7 +527,7 @@ def join_cgroup_and_namespace(cid, trigger_and_wait_collection, signal_sock):
         print('Cannot read cgroup filesystem.\n'
               'The container did not start or may have already terminated.',
               file=sys.stderr)
-        trigger_and_wait_collection({
+        ping_agent({
             'cid': args.cid,
             'status': 'terminated',
         })
@@ -548,7 +548,7 @@ def join_cgroup_and_namespace(cid, trigger_and_wait_collection, signal_sock):
         sys.exit(1)
     except (FileNotFoundError, KeyError):
         print('The container has already terminated.', file=sys.stderr)
-        trigger_and_wait_collection({
+        ping_agent({
             'cid': args.cid,
             'status': 'terminated',
         })
@@ -605,7 +605,7 @@ def main(args):
         sync_sock.setsockopt(zmq.LINGER, 2000)
         sync_sock.connect('ipc://' + args.sockpath)
 
-        def trigger_and_wait_collection(msg):
+        def ping_agent(msg):
             sync_sock.send_serialized([msg], lambda msgs: [*map(msgpack.packb, msgs)])
             sync_sock.recv_serialized(lambda frames: [*map(msgpack.unpackb, frames)])
 
@@ -613,13 +613,17 @@ def main(args):
 
         if args.type == 'cgroup':
             with closing(sync_sock), join_cgroup_and_namespace(args.cid,
-                                                               trigger_and_wait_collection,
+                                                               ping_agent,
                                                                signal_sock):
                 # Agent notification is done inside join_cgroup_and_namespace
                 while True:
-                    if not is_cgroup_running(args.cid):
-                        msg = {'status': 'terminated', 'cid': args.cid}
-                        trigger_and_wait_collection(msg)
+                    if is_cgroup_running(args.cid):
+                        ping_agent({'status': 'collect-stat', 'cid': args.cid})
+                    else:
+                        # Since we control cgroup destruction, we can collect
+                        # the last-moment statistics!
+                        ping_agent({'status': 'collect-stat', 'cid': args.cid})
+                        ping_agent({'status': 'terminated', 'cid': args.cid})
                         break
                     # Agent periodically collects container stats.
                     time.sleep(0.3)
@@ -632,9 +636,10 @@ def main(args):
                 signal_sock.recv_multipart()
                 while True:
                     is_running = loop.run_until_complete(is_container_running(args.cid))
-                    if not is_running:
-                        msg = {'status': 'terminated', 'cid': args.cid}
-                        trigger_and_wait_collection(msg)
+                    if is_running:
+                        ping_agent({'status': 'collect-stat', 'cid': args.cid})
+                    else:
+                        ping_agent({'status': 'terminated', 'cid': args.cid})
                         break
                     # Agent periodically collects container stats.
                     time.sleep(1.0)
