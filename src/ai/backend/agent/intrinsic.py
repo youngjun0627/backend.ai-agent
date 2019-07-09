@@ -446,10 +446,11 @@ class MemoryPlugin(AbstractComputePlugin):
                                    docker: 'aiodocker.docker.Docker',  # noqa
                                    device_alloc,
                                   ) -> Mapping[str, Any]:
+        memory = sum(device_alloc['mem'].values())
         return {
             'HostConfig': {
-                'MemorySwap': 0,
-                'Memory': sum(device_alloc['mem'].values()),
+                'MemorySwap': memory,  # prevent using swap!
+                'Memory': memory,
             }
         }
 

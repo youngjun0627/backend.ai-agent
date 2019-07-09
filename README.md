@@ -19,6 +19,55 @@ The Backend.AI Agent is a small daemon that does:
 
 Please visit [the installation guides](https://github.com/lablup/backend.ai/wiki).
 
+
+### Kernel/system configuration
+
+#### Recommended kernel parameters in the bootloader (e.g., Grub):
+
+```
+cgroup_enable=memory swapaccount=1
+```
+
+#### Recommended resource limits:
+
+**`/etc/security/limits.conf`**
+```
+root hard nofile 512000
+root soft nofile 512000
+root hard nproc 65536
+root soft nproc 65536
+user hard nofile 512000
+user soft nofile 512000
+user hard nproc 65536
+user soft nproc 65536
+```
+
+**sysctl**
+```
+fs.file-max=2048000
+net.core.somaxconn=1024
+net.ipv4.tcp_max_syn_backlog=1024
+net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_fin_timeout=10
+net.ipv4.tcp_window_scaling=1
+net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_early_retrans=1
+net.ipv4.ip_local_port_range="40000 65000"
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 12582912 16777216
+net.ipv4.tcp_wmem=4096 12582912 16777216
+net.netfilter.nf_conntrack_max=10485760
+net.netfilter.nf_conntrack_tcp_timeout_established=30
+net.netfilter.nf_conntrack_tcp_timeout_close_wait=10
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait=10
+net.netfilter.nf_conntrack_tcp_timeout_time_wait=10
+```
+
+The `ip_local_port_range` should not overlap with the container port range pool
+(default: 30000 to 31000).
+
+
 ### For development
 
 #### Prerequisites
