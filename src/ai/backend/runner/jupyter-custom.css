@@ -223,7 +223,8 @@ div.cell.code_cell.selected {
     display: none !important;
 }
 
-.clusters_tab_link {
+.clusters_tab_link,
+#ipyclusters {
     display: none !important;
 }
 
