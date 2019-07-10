@@ -55,3 +55,23 @@ docs/_build/
 
 # PyBuilder
 target/
+
+# IDE stuffs
+.idea/
+.env
+.envrc
+
+# Vim
+.*.swp
+
+# virtualenv
+venv*/
+.python-version
+
+# Development files
+scratches/
+
+agent.pid
+agent.toml
+.vscode/**/*
+.DS_Store
