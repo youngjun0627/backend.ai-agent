@@ -1,6 +1,16 @@
 Changes
 =======
 
+19.03.2 (2018-07-12)
+--------------------
+
+- Fix permission handling for container-agent intercommunication socket which
+  has prevented unexpected crashes of containers in certain conditions.
+
+- Mount hand-made tmp dirs only when custom tmpfs is enabled.
+
+- Update Jupyter style resources.
+
 19.03.1 (2018-04-21)
 --------------------
 
