@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.03.3 (2018-07-12)
+--------------------
+
+- Add missing updates for Jupyter style resources to disable Jupyter cluster
+  extension which is not compatible with us and to remove unused headers in the
+  terminal window.
+
 19.03.2 (2018-07-12)
 --------------------
 
