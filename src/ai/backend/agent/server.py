@@ -352,6 +352,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             return await self._create_kernel(kernel_id, config)
 
     @aiozmq.rpc.method
+    @update_last_used
+    async def destroy_kernel(self, kernel_id: str):
+        log.debug('rpc::destroy_kernel({0})', kernel_id)
+        async with self.handle_rpc_exception():
+            return await self._destroy_kernel(kernel_id, 'user-requested')
+
+    @aiozmq.rpc.method
     async def execute(self, api_version: int,
                       kernel_id: str,
                       run_id: t.String | t.Null,
@@ -369,7 +376,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def _create_kernel(self, kernel_id: str, kernel_config: dict, restarting: bool=False) -> dict:
 
         await self.send_event('kernel_preparing', kernel_id)
-        log.debug('create_kernel: kernel_config -> ' + json.dumps(kernel_config, ensure_ascii=False, indent=2))
+        log.debug('create_kernel: kernel_config -> {0}', json.dumps(kernel_config, ensure_ascii=False, indent=2))
         # Read image-specific labels and settings
         image_ref = ImageRef(
             kernel_config['image']['canonical'],
@@ -593,32 +600,29 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     
 
     async def _destroy_kernel(self, kernel_id, reason):
+        async def force_cleanup(reason='self-terminated'):
+                await self.send_event('kernel_terminated',
+                                      kernel_id, 'self-terminated',
+                                      None)
         try:
             kernel = self.container_registry[kernel_id]
         except:
             log.warning('_destroy_kernel({0}) kernel missing (already dead?)',
                         kernel_id)
 
-            async def force_cleanup():
-
-                await self.send_event('kernel_terminated',
-                                      kernel_id, 'self-terminated',
-                                      None)
-
             await asyncio.shield(force_cleanup())        
+        deployment_name = kernel['deployment_name']
         try:
-            await self.k8sCoreApi.delete_namespaced_service(f'{kernel_id}-service', 'backend-ai')
-            await self.k8sCoreApi.delete_namespaced_config_map(f'{kernel_id}-configmap', 'backend-ai')
-            await self.k8sAppsApi.delete_namespaced_deployment(f'{kernel_id}', 'backend-ai')
+            await self.k8sCoreApi.delete_namespaced_service(f'{deployment_name}-service', 'backend-ai')
+            await self.k8sCoreApi.delete_namespaced_config_map(f'{deployment_name}-configmap', 'backend-ai')
+            await self.k8sAppsApi.delete_namespaced_deployment(f'{deployment_name}', 'backend-ai')
         except:
             log.warning('_destroy({0}) kernel missing (already dead?)', kernel_id)
         
-            async def force_cleanup():
-
-                await self.send_event('kernel_terminated',
-                                      kernel_id, 'self-terminated',
-                                      None)
             await asyncio.shield(force_cleanup())
+        del self.container_registry[kernel_id]
+
+        await force_cleanup(reason=reason)
         return None
 
     async def _ensure_runner(self, kernel_id, *, api_version=3):
