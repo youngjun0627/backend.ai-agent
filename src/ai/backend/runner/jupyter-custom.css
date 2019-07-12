@@ -232,6 +232,11 @@ div.cell.code_cell.selected {
     display: none !important;
 }
 
+body.terminal-app #header {
+    display: none !important;
+}
+
+
 /* Editor */
 /*
 .CodeMirror { background: #272822; color: #f8f8f2; }
