@@ -14,4 +14,7 @@ else
 fi
 export HOME="/home/$USER_NAME"
 
+# Make the agent communication socket accessible by the user
+chown work /opt/backend.ai/agent.sock
+
 exec /opt/backend.ai/bin/su-exec $USER_NAME "$@"
