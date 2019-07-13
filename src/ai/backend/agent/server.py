@@ -199,7 +199,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         'hb_timer', 'clean_timer',
         'stats_monitor', 'error_monitor',
         'restarting_kernels', 'blocking_cleans',
-        'agent_sock_task',
     )
 
     def __init__(self, etcd, config, loop=None):
@@ -1330,6 +1329,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 self.error_monitor.capture_exception()
         except asyncio.CancelledError:
             log.exception('_destroy_kernel({0}) operation cancelled', kernel_id)
+            raise
         except Exception:
             log.exception('_destroy_kernel({0}) unexpected error', kernel_id)
             self.error_monitor.capture_exception()
@@ -1735,7 +1735,7 @@ print(json.dumps(files))''' % {'path': path}
 
     async def clean_all_kernels(self, blocking=False):
         log.info('cleaning all kernels...')
-        kernel_ids = tuple(self.container_registry.keys())
+        kernel_ids = [*self.container_registry.keys()]
         tasks = []
         if blocking:
             for kernel_id in kernel_ids:
@@ -1744,13 +1744,14 @@ print(json.dumps(files))''' % {'path': path}
             task = asyncio.ensure_future(
                 self._destroy_kernel(kernel_id, 'agent-termination'))
             tasks.append(task)
-        await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for kernel_id, result in zip(kernel_ids, results):
+            log.info('force-terminated kernel: {} (result: {})', kernel_id, result)
         if blocking:
             waiters = [self.blocking_cleans[kernel_id].wait()
                        for kernel_id in kernel_ids]
             await asyncio.gather(*waiters)
-            for kernel_id in kernel_ids:
-                self.blocking_cleans.pop(kernel_id, None)
+            self.blocking_cleans.clear()
 
 
 @aiotools.server
