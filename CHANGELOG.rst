@@ -1,6 +1,24 @@
 Changes
 =======
 
+19.06.0b1 (2018-07-13)
+----------------------
+
+- BREAKING CHANGE: The daemon configurations are read from TOML files and
+  shared configurations are from the etcd. (#112)
+
+- NEW: The agent now automatically determines the local agent IP address when:
+
+  - etcd's "config/network/subnet/agent" is set to a non-zero network prefix
+
+  - rpc-listen-addr is an empty string
+
+- Update Jupyter custom styles and resources
+
+- Update dependencies including uvloop
+
+- Add explicit timeout for service-port startup
+
 19.06.0a1 (2018-06-03)
 ----------------------
 
