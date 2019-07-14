@@ -1299,9 +1299,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await container.kill()
             # Collect the last-moment statistics.
             if cid in self.stat_sync_states:
-                await self.stat_sync_states[cid].terminated.wait()
-                last_stat = self.stat_sync_states[cid].last_stat
-                del self.stat_sync_states[cid]
+                s = self.stat_sync_states[cid]
+                await s.terminated.wait()
+                last_stat = s.last_stat
+                self.stat_sync_states.pop(cid, None)
                 last_stat = {
                     key: metric.to_serializable_dict()
                     for key, metric in last_stat.items()
