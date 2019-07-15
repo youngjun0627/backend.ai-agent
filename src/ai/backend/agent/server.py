@@ -19,6 +19,7 @@ import yaml
 
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
+import aiohttp
 import aioredis
 import aiotools
 import aiozmq
@@ -181,6 +182,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.container_registry = {}
         self.hb_timer = None
         self.clean_timer = None
+        self.scan_images_timer = None
+        self.images = []
 
         self.workers = {}
         self.master = None
@@ -213,12 +216,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             zmq.PUSH, connect=f"tcp://{self.config['event']['addr']}")
         self.event_sock.transport.setsockopt(zmq.LINGER, 50)
 
-        # TODO: Create k8s compatible image scanner
+        await self.scan_images(None)
         # TODO: Create k8s compatible stat collector
 
         # Send the first heartbeat.
         self.hb_timer    = aiotools.create_timer(self.heartbeat, 3.0)
         self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
+        self.scan_images_timer = aiotools.create_timer(self.scan_images, 60.0)
 
         # Start serving requests.
         rpc_addr = self.config['agent']['rpc-listen-addr']
@@ -247,6 +251,23 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def update_status(self, status):
         await self.etcd.put('', status, scope=ConfigScopes.NODE)
 
+    async def scan_images(self, interval):
+        addr, port = self.config['registry']['addr'].as_sockaddr()
+        registry_addr = f'https://{addr}:{port}'
+        updated_images = []
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
+            all_images = await session.get(f'{registry_addr}/v2/_catalog')
+            all_images = await all_images.json()
+            for image_name in all_images['repositories']:
+                image_tags = await session.get(f'{registry_addr}/v2/{image_name}/tags/list')
+                image_tags = await image_tags.json()
+                updated_images += [f'{image_name}:{x}' for x in image_tags['tags']]
+        
+        for added_image in list(set(updated_images) - set(self.images)):
+            log.debug('found kernel image: {0}', added_image)
+        for removed_image in list(set(self.images) - set(updated_images)):
+            log.debug('removed kernel image: {0}', removed_image)
+        self.images = updated_images
         
     async def heartbeat(self, interval):
         '''
@@ -270,14 +291,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 }
                 for key, computer in self.computers.items()
             },
-            # 'images': snappy.compress(msgpack.packb([
-            #     (repo_tag, digest) for repo_tag, digest in self.images.items()
-            # ])),
             'images': snappy.compress(msgpack.packb([
-                ('lablup/python:3.6-ubuntu18.04', '')
+                (x, 'K8S_AGENT') for x in self.images
             ]))
-            # TODO: Automatically determine available images
         }
+
         try:
             await self.send_event('instance_heartbeat', agent_info)
         except asyncio.TimeoutError:
@@ -406,7 +424,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             idle_timeout=kernel_config['idle_timeout'],
         )
 
-        deployment = KernelDeployment()
+        registry_addr, registry_port = self.config['registry']['addr']
+        canonical = kernel_config['image']['canonical']
+        
+        _, repo, name_with_tag = canonical.split('/')
+        deployment = KernelDeployment(f'{registry_addr}:{registry_port}/{repo}/{name_with_tag}')
+
         deployment.name = f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-')
 
         log.debug('Initial container config: {0}', deployment.to_dict())
@@ -610,7 +633,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             log.warning('_destroy_kernel({0}) kernel missing (already dead?)',
                         kernel_id)
 
-            await asyncio.shield(force_cleanup())        
+            await asyncio.shield(force_cleanup())
+            return None
         deployment_name = kernel['deployment_name']
         try:
             await self.k8sCoreApi.delete_namespaced_service(f'{deployment_name}-service', 'backend-ai')
@@ -619,7 +643,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             log.warning('_destroy({0}) kernel missing (already dead?)', kernel_id)
         
-            await asyncio.shield(force_cleanup())
         del self.container_registry[kernel_id]
 
         await force_cleanup(reason=reason)
@@ -827,6 +850,9 @@ def main(cli_ctx, config_path, debug):
             t.Key('scratch-root', default='./scratches'): tx.Path(type='dir', auto_create=True),
             t.Key('scratch-size', default='0'): tx.BinarySize,
         }).allow_extra('*'),
+        t.Key('registry'): t.Dict({
+            t.Key('addr'): tx.HostPortPair(allow_blank_host=False)
+        }),
         t.Key('logging'): t.Any,  # checked in ai.backend.common.logging
         t.Key('resource'): t.Dict({
             t.Key('reserved-cpu', default=1): t.Int,

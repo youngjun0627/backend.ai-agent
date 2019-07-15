@@ -52,7 +52,7 @@ class KernelDeployment:
   env: Dict[str, str]
   ports: List[int]
 
-  def __init__(self, name: str='deployment'):
+  def __init__(self, image, name: str='deployment'):
     self.name = name
 
     self.hostPathMounts = []
@@ -60,6 +60,7 @@ class KernelDeployment:
     self.cmd = []
     self.env = {}
     self.ports = []
+    self.image = image
   
   def mount_hostpath(self, mountSpec: HostPathMountSpec):
     self.hostPathMounts.append(mountSpec)
@@ -87,7 +88,7 @@ class KernelDeployment:
             'containers': [
               {
                 'name': self.name + '-session',
-                'image': 'lablup/python:3.6-ubuntu18.04',
+                'image': self.image,
                 'imagePullPolicy': 'IfNotPresent',
                 'command': ['/opt/backend.ai/bin/entrypoint.sh'],
                 'args': self.cmd,
@@ -97,7 +98,9 @@ class KernelDeployment:
                     'mountPath': '/home/work'
                 }] +[x.volumemount_dict() for x in self.configMapMounts + self.hostPathMounts],
                 'ports': [{ 'containerPort': x } for x in self.ports],
-                
+                'imagePullSecrets': {
+                  'name': 'backend-ai-registry-secret'
+                }
               }
             ],
             'volumes': [{
