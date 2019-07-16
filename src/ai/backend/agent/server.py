@@ -175,6 +175,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.config = config
         self.agent_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()[:12]
 
+
+        self.blocking_cleans = {}
+
         self.event_sock = None
         self.k8sCoreApi = None
         self.k8sAppsApi = None
@@ -358,8 +361,55 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('configured vfolder mount base: {0}', self.config['vfolder']['mount'])
         log.info('configured vfolder fs prefix: {0}', self.config['vfolder']['fsprefix'])
 
-    async def shutdown(self, signal_code):
+    async def shutdown(self, stop_signal):
         # TODO: gracefully shudown AgentRPCServer
+        await self.deregister_myself()
+
+        # Stop receiving further requests.
+        if self.rpc_server is not None:
+            self.rpc_server.close()
+            await self.rpc_server.wait_closed()
+
+        # Close all pending kernel runners.
+        for kernel_id in self.container_registry.keys():
+            await self.clean_runner(kernel_id)
+
+        if stop_signal == signal.SIGTERM:
+            await self.clean_all_kernels(blocking=True)
+
+        # Stop timers.
+        if self.scan_images_timer is not None:
+            self.scan_images_timer.cancel()
+            await self.scan_images_timer
+        if self.hb_timer is not None:
+            self.hb_timer.cancel()
+            await self.hb_timer
+        # TODO: stop live_stat_timer
+        if self.clean_timer is not None:
+            self.clean_timer.cancel()
+            await self.clean_timer
+
+        # TODO: Stop event monitoring.
+        # TODO: Stop stat collector task.
+        
+
+        if self.redis_stat_pool is not None:
+            self.redis_stat_pool.close()
+            await self.redis_stat_pool.wait_closed()
+
+        # Stop handlign agent sock.
+        # (But we don't remove the socket file)
+        # TODO: Find k8s-ful ways to handle agent socket
+        
+        # Notify the gateway.
+        if self.event_sock is not None:
+            await self.send_event('instance_terminated', 'shutdown')
+            self.event_sock.close()
+
+        self.zmq_ctx.term()
+
+    async def deregister_myself(self):
+        # TODO: reimplement using Redis heartbeat stream
         pass
     
     @aiozmq.rpc.method
@@ -620,6 +670,39 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'resource_spec': resource_spec.to_json(),
         }
 
+
+    async def clean_runner(self, kernel_id):
+        if kernel_id not in self.container_registry:
+            return
+        log.debug('interrupting & cleaning up runner for {0}', kernel_id)
+        item = self.container_registry[kernel_id]
+        tasks = item['runner_tasks'].copy()
+        for t in tasks:  # noqa: F402
+            if not t.done():
+                t.cancel()
+                await t
+        runner = item.pop('runner', None)
+        if runner is not None:
+            await runner.close()
+
+    async def clean_all_kernels(self, blocking=False):
+        log.info('cleaning all kernels...')
+        kernel_ids = tuple(self.container_registry.keys())
+        tasks = []
+        if blocking:
+            for kernel_id in kernel_ids:
+                self.blocking_cleans[kernel_id] = asyncio.Event()
+        for kernel_id in kernel_ids:
+            task = asyncio.ensure_future(
+                self._destroy_kernel(kernel_id, 'agent-termination'))
+            tasks.append(task)
+        await asyncio.gather(*tasks)
+        if blocking:
+            waiters = [self.blocking_cleans[kernel_id].wait()
+                       for kernel_id in kernel_ids]
+            await asyncio.gather(*waiters)
+            for kernel_id in kernel_ids:
+                self.blocking_cleans.pop(kernel_id, None)
     
 
     async def _destroy_kernel(self, kernel_id, reason):
