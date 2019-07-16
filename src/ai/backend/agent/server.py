@@ -467,7 +467,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         arch = platform.machine()
-        _mount(kernel_id, '/opt/backend.ai/krunner/env.ubuntu16.04',
+        _mount(kernel_id, f'/opt/backend.ai/krunner/env.{distro}',
                '/opt/backend.ai', 'Directory')
         _mount(kernel_id, '/opt/backend.ai/runner/entrypoint.sh', 
                '/opt/backend.ai/bin/entrypoint.sh', 'File')

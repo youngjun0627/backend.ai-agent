@@ -77,3 +77,4 @@ agent.toml
 .DS_Store
 *.crt
 *.key
+!scripts/deploy-static/bai-static/**/*
