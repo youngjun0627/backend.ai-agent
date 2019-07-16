@@ -400,7 +400,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Stop handlign agent sock.
         # (But we don't remove the socket file)
         # TODO: Find k8s-ful ways to handle agent socket
-        
+
         # Notify the gateway.
         if self.event_sock is not None:
             await self.send_event('instance_terminated', 'shutdown')
@@ -465,6 +465,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         work_dir = scratch_dir / 'work'
 
         slots = ResourceSlot.from_json(kernel_config['resource_slots'])
+        vfolders = kernel_config['mounts']
         resource_spec = KernelResourceSpec(
             container_id=None,
             allocations={},
@@ -483,6 +484,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         deployment.name = f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-')
 
         log.debug('Initial container config: {0}', deployment.to_dict())
+
+        # should no longer be used!
+        del vfolders
 
         # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
@@ -510,9 +514,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         cpu_core_count = len(resource_spec.allocations['cpu']['cpu'])
         environ.update({k: str(cpu_core_count) for k in envs_corecount})
 
-        def _mount(kernel_id: str, hostPath: str, mountPath: str, mountType: str):
+        def _mount(kernel_id: str, hostPath: str, mountPath: str, mountType: str, perm='ro'):
             name = (kernel_id + '-' + mountPath.split('/')[-1]).replace('.', '-')
-            deployment.mount_hostpath(HostPathMountSpec(name, hostPath, mountPath, mountType))
+            deployment.mount_hostpath(HostPathMountSpec(name, hostPath, mountPath, mountType, perm))
 
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
@@ -539,6 +543,27 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                '/home/work/.jupyter/custom/roboto.ttf', 'File')
         _mount(kernel_id, '/opt/backend.ai/runner/roboto-italic.ttf',
                '/home/work/.jupyter/custom/roboto-italic.ttf', 'File')
+
+        for vfolder in vfolders:
+            if len(vfolder) == 4:
+                folder_name, folder_host, folder_id, folder_perm = vfolder
+            elif len(vfolder) == 3:  # legacy managers
+                folder_name, folder_host, folder_id = vfolder
+                folder_perm = 'rw'
+            else:
+                raise RuntimeError(
+                    'Unexpected number of vfolder mount detail tuple size')
+            host_path = (self.config['vfolder']['mount'] / folder_host /
+                            self.config['vfolder']['fsprefix'] / folder_id)
+            folder_perm = MountPermission(folder_perm)
+            perm_char = 'ro'
+            if folder_perm == MountPermission.RW_DELETE or folder_perm == MountPermission.READ_WRITE:
+                # TODO: enforce readable/writable but not deletable
+                # (Currently docker's READ_WRITE includes DELETE)
+                perm_char = 'rw'
+            
+            _mount(kernel_id, host_path, f'/home/work/{folder_name}', 'File', perm=perm_char)
+        
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
         # TODO: Inject ComputeDevice-specific env-varibles and hooks
@@ -615,7 +640,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             clusterip_api_response = await self.k8sCoreApi.create_namespaced_service('backend-ai', body=service.to_dict())
         except:
             raise
-        # pprint(nodeport_api_response)
         try:
             cm_api_response = await self.k8sCoreApi.create_namespaced_config_map('backend-ai', body=configmap.to_dict(), pretty='pretty_example')
         except:

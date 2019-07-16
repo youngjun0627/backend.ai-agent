@@ -2,17 +2,21 @@ import yaml
 from typing import Dict, List
   
 class HostPathMountSpec:
-  def __init__(self, name: str, hostPath: str, mountPath: str, mountType: str):
+  def __init__(self, name: str, hostPath: str, mountPath: str, mountType: str, perm: str):
     self.name = name
     self.hostPath = hostPath
     self.mountPath = mountPath
     self.type = mountType
+    self.perm = perm
   
   def volumemount_dict(self) -> str:
-    return {
+    mount = {
       'name': self.name,
       'mountPath': self.mountPath
     }
+    if self.perm == 'ro':
+      mount['readOnly'] = True
+    return mount
 
   def volumedef_dict(self) -> str:
     return {
