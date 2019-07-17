@@ -9,6 +9,7 @@ from pathlib import Path
 import pkg_resources
 import platform
 from pprint import pformat, pprint
+import random
 import re
 import secrets
 import signal
@@ -47,7 +48,7 @@ from ai.backend.common.types import (
 )
 from ai.backend.common.utils import StringSetFlag
 from . import __version__ as VERSION
-from .exception import InitializationError, InsufficientResource
+from .exception import NoKernelError, InitializationError, InsufficientResource
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 from .kernel import (
     KernelRunner
@@ -80,6 +81,7 @@ redis_config_iv = t.Dict({
     t.Key('addr', default=('127.0.0.1', 6379)): tx.HostPortPair,
     t.Key('password', default=None): t.Null | t.String,
 })
+
 
 @attr.s(auto_attribs=True, slots=True)
 class ComputerContext:
@@ -174,8 +176,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.etcd = etcd
         self.config = config
         self.agent_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()[:12]
-
-
         self.blocking_cleans = {}
 
         self.event_sock = None
@@ -187,6 +187,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = None
         self.scan_images_timer = None
         self.images = []
+        
 
         self.workers = {}
         self.master = None
@@ -250,6 +251,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             for addr in node.status.addresses:
                 if addr.type == 'InternalIP':
                     self.workers[node.metadata.name]['InternalIP'] = addr.address
+                if addr.type == 'ExternalIP':
+                    self.workers[node.metadata.name]['ExternalIP'] = addr.address
 
     async def update_status(self, status):
         await self.etcd.put('', status, scope=ConfigScopes.NODE)
@@ -501,6 +504,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         pass
 
     @aiozmq.rpc.method
+    @update_last_used
+    async def start_service(self, kernel_id: str, service: str, opts: dict):
+        log.debug('rpc::start_service({0}, {1})', kernel_id, service)
+        async with self.handle_rpc_exception():
+            return await self._start_service(kernel_id, service, opts)
+
+    @aiozmq.rpc.method
     async def shutdown_agent(self, terminate_kernels: bool):
         # TODO: implement
         log.debug('rpc::shutdown_agent()')
@@ -560,9 +570,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         canonical = kernel_config['image']['canonical']
         
         _, repo, name_with_tag = canonical.split('/')
-        deployment = KernelDeployment(f'{registry_addr}:{registry_port}/{repo}/{name_with_tag}')
-
-        deployment.name = f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-')
+        deployment = KernelDeployment(kernel_id, f'{registry_addr}:{registry_port}/{repo}/{name_with_tag}', f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-'))
 
         log.debug('Initial container config: {0}', deployment.to_dict())
 
@@ -600,8 +608,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         arch = platform.machine()
-        _mount(kernel_id, f'/opt/backend.ai/krunner/env.{distro}',
-               '/opt/backend.ai', 'Directory')
+
+        deployment.krunnerPath = f'/opt/backend.ai/krunner/env.{distro}'
         _mount(kernel_id, '/opt/backend.ai/runner/entrypoint.sh', 
                '/opt/backend.ai/bin/entrypoint.sh', 'File')
         _mount(kernel_id, f'/opt/backend.ai/runner/su-exec.{distro}.bin',
@@ -641,7 +649,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 # (Currently docker's READ_WRITE includes DELETE)
                 perm_char = 'rw'
             
-            _mount(kernel_id, host_path, f'/home/work/{folder_name}', 'File', perm=perm_char)
+            _mount(kernel_id, host_path.absolute().as_posix(), f'/home/work/{folder_name}', 'Directory', perm=perm_char)
         
         # should no longer be used!
         del vfolders
@@ -668,7 +676,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('kernel {0} starting with resource spec: \n',
                  pformat(attr.asdict(resource_spec)))
 
-        exposed_ports = [2000, 2001]
+        exposed_ports = []
         service_ports = {}
         
         for item in image_labels.get('ai.backend.service-ports', '').split(','):
@@ -683,7 +691,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             exposed_ports.append(2003)
         log.debug('exposed ports: {!r}', exposed_ports)
 
-        container_external_ip = '0.0.0.0'
 
         runtime_type = image_labels.get('ai.backend.runtime-type', 'python')
         runtime_path = image_labels.get('ai.backend.runtime-path', None)
@@ -704,7 +711,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
 
 
-        configmap = ConfigMap(deployment.name + '-configmap')
+        configmap = ConfigMap(kernel_id, deployment.name + '-configmap')
         configmap.put('environ', environ_txt)
         configmap.put('resource', resource_txt)
 
@@ -714,23 +721,36 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         deployment.mount_configmap(ConfigMapMountSpec('resource', configmap.name, 'resource', '/home/config/resource.txt'))
         deployment.ports = exposed_ports
 
-        service = Service(deployment.name + '-service', deployment.name, [ (port, f'{kernel_id}-svc-{index}') for port, index in zip(exposed_ports, range(1, len(exposed_ports) + 1)) ], service_type='ClusterIP')
+        repl_service = Service(kernel_id, deployment.name + '-service', deployment.name, [ (2000, 'repl-in'), (2001, 'repl-out') ], service_type='ClusterIP')
+        expose_service = Service(kernel_id, deployment.name + '-nodeport', deployment.name, [ (port, f'{kernel_id}-svc-{index}') for port, index in zip(exposed_ports, range(1, len(exposed_ports) + 1)) ], service_type='NodePort')
         log.debug('container config: {!r}', deployment.to_dict())
-
+        log.debug('nodeport config: {!r}', expose_service.to_dict())
         # We are all set! Create and start the container.
+
+        node_ports = []
         try:
-            clusterip_api_response = await self.k8sCoreApi.create_namespaced_service('backend-ai', body=service.to_dict())
+            clusterip_api_response = await self.k8sCoreApi.create_namespaced_service('backend-ai', body=repl_service.to_dict())
         except:
             raise
+        
+        if len(exposed_ports) > 0:
+            try:    
+                nodeport_api_response = await self.k8sCoreApi.create_namespaced_service('backend-ai', body=expose_service.to_dict())
+                node_ports = nodeport_api_response.spec.ports
+            except:
+                await self.k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
+                raise
         try:
             await self.k8sCoreApi.create_namespaced_config_map('backend-ai', body=configmap.to_dict(), pretty='pretty_example')
         except:
-            await self.k8sCoreApi.delete_namespaced_service(service.name, 'backend-ai')
+            await self.k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
+            await self.k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
             raise
         try:
             await self.k8sAppsApi.create_namespaced_deployment('backend-ai', body=deployment.to_dict(), pretty='pretty_example')
         except:
-            await self.k8sCoreApi.delete_namespaced_service(service.name, 'backend-ai')
+            await self.k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
+            await self.k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
             await self.k8sCoreApi.delete_namespaced_config_map(configmap.name, 'backend-ai')
             raise
 
@@ -739,22 +759,33 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         repl_in_port = 2000
         repl_out_port = 2001
 
-        exposed_ports = clusterip_api_response.spec.ports
+        exposed_ports = {}
 
-        log.debug('ClusterIP: {0}', clusterip_api_response.spec.cluster_ip)
+        node_external_ips = [x['ExternalIP'] for x in list(filter(lambda x: 'ExternalIP' in x, self.workers.values()))]
+        # if len(node_external_ips) > 0:
+        #     target_node_ip = random.choice(node_external_ips)
+        # else:
+        #     target_node_ip = random.choice([x['InternalIP'] for x in self.workers.values()])
+        target_node_ip = random.choice([x['InternalIP'] for x in self.workers.values()])
+
+        for port in node_ports:
+            exposed_ports[port.port] = port.node_port
+        
+        for k in service_ports.keys():
+            service_ports[k]['host_port'] = exposed_ports[k]
 
         self.container_registry[kernel_id] = {
             'deployment_name': deployment.name,
             'lang': image_ref,
             'version': version,
-            'kernel_host': 'localhost',
+            'kernel_host': target_node_ip,
             'cluster_ip': clusterip_api_response.spec.cluster_ip,
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,    # legacy
             'stdout_port': stdout_port,  # legacy
             'service_ports': list(service_ports.values()),
-            'host_ports': exposed_ports,
+            'host_ports': exposed_ports.values(),
             'last_used': time.monotonic(),
             'runner_tasks': set(),
             'resource_spec': resource_spec,
@@ -766,12 +797,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.send_event('kernel_started', kernel_id)
         return {
             'id': kernel_id,
-            'kernel_host': 'localhost',
+            'kernel_host': target_node_ip,
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,    # legacy
             'stdout_port': stdout_port,  # legacy
-            'service_ports': [],
+            'service_ports': list(service_ports.values()),
             'container_id': '#',
             'resource_spec': resource_spec.to_json(),
         }
@@ -793,6 +824,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         deployment_name = kernel['deployment_name']
         try:
             await self.k8sCoreApi.delete_namespaced_service(f'{deployment_name}-service', 'backend-ai')
+            await self.k8sCoreApi.delete_namespaced_service(f'{deployment_name}-nodeport', 'backend-ai')
             await self.k8sCoreApi.delete_namespaced_config_map(f'{deployment_name}-configmap', 'backend-ai')
             await self.k8sAppsApi.delete_namespaced_deployment(f'{deployment_name}', 'backend-ai')
         except:
@@ -875,11 +907,13 @@ print(json.dumps(files))''' % {'path': path}
 
     async def _get_logs(self, kernel_id):
         try:
-            kernel_info = self.container_registry['kernel_id']
+            kernel_info = self.container_registry[kernel_id]
         except KeyError:
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! ')
         deployment_name = kernel_info['deployment_name']
         pods = await self.k8sCoreApi.list_namespaced_pod('backend-ai', label_selector=f'run={deployment_name}')
+        if len(pods.items) == 0:
+            return { 'logs': '' }
         pod_name = pods.items[0].metadata.name
         logs = await self.k8sCoreApi.read_namespaced_pod_log(pod_name, 'backend-ai')
         return { 'logs': logs }
@@ -899,7 +933,7 @@ print(json.dumps(files))''' % {'path': path}
 
         try:
             myself = asyncio.Task.current_task()
-            kernel_info['runner_tasks'].add(myself)
+            self.container_registry['kernel_id']['runner_tasks'].add(myself)
 
             await runner.attach_output_queue(run_id)
 
@@ -923,8 +957,7 @@ print(json.dumps(files))''' % {'path': path}
             kernel_info.pop('runner', None)
             return
         finally:
-            runner_tasks = utils.nmget(self.container_registry,
-                                       f'{kernel_id}/runner_tasks', None, '/')
+            runner_tasks = utils.nmget(self.container_registry, f'{kernel_id}/runner_tasks', None, '/')
             if runner_tasks is not None:
                 runner_tasks.remove(myself)
 
@@ -951,7 +984,22 @@ print(json.dumps(files))''' % {'path': path}
             'files': output_files,
         }
 
-    
+
+    async def _start_service(self, kernel_id, service, opts):
+        runner = await self._ensure_runner(kernel_id)
+        service_ports = self.container_registry[kernel_id]['service_ports']
+        for sport in service_ports:
+            if sport['name'] == service:
+                break
+        else:
+            return {'status': 'failed', 'error': 'invalid service name'}
+        result = await runner.feed_start_service({
+            'name': service,
+            'port': sport['container_port'],
+            'protocol': sport['protocol'],
+            'options': opts,
+        })
+        return result
 
     async def clean_runner(self, kernel_id):
         if kernel_id not in self.container_registry:
@@ -985,7 +1033,6 @@ print(json.dumps(files))''' % {'path': path}
             await asyncio.gather(*waiters)
             for kernel_id in kernel_ids:
                 self.blocking_cleans.pop(kernel_id, None)
-    
 
     @aiotools.actxmgr
     async def handle_rpc_exception(self):

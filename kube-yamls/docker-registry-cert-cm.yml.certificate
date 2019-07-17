@@ -1,8 +1,0 @@
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: docker-registry-certs
-data:
-  k8s-registry.backend.ai.crt: {{ certificate }}
-  k8s-registry.backend.ai.key: {{ private_key }}

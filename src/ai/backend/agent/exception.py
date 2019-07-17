@@ -4,3 +4,6 @@ class InitializationError(Exception):
 
 class InsufficientResource(Exception):
     pass
+
+class NoKernelError(Exception):
+    pass

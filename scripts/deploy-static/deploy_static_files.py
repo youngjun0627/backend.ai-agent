@@ -7,13 +7,7 @@ if len(sys.argv) == 1:
     print('Usage: python deploy_static_files.py <Worker Node IPs seperated by space>')
     exit(1)
 
-# Delete old file if exists
-if os.path.isfile('bai-static.tar.gz'):
-    os.remove('bai-static.tar.gz')
-
-# Download latest file from S3 bucket
-wget = subprocess.Popen('wget https://backend-ai-k8s-agent-static.s3.ap-northeast-2.amazonaws.com/bai-static.tar.gz'.split(' '))
-_ = wget.communicate()
+STATIC_FILE = 'https://backend-ai-k8s-agent-static.s3.ap-northeast-2.amazonaws.com/bai-static.tar.gz'
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -34,12 +28,7 @@ for ip in sys.argv[1:]:
  
     print(''.join(stdout.readlines()))
 
-    # put new file with sftp
-    sftp = ssh.open_sftp()
-    sftp.put(f'./bai-static.tar.gz', f'{pwd}/bai-static.tar.gz')
-    sftp.close()
-
     # Extract to /opt/backend.ai
-    stdin, stdout, stderr = ssh.exec_command(f'tar xvf {pwd}/bai-static.tar.gz && sudo mv {pwd}/backend.ai /opt && sudo chown {whoami}:{whoami} /opt/backend.ai')
+    stdin, stdout, stderr = ssh.exec_command(f'wget https://backend-ai-k8s-agent-static.s3.ap-northeast-2.amazonaws.com/bai-static.tar.gz && tar xvf {pwd}/bai-static.tar.gz && sudo mv {pwd}/backend.ai /opt && sudo chown {whoami}:{whoami} /opt/backend.ai')
  
     print(''.join(stdout.readlines()))

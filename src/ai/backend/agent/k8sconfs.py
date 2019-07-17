@@ -56,16 +56,21 @@ class KernelDeployment:
   env: Dict[str, str]
   ports: List[int]
 
-  def __init__(self, image, name: str='deployment'):
+  def __init__(self, kernel_id, image, name: str='deployment'):
     self.name = name
 
     self.hostPathMounts = []
     self.configMapMounts = []
     self.cmd = []
     self.env = {}
+    self.labels = { 'run': name, 'backend.ai/kernel_id': kernel_id }
     self.ports = []
     self.image = image
-  
+    self.krunnerPath = ''
+
+  def label(self, k: str, v: str):
+    self.labels[k] = str(v)
+    
   def mount_hostpath(self, mountSpec: HostPathMountSpec):
     self.hostPathMounts.append(mountSpec)
   
@@ -81,7 +86,7 @@ class KernelDeployment:
       'kind': 'Deployment',
       'metadata': {
         'name': self.name,
-        'labels': { 'run': self.name }
+        'labels': self.labels
       },
       'spec': {
         'replicas': 0,
@@ -89,6 +94,20 @@ class KernelDeployment:
         'template': {
           'metadata': { 'labels': { 'run': self.name } },
           'spec': {
+            'initContainers': [
+              {
+                'name': self.name + '-krunner',
+                'image': 'lablup/k8s-copy-krunner',
+                'imagePullPolicy': 'IfNotPresent',
+                'volumeMounts': [{
+                    'name': self.name + '-krunner',
+                    'mountPath': '/krunner'
+                  }, {
+                    'name': 'krunner-provider',
+                    'mountPath': '/provider'
+                }]
+              }
+            ],
             'containers': [
               {
                 'name': self.name + '-session',
@@ -100,6 +119,12 @@ class KernelDeployment:
                 'volumeMounts':  [{
                     'name': self.name + '-workdir',
                     'mountPath': '/home/work'
+                }, {
+                    'name': self.name + '-jupyter',
+                    'mountPath': '/home/work/.jupyter'
+                }, {
+                    'name':  'krunner-provider',
+                    'mountPath': '/opt/backend.ai'
                 }] +[x.volumemount_dict() for x in self.configMapMounts + self.hostPathMounts],
                 'ports': [{ 'containerPort': x } for x in self.ports],
                 'imagePullSecrets': {
@@ -110,6 +135,18 @@ class KernelDeployment:
             'volumes': [{
                 'name': self.name + '-workdir',
                 'emptyDir': {}
+            }, { 
+                'name': self.name + '-jupyter',
+                'emptyDir': {}
+            }, {
+                'name': self.name + '-krunner',
+                'hostPath': {
+                  'path': self.krunnerPath,
+                  'type': 'Directory'
+                }
+            }, {
+                'name': 'krunner-provider', 
+                'emptyDir': {}
             }] + [x.volumedef_dict() for x in self.configMapMounts + self.hostPathMounts]
           }
         }
@@ -119,8 +156,9 @@ class KernelDeployment:
 class ConfigMap:
   items: Dict[str, str] = {}
 
-  def __init__(self, name: str): 
+  def __init__(self, kernel_id, name: str): 
     self.name = name
+    self.labels = { 'backend.ai/kernel_id': kernel_id }
   
   def put(self, key: str, value: str): 
     self.items[key] = value
@@ -130,17 +168,19 @@ class ConfigMap:
       'apiVersion': 'v1',
       'kind': 'ConfigMap',
       'metadata': {
-        'name': self.name
+        'name': self.name,
+        'labels': self.labels
       },
       'data': self.items
     }
 
 class Service:
-  def __init__(self, name: str, deployment_name: str, container_port: list, service_type='NodePort'):
+  def __init__(self, kernel_id: str, name: str, deployment_name: str, container_port: list, service_type='NodePort'):
     self.name = name
     self.deployment_name = deployment_name
     self.container_port = container_port
     self.service_type = service_type
+    self.labels = { 'run': self.name, 'backend.ai/kernel_id': kernel_id }
   
   def to_dict(self) -> dict:
     base = {
@@ -148,7 +188,7 @@ class Service:
       'kind': 'Service',
       'metadata': {
         'name': self.name,
-        'labels': { 'run': self.name }
+        'labels': self.labels
       },
       'spec': {
         'ports': [ { 'targetPort': x[0], 'port': x[0], 'name': x[1] } for x in self.container_port ],

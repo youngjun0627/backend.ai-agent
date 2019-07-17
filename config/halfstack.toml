@@ -12,6 +12,10 @@ scaling-group = "default"
 pid-file = "./agent.pid"
 
 
+[registry]
+addr = { host = "localhost", port = 5000 }
+
+
 [container]
 port-range = [30000, 31000]
 kernel-uid = -1

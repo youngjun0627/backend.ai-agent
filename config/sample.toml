@@ -29,6 +29,11 @@ scaling-group = "default"
 # If set to an empty string, it does NOT create the PID file.
 # pid-file = "./agent.pid"             # env: BACKEND_PID_FILE
 
+[registry]
+# Registry for use with k8s cluster 
+# All kernel container images should be saved here 
+addr = { host = "localhost", port = 5000 }
+
 
 [container]
 # The port range to expose public service ports.
