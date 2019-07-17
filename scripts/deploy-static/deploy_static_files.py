@@ -32,9 +32,7 @@ for ip in sys.argv[1:]:
     # delete old static files
     stdin, stdout, stderr = ssh.exec_command(f'sudo rm -rf /opt/backend.ai && rm -rf {pwd}/bai*')
  
-    print('STDOUT:')
     print(''.join(stdout.readlines()))
-    print('STDERR:')
 
     # put new file with sftp
     sftp = ssh.open_sftp()
@@ -44,6 +42,4 @@ for ip in sys.argv[1:]:
     # Extract to /opt/backend.ai
     stdin, stdout, stderr = ssh.exec_command(f'tar xvf {pwd}/bai-static.tar.gz && sudo mv {pwd}/backend.ai /opt && sudo chown {whoami}:{whoami} /opt/backend.ai')
  
-    print('STDOUT:')
     print(''.join(stdout.readlines()))
-    print('STDERR:')

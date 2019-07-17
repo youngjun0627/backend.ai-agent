@@ -413,6 +413,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         pass
     
     @aiozmq.rpc.method
+    def ping(self, msg: str) -> str:
+        return msg
+
+    @aiozmq.rpc.method
+    @update_last_used
+    async def ping_kernel(self, kernel_id: str):
+        log.debug('rpc::ping_kernel({0})', kernel_id)
+
+    @aiozmq.rpc.method
     @update_last_used
     async def create_kernel(self, kernel_id: str, config: dict) -> dict:
         log.debug('rpc::create_kernel({0}, {1})', kernel_id, config['image'])
@@ -425,6 +434,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.debug('rpc::destroy_kernel({0})', kernel_id)
         async with self.handle_rpc_exception():
             return await self._destroy_kernel(kernel_id, 'user-requested')
+
+    @aiozmq.rpc.method
+    @update_last_used
+    async def interrupt_kernel(self, kernel_id: str):
+        log.debug('rpc::interrupt_kernel({0})', kernel_id)
+        async with self.handle_rpc_exception():
+            await self._interrupt_kernel(kernel_id)
 
     @aiozmq.rpc.method
     async def execute(self, api_version: int,
@@ -440,6 +456,71 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                                          run_id, mode, code, opts,
                                          flush_timeout)
             return result
+
+    @aiozmq.rpc.method
+    @update_last_used
+    async def get_completions(self, kernel_id: str,
+                              text: str, opts: dict):
+        log.debug('rpc::get_completions({0})', kernel_id)
+        async with self.handle_rpc_exception():
+            await self._get_completions(kernel_id, text, opts)
+
+    @aiozmq.rpc.method
+    @update_last_used
+    async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
+        log.debug('rpc::upload_file({0}, {1})', kernel_id, filename)
+        async with self.handle_rpc_exception():
+            await self._accept_file(kernel_id, filename, filedata)
+
+    @aiozmq.rpc.method
+    @update_last_used
+    async def download_file(self, kernel_id: str, filepath: str):
+        log.debug('rpc::download_file({0}, {1})', kernel_id, filepath)
+        async with self.handle_rpc_exception():
+            return await self._download_file(kernel_id, filepath)
+
+    @aiozmq.rpc.method
+    @update_last_used
+    async def list_files(self, kernel_id: str, path: str):
+        log.debug('rpc::list_files({0}, {1})', kernel_id, path)
+        async with self.handle_rpc_exception():
+            return await self._list_files(kernel_id, path)
+    
+    @aiozmq.rpc.method
+    @update_last_used
+    async def get_logs(self, kernel_id: str):
+        log.debug('rpc::get_logs({0})', kernel_id)
+        async with self.handle_rpc_exception():
+            return await self._get_logs(kernel_id)
+
+    @aiozmq.rpc.method
+    @update_last_used
+    async def refresh_idle(self, kernel_id: str):
+        # update_last_used decorator already implements this. :)
+        log.debug('rpc::refresh_idle()')
+        pass
+
+    @aiozmq.rpc.method
+    async def shutdown_agent(self, terminate_kernels: bool):
+        # TODO: implement
+        log.debug('rpc::shutdown_agent()')
+        pass
+
+    @aiozmq.rpc.method
+    async def reset_agent(self):
+        log.debug('rpc::reset()')
+        async with self.handle_rpc_exception():
+            kernel_ids = tuple(self.container_registry.keys())
+            tasks = []
+            for kernel_id in kernel_ids:
+                try:
+                    task = asyncio.ensure_future(
+                        self._destroy_kernel(kernel_id, 'agent-reset'))
+                    tasks.append(task)
+                except Exception:
+                    self.error_monitor.capture_exception()
+                    log.exception('reset: destroying {0}', kernel_id)
+            await asyncio.gather(*tasks)
     
     async def _create_kernel(self, kernel_id: str, kernel_config: dict, restarting: bool=False) -> dict:
 
@@ -485,8 +566,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         log.debug('Initial container config: {0}', deployment.to_dict())
 
-        # should no longer be used!
-        del vfolders
 
         # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
@@ -564,6 +643,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             
             _mount(kernel_id, host_path, f'/home/work/{folder_name}', 'File', perm=perm_char)
         
+        # should no longer be used!
+        del vfolders
+
         environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
 
         # TODO: Inject ComputeDevice-specific env-varibles and hooks
@@ -641,12 +723,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         except:
             raise
         try:
-            cm_api_response = await self.k8sCoreApi.create_namespaced_config_map('backend-ai', body=configmap.to_dict(), pretty='pretty_example')
+            await self.k8sCoreApi.create_namespaced_config_map('backend-ai', body=configmap.to_dict(), pretty='pretty_example')
         except:
             await self.k8sCoreApi.delete_namespaced_service(service.name, 'backend-ai')
             raise
         try:
-            deployment_api_response = await self.k8sAppsApi.create_namespaced_deployment('backend-ai', body=deployment.to_dict(), pretty='pretty_example')
+            await self.k8sAppsApi.create_namespaced_deployment('backend-ai', body=deployment.to_dict(), pretty='pretty_example')
         except:
             await self.k8sCoreApi.delete_namespaced_service(service.name, 'backend-ai')
             await self.k8sCoreApi.delete_namespaced_config_map(configmap.name, 'backend-ai')
@@ -694,40 +776,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'resource_spec': resource_spec.to_json(),
         }
 
-
-    async def clean_runner(self, kernel_id):
-        if kernel_id not in self.container_registry:
-            return
-        log.debug('interrupting & cleaning up runner for {0}', kernel_id)
-        item = self.container_registry[kernel_id]
-        tasks = item['runner_tasks'].copy()
-        for t in tasks:  # noqa: F402
-            if not t.done():
-                t.cancel()
-                await t
-        runner = item.pop('runner', None)
-        if runner is not None:
-            await runner.close()
-
-    async def clean_all_kernels(self, blocking=False):
-        log.info('cleaning all kernels...')
-        kernel_ids = tuple(self.container_registry.keys())
-        tasks = []
-        if blocking:
-            for kernel_id in kernel_ids:
-                self.blocking_cleans[kernel_id] = asyncio.Event()
-        for kernel_id in kernel_ids:
-            task = asyncio.ensure_future(
-                self._destroy_kernel(kernel_id, 'agent-termination'))
-            tasks.append(task)
-        await asyncio.gather(*tasks)
-        if blocking:
-            waiters = [self.blocking_cleans[kernel_id].wait()
-                       for kernel_id in kernel_ids]
-            await asyncio.gather(*waiters)
-            for kernel_id in kernel_ids:
-                self.blocking_cleans.pop(kernel_id, None)
-    
 
     async def _destroy_kernel(self, kernel_id, reason):
         async def force_cleanup(reason='self-terminated'):
@@ -777,6 +825,65 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await runner.start()
         return runner
 
+    async def _interrupt_kernel(self, kernel_id):
+        runner = await self._ensure_runner(kernel_id)
+        await runner.feed_interrupt()
+        return {'status': 'finished'}
+
+    async def _get_completions(self, kernel_id, text, opts):
+        runner = await self._ensure_runner(kernel_id)
+        result = await runner.feed_and_get_completion(text, opts)
+        return {'status': 'finished', 'completions': result}
+
+    async def _list_files(self, kernel_id: str, path: str):
+        deployment_name = self.container_registry[kernel_id]['deployment_name']
+        pods = await self.k8sCoreApi.list_namespaced_pod('backend-ai', label_selector=f'run={deployment_name}')
+        pod_name = pods.items[0].metadata.name
+        
+        code = '''from pathlib import Path
+abspath = Path('%(path)s').resolve(strict=True)
+suffix = '/' if abspath.is_dir() else ''
+print(str(abspath) + suffix)
+''' % {'path': path}
+        abspath = await self.k8sCoreApi.connect_get_namespaced_pod_exec(pod_name, 'backend-ai', command=f'python -c "{code}"')
+
+        if not abspath.startswith('/home/work'):
+            return { 'files': '', 'errors': 'No such file or directory' }
+        
+        code = '''import json
+import os
+import stat
+
+files = []
+for f in os.scandir('%(path)s'):
+    fstat = f.stat()
+    ctime = fstat.st_ctime  # TODO: way to get concrete create time?
+    mtime = fstat.st_mtime
+    atime = fstat.st_atime
+    files.append({
+        'mode': stat.filemode(fstat.st_mode),
+        'size': fstat.st_size,
+        'ctime': ctime,
+        'mtime': mtime,
+        'atime': atime,
+        'filename': f.name,
+    })
+print(json.dumps(files))''' % {'path': path}
+        outs = await self.k8sCoreApi.connect_get_namespaced_pod_exec(pod_name, 'backend-ai', command=f'python -c "{code}"')
+
+        return { 'files': outs, 'errors': '', 'abspath': abspath }
+
+    async def _get_logs(self, kernel_id):
+        try:
+            kernel_info = self.container_registry['kernel_id']
+        except KeyError:
+            raise RuntimeError(f'The container for kernel {kernel_id} is not found! ')
+        deployment_name = kernel_info['deployment_name']
+        pods = await self.k8sCoreApi.list_namespaced_pod('backend-ai', label_selector=f'run={deployment_name}')
+        pod_name = pods.items[0].metadata.name
+        logs = await self.k8sCoreApi.read_namespaced_pod_log(pod_name, 'backend-ai')
+        return { 'logs': logs }
+    
     async def _execute(self, api_version, kernel_id,
                        run_id, mode, text, opts,
                        flush_timeout):
@@ -843,6 +950,42 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             **result,
             'files': output_files,
         }
+
+    
+
+    async def clean_runner(self, kernel_id):
+        if kernel_id not in self.container_registry:
+            return
+        log.debug('interrupting & cleaning up runner for {0}', kernel_id)
+        item = self.container_registry[kernel_id]
+        tasks = item['runner_tasks'].copy()
+        for t in tasks:  # noqa: F402
+            if not t.done():
+                t.cancel()
+                await t
+        runner = item.pop('runner', None)
+        if runner is not None:
+            await runner.close()
+
+    async def clean_all_kernels(self, blocking=False):
+        log.info('cleaning all kernels...')
+        kernel_ids = tuple(self.container_registry.keys())
+        tasks = []
+        if blocking:
+            for kernel_id in kernel_ids:
+                self.blocking_cleans[kernel_id] = asyncio.Event()
+        for kernel_id in kernel_ids:
+            task = asyncio.ensure_future(
+                self._destroy_kernel(kernel_id, 'agent-termination'))
+            tasks.append(task)
+        await asyncio.gather(*tasks)
+        if blocking:
+            waiters = [self.blocking_cleans[kernel_id].wait()
+                       for kernel_id in kernel_ids]
+            await asyncio.gather(*waiters)
+            for kernel_id in kernel_ids:
+                self.blocking_cleans.pop(kernel_id, None)
+    
 
     @aiotools.actxmgr
     async def handle_rpc_exception(self):
