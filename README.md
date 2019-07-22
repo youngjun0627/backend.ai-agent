@@ -13,15 +13,6 @@ The Backend.AI Agent is a small daemon that does:
     - `server`: The agent daemon which communicates with the manager and the Docker daemon
 
 
-## Requirements
-- Private Registry for Backend.AI kernel images
-    This registry should be accessible to all K8s worker nodes, so that K8s pod can pull kernel images without error.
-- Backend.AI Krunner files
-    - two options to serve krunner files
-    1. Using NFS volume as krunner server
-        - Add NFS connection info to agent.toml. Check `config/sample.toml` for details.
-    2. Installing krunner files to all worker nodes
-        - Download and extract [Static file](https://backend-ai-k8s-agent-static.s3.ap-northeast-2.amazonaws.com/bai-static.tar.gz) to each worker node's `/opt/backend.ai` folder. `scripts/deploy-static/deploy_static_files.py` will automatically copy files to worker nodes.
 ## Installation
 
 ### For development
@@ -32,6 +23,21 @@ The Backend.AI Agent is a small daemon that does:
 * Python 3.6 or higher with [pyenv](https://github.com/pyenv/pyenv)
 and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv) (optional but recommneded)
 * Docker 18.03 or later with docker-compose (18.09 or later is recommended)
+* Private Registry for Backend.AI kernel images
+
+To let manager determine available kernel images in K8s cluster and secure kernel image integrity of whole K8s cluster, Backend.AI Agent requires a private registry. There are no requirements for registry spec; However, all K8s worker nodes should pull images from the registry without any error.
+
+If you are planning to use private registry from cloud providers (ECR, GCP Container Registry, ...), you should set namespace to `lablup`.
+
+Also, after deploying the private registry, imagePullSecrets `backend-ai-registry-secret` in namespace `backend-ai` needs to be installed in target K8s cluster. Check [K8s documentation](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/) if you don't have knowledges on imagePullSecrets.
+
+* Backend.AI Krunner files
+
+There are two options to serve krunner files:
+1. Using NFS volume as krunner server
+    - Add NFS connection info to agent.toml. Check `config/sample.toml` for details.
+2. Installing krunner files to all worker nodes
+    - Download and extract [Static file](https://backend-ai-k8s-agent-static.s3.ap-northeast-2.amazonaws.com/bai-static.tar.gz) to each worker node's `/opt/backend.ai` folder. `scripts/deploy-static/deploy_static_files.py` will automatically copy files to worker nodes.
 
 First, you need **a working manager installation**.
 For the detailed instructions on installing the manager, please refer
@@ -134,11 +140,24 @@ user must have ownership of it.  You can change the location by
 
 ### Adding Backend.AI kernel images to private registry
 
-To let manager determine available kernel images in K8s cluster and secure kernel image integrity of whole K8s cluster, Backend.AI Agent requires a private registry. There are no requirements for registry spec; However, all K8s worker nodes should pull images from the registry without any error.
+To import all available kernel images from lablup docker repository (**THIS WILL TAKE REALLY LONG TIME!!!**):
 
-If you are planning to use private registry from cloud providers (ECR, GCP Container Registry, ...), you should set namespace to `lablup`.
+```sh
+python -m ai.backend.agent.cli.images rescan-images index.docker.io
+```
 
-Also, after deploying the private registry, imagePullSecrets `backend-ai-registry-secret` in namespace `backend-ai` needs to be installed in target K8s cluster. Check [K8s documentation](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/) if you don't have knowledges on imagePullSecrets.
+or, to only pull images you want: 
+1. Go to Lablup's [Docker Hub](https://hub.docker.com/u/lablup) and check image name and tag of kernel image you want to pull.
+2. Execute: 
+
+```sh
+docker pull lablup/<image>:<tag>
+docker tag lablup/<image>:<tag> <Private Registry URL>/lablup/image:<tag>
+docker push <Private Registry URL>/lablup/image:<tag>
+docker rm <Private Registry URL>/lablup/image:<tag>
+```
+3. Repeat 1 and 2 for every images you want.
+
 
 ### Running from a command line
 
