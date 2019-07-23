@@ -36,9 +36,10 @@ scaling-group = "default"
 # allowed to run simultaneously.
 port-range = [30000, 31000]  # env: BACKEND_CONTAINER_PORT_RANGE
 
-# The UID to be set to the container's main process.
+# The UID/GID to be set to the container's main process.
 # If not specified, it uses the same user which the agent runs as.
 kernel-uid = -1
+kernel-gid = -1
 
 # Change the reported host/address of the containers.
 # The manager will use this value to connect to containers.

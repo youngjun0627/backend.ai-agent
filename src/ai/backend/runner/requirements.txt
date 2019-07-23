@@ -1,7 +1,7 @@
 async_timeout~=3.0
-pyzmq~=17.0
-uvloop~=0.11.0
-attrs>=18.0
+pyzmq>=18.0
+uvloop>=0.12.0
+attrs>=19.0
 janus>=0.4.0
 msgpack>=0.6
-jupyter-client
+jupyter-client~=5.0

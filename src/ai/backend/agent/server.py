@@ -62,9 +62,9 @@ from .resources import (
     Mount,
     AbstractAllocMap,
 )
-from .kernel import KernelRunner, KernelFeatures
+from .kernel import KernelRunner, KernelFeatures, prepare_krunner_env
 from .utils import (
-    current_loop, update_nested_dict, get_krunner_image_ref,
+    current_loop, update_nested_dict,
     get_kernel_id_from_container,
     host_pid_to_container_pid,
     container_pid_to_host_pid,
@@ -395,16 +395,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             msgpack.packb(args),
         ))
 
-    async def check_images(self):
-        for distro in ['ubuntu16.04', 'alpine3.8']:
-            try:
-                image_name = get_krunner_image_ref(distro)
-                await self.docker.images.inspect(image_name)
-            except DockerError:
-                raise InitializationError(
-                    f'A required docker image {image_name} is missing! '
-                    'Install or build it first.')
-
     async def clean_runner(self, kernel_id):
         if kernel_id not in self.container_registry:
             return
@@ -464,7 +454,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}',
                  docker_version['Version'], docker_version['ApiVersion'])
-        await self.check_images()
 
         computers, self.slots = await detect_resources(self.etcd)
         for name, klass in computers.items():
@@ -623,6 +612,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         '''
         agent_sock = self.zmq_ctx.socket(zmq.REP)
         agent_sock.bind(f'ipc://{self.agent_sockpath}')
+        os.chown(self.agent_sockpath,
+                 self.config['container']['kernel-uid'],
+                 self.config['container']['kernel-gid'])
         try:
             while True:
                 msg = await agent_sock.recv_multipart()
@@ -908,7 +900,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
             uid = self.config['container']['kernel-uid']
+            gid = self.config['container']['kernel-gid']
             environ['LOCAL_USER_ID'] = str(uid)
+            environ['LOCAL_GROUP_ID'] = str(gid)
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
         binds = [
@@ -1017,20 +1011,19 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'ai.backend.agent', '../runner/roboto.ttf'))
         font_italic_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/roboto-italic.ttf'))
-        _mount(self.agent_sockpath,
-               '/opt/backend.ai/agent.sock', perm='rw')
-        _mount(entrypoint_sh_path.resolve(),
-               '/opt/backend.ai/bin/entrypoint.sh')
-        _mount(suexec_path.resolve(),
-               '/opt/backend.ai/bin/su-exec')
-        _mount(jail_path.resolve(),
-               '/opt/backend.ai/bin/jail')
-        _mount(hook_path.resolve(),
-               '/opt/backend.ai/hook/libbaihook.so')
+
+        _mount(self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
+        _mount(entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
+        _mount(suexec_path.resolve(), '/opt/kernel/su-exec')
+        _mount(jail_path.resolve(), '/opt/kernel/jail')
+        _mount(hook_path.resolve(), '/opt/kernel/libbaihook.so')
+
+        _mount(f'backendai-krunner.{distro}', '/opt/backend.ai')
         _mount(kernel_pkg_path.resolve(),
                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
         _mount(helpers_pkg_path.resolve(),
                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers')
+
         _mount(jupyter_custom_css_path.resolve(),
                '/home/work/.jupyter/custom/custom.css')
         _mount(logo_path.resolve(),
@@ -1039,7 +1032,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                '/home/work/.jupyter/custom/roboto.ttf')
         _mount(font_italic_path.resolve(),
                '/home/work/.jupyter/custom/roboto-italic.ttf')
-        environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
+        environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args = {}
@@ -1054,7 +1047,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                           computer_set.klass.__name__,
                           ', '.join(map(str, hook_paths)))
             for hook_path in hook_paths:
-                container_hook_path = '/opt/backend.ai/hook/lib{}{}.so'.format(
+                container_hook_path = '/opt/kernel/lib{}{}.so'.format(
                     computer_set.klass.key, secrets.token_hex(6),
                 )
                 _mount(hook_path, container_hook_path)
@@ -1073,10 +1066,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             os.makedirs(work_dir, exist_ok=True)
             os.makedirs(work_dir / '.jupyter', exist_ok=True)
             if KernelFeatures.UID_MATCH in kernel_features:
-                uid = int(environ['LOCAL_USER_ID'])
+                uid = self.config['container']['kernel-uid']
+                gid = self.config['container']['kernel-gid']
                 if os.getuid() == 0:  # only possible when I am root.
-                    os.chown(work_dir, uid, uid)
-                    os.chown(work_dir / '.jupyter', uid, uid)
+                    os.chown(work_dir, uid, gid)
+                    os.chown(work_dir / '.jupyter', uid, gid)
             os.makedirs(config_dir, exist_ok=True)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
@@ -1143,7 +1137,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         cmdargs = []
         if self.config['container']['sandbox-type'] == 'jail':
             cmdargs += [
-                "/opt/backend.ai/bin/jail",
+                "/opt/kernel/jail",
                 "-policy", "/etc/backend.ai/jail/policy.yml",
             ]
             if self.config['container']['jail-args']:
@@ -1163,13 +1157,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'ExposedPorts': {
                 f'{port}/tcp': {} for port in exposed_ports
             },
-            'EntryPoint': ["/opt/backend.ai/bin/entrypoint.sh"],
+            'EntryPoint': ["/opt/kernel/entrypoint.sh"],
             'Cmd': cmdargs,
             'Env': [f'{k}={v}' for k, v in environ.items()],
             'WorkingDir': '/home/work',
             'HostConfig': {
                 'Init': True,
-                'VolumesFrom': [f'kernel-env.{kernel_id}'],
                 'Binds': binds,
                 'PortBindings': {
                     f'{eport}/tcp': [{'HostPort': str(hport),
@@ -1190,9 +1183,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # We are all set! Create and start the container.
         try:
-            env_container = await self.docker.containers.create(config={
-                'Image': get_krunner_image_ref(distro),
-            }, name=f'kernel-env.{kernel_id}')
             container = await self.docker.containers.create(
                 config=container_config, name=kernel_name)
             cid = container._id
@@ -1248,7 +1238,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'lang': image_ref,
             'version': version,
             'container_id': container._id,
-            'env_container_id': env_container._id,
             'kernel_host': kernel_host,
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
@@ -1662,9 +1651,7 @@ print(json.dumps(files))''' % {'path': path}
             pass
         else:
             container_id = kernel_info['container_id']
-            env_container_id = kernel_info['env_container_id']
             container = self.docker.containers.container(container_id)
-            env_container = self.docker.containers.container(env_container_id)
             try:
                 for task in kernel_info['agent_tasks']:
                     task.cancel()
@@ -1676,7 +1663,6 @@ print(json.dumps(files))''' % {'path': path}
                 try:
                     if not self.config['debug']['skip-container-deletion']:
                         await container.delete()
-                        await env_container.delete()
                 except DockerError as e:
                     if e.status == 409 and 'already in progress' in e.message:
                         pass
@@ -1759,6 +1745,9 @@ print(json.dumps(files))''' % {'path': path}
 async def server_main(loop, pidx, _args):
     config = _args[0]
 
+    await prepare_krunner_env('alpine3.8')
+    await prepare_krunner_env('ubuntu16.04')
+
     etcd_credentials = None
     if config['etcd']['user']:
         etcd_credentials = {
@@ -1838,6 +1827,7 @@ def main(cli_ctx, config_path, debug):
         }).allow_extra('*'),
         t.Key('container'): t.Dict({
             t.Key('kernel-uid', default=-1): tx.UserID,
+            t.Key('kernel-gid', default=-1): tx.GroupID,
             t.Key('kernel-host', default=''): t.String(allow_blank=True),
             t.Key('port-range', default=(30000, 31000)): tx.PortRange,
             t.Key('sandbox-type'): t.Enum('docker', 'jail'),

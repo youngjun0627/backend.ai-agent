@@ -405,6 +405,7 @@ class StatContext:
                 kernel_id_map[cid] = kid
 
             _tasks = []
+            kernel_id = None
             for computer in self.agent.computers.values():
                 _tasks.append(
                     computer.klass.gather_container_measures(self, [container_id]))
@@ -418,7 +419,10 @@ class StatContext:
                     # update per-container metric
                     for cid, measure in ctnr_measure.per_container.items():
                         assert cid == container_id
-                        kernel_id = kernel_id_map[cid]
+                        try:
+                            kernel_id = kernel_id_map[cid]
+                        except KeyError:
+                            continue
                         if kernel_id not in self.kernel_metrics:
                             self.kernel_metrics[kernel_id] = {}
                         if metric_key not in self.kernel_metrics[kernel_id]:
@@ -434,24 +438,20 @@ class StatContext:
                         else:
                             self.kernel_metrics[kernel_id][metric_key].update(measure)
 
-            try:
-                pipe = self.agent.redis_stat_pool.pipeline()
-                metrics = self.kernel_metrics[kernel_id]
-                serialized_metrics = {
-                    key: obj.to_serializable_dict()
-                    for key, obj in metrics.items()
-                }
-                log.debug('kernel_updates: {0}: {1}',
-                          kernel_id, serialized_metrics)
-                pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-                pipe.expire(kernel_id, self.cache_lifespan)
-                await pipe.execute()
-            except UnboundLocalError:
-                # NOTE: If a container is terminated just after the start, there may be no time to report
-                #       container stats to Redis. In that case, `Kernel_id`, and/or `metrics` is not
-                #       defined in this scope. If that's the case, we just return empty metric.
-                return {}
+        if kernel_id is not None:
+            pipe = self.agent.redis_stat_pool.pipeline()
+            metrics = self.kernel_metrics[kernel_id]
+            serialized_metrics = {
+                key: obj.to_serializable_dict()
+                for key, obj in metrics.items()
+            }
+            log.debug('kernel_updates: {0}: {1}',
+                      kernel_id, serialized_metrics)
+            pipe.set(kernel_id, msgpack.packb(serialized_metrics))
+            pipe.expire(kernel_id, self.cache_lifespan)
+            await pipe.execute()
             return metrics
+        return {}
 
 
 @aiotools.actxmgr

@@ -8,16 +8,19 @@ import logging
 import time
 from pathlib import Path
 import pkg_resources
+import platform
 import secrets
+import shutil
 import subprocess
 
 from async_timeout import timeout
+from aiodocker.docker import Docker, DockerVolume
+from aiodocker.exceptions import DockerError
 import click
 import aiozmq
 import msgpack
 import zmq
 
-from . import __version__ as VERSION
 from .utils import get_krunner_image_ref
 from ai.backend.common.utils import StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
@@ -488,6 +491,54 @@ class KernelRunner:
                 break
 
 
+async def prepare_krunner_env(distro: str):
+    '''
+    Check if the volume "backendai-krunner.{distro}.{arch}" exists and is up-to-date.
+    If not, automatically create it and update its content from the packaged pre-built krunner tar
+    archives.
+    '''
+    docker = Docker()
+    arch = platform.machine()
+    name = f'backendai-krunner.{distro}'
+    try:
+        try:
+            vol = DockerVolume(docker, name)
+            vol_data = await vol.show()
+        except DockerError as e:
+            if e.status == 404:
+                # create volume
+                vol = await docker.volumes.create({
+                    'Name': name,
+                    'Driver': 'local',
+                })
+                vol_data = await vol.show()
+        vol_root = Path(vol_data['Mountpoint'])
+        try:
+            existing_version = int((vol_root / 'VERSION').read_text().strip())
+        except FileNotFoundError:
+            existing_version = 0
+        current_version = int(Path(
+            pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/krunner-version.{distro}.txt'))
+            .read_text().strip())
+        if existing_version < current_version:
+            archive = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/krunner-env.{distro}.{arch}.tar.xz')).resolve()
+            log.info('updating {} volume from version {} to {}', name, existing_version, current_version)
+            for entry in vol_root.iterdir():
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                elif entry.is_file():
+                    entry.unlink()
+            shutil.unpack_archive(str(archive), str(vol_root))
+            (vol_root / 'VERSION').write_text(str(current_version))
+    finally:
+        await docker.close()
+    return name
+
+
 @click.group()
 def main():
     '''
@@ -498,35 +549,52 @@ def main():
 
 @main.command()
 @click.argument('distro', default='ubuntu16.04')
-@click.option('--agent-version', default=None,
-              help='Manually set the agent version tag. '
-                   'If not specified, the current source version is used.')
-def build_krunner_env(distro, agent_version):
+def build_krunner_env(distro: str):
     '''
-    Build the kernel runner environment container which provides the /opt/backend.ai
+    Build the kernel runner environment containers and tar archives which provides the /opt/backend.ai
     volume to all other kernel contaienrs.
     '''
-    if agent_version is None:
-        agent_version = VERSION
     base_path = Path(pkg_resources.resource_filename('ai.backend.agent',
                                                      '../runner'))
-    dockerfiles = [
-        (base_path / fn, tag)
-        for fn, tag in [
-            (f'python36.{distro}.dockerfile',
-             f'lablup/backendai-krunner-python:{distro}'),
-            (f'env.{distro}.dockerfile',
-             get_krunner_image_ref(distro)),
-        ]
-    ]
-    for dockerfile, tag in dockerfiles:
-        click.secho(f'Building image: {tag}', fg='yellow', bold=True)
+    image = get_krunner_image_ref(distro)
+    click.secho(f'Building Python for krunner: {image}', fg='yellow', bold=True)
+    subprocess.run([
+        'docker', 'build',
+        '-f', f'python36.{distro}.dockerfile',
+        '-t', f'lablup/backendai-krunner-python:{distro}',
+        '.'
+    ], cwd=base_path, check=True)
+    click.secho(f'Building krunner: {image}', fg='yellow', bold=True)
+    cid = secrets.token_hex(8)
+    arch = platform.machine()  # docker builds the image for the current arch.
+    subprocess.run([
+        'docker', 'build',
+        '-f', f'krunner-env.{distro}.dockerfile',
+        '-t', image,
+        '.'
+    ], cwd=base_path, check=True)
+    subprocess.run([
+        'docker', 'create',
+        '--name', cid,
+        image,
+    ], cwd=base_path, check=True)
+    try:
         subprocess.run([
-            'docker', 'build',
-            '-f', str(dockerfile),
-            '-t', tag,
-            str(base_path),
-        ], check=True)
+            'docker', 'cp',
+            f'{cid}:/root/image.tar.xz',
+            str(base_path / f'krunner-env.{distro}.{arch}.tar.xz'),
+        ], cwd=base_path, check=True)
+        proc = subprocess.run([
+            'docker', 'inspect', cid,
+        ], cwd=base_path, stdout=subprocess.PIPE, check=True)
+        cinfo = json.loads(proc.stdout)
+        labels = cinfo[0]['Config']['Labels']
+        version = labels['ai.backend.krunner.version']
+        (base_path / f'krunner-version.{distro}.txt').write_text(str(version))
+    finally:
+        subprocess.run([
+            'docker', 'rm', cid,
+        ], cwd=base_path, check=True)
 
 
 if __name__ == '__main__':

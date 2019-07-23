@@ -15,6 +15,7 @@ pid-file = "./agent.pid"
 [container]
 port-range = [30000, 31000]
 kernel-uid = -1
+kernel-gid = -1
 kernel-host = "127.0.0.1"
 sandbox-type = "docker"
 scratch-type = "hostdir"
