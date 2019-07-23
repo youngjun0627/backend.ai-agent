@@ -49,6 +49,24 @@ class ConfigMapMountSpec:
       }
     }
 
+class PVCMountSpec:
+  def __init_(self, subPath: str, mountPath: str, mountType: str, perm: str='ro'):
+    self.name = ''
+    self.mountPath = mountPath
+    self.subPath = subPath
+    self.type = mountType
+    self.perm = perm
+
+  def volumemount_dict(self) -> str:
+    mount = {
+      'name': self.name,
+      'mountPath': self.mountPath,
+      'subPath': self.subPath
+    }
+    if self.perm == 'ro':
+      mount['readOnly'] = True
+    return mount
+
 class KernelDeployment:
   hostPathMounts: List[HostPathMountSpec]
   configMapMounts: List[ConfigMapMountSpec]
@@ -56,10 +74,11 @@ class KernelDeployment:
   env: Dict[str, str]
   ports: List[int]
 
-  def __init__(self, kernel_id, image, name: str='deployment'):
+  def __init__(self, kernel_id, image, arch, name: str='deployment'):
     self.name = name
 
     self.hostPathMounts = []
+    self.pvcMounts = []
     self.configMapMounts = []
     self.cmd = []
     self.env = {}
@@ -67,10 +86,22 @@ class KernelDeployment:
     self.ports = []
     self.image = image
     self.krunnerPath = ''
+    self.baistatic_pvc = ''
+    self.vfolder_pvc = ''
+    self.krunner_source = 'local'
+    self.arch = arch
 
   def label(self, k: str, v: str):
     self.labels[k] = str(v)
-    
+  
+  def mount_pvc(self, mountSpec: PVCMountSpec):
+    mountSpec.name = self.name + '-krunner'
+    self.pvcMounts.append(mountSpec)
+
+  def mount_vfolder_pvc(self, mountSpec: PVCMountSpec):
+    mountSpec.name = self.vfolder_pvc
+    self.pvcMounts.append(mountSpec)
+
   def mount_hostpath(self, mountSpec: HostPathMountSpec):
     self.hostPathMounts.append(mountSpec)
   
@@ -79,8 +110,48 @@ class KernelDeployment:
 
   def bind_port(self, port: int):
     self.ports.append(port)
+
+  def krunner_volumemount(self):
+    if self.baistatic_pvc:
+      return {
+        'name': self.name + '-krunner',
+        'persistentVolumeClaim': {
+          'claimName': self.baistatic_pvc
+        }
+      }
+    else:
+      return {
+        'name': self.name + '-krunner',
+        'hostPath': {
+          'path': self.krunnerPath,
+          'type': 'Directory'
+        }
+      }
+
+  def initcontainer(self) -> dict:
+    if self.krunner_source == 'image':
+      distro = self.image.split(':')[-1]
+      arch = self.arch
+
+      return [{
+        'name': self.name + '-krunner',
+        'image': f'lablup/env:{distro}',
+        'imagePullPolicy': 'IfNotPresent',
+        'volumeMounts': [{
+            'name': self.name + '-krunner',
+            'mountPath': '/root/image.tar.xz',
+            'subPath': f'krunner-env.{distro}.{arch}.tar.xz'
+          }, {
+            'name': 'krunner-provider',
+            'mountPath': '/provider'
+        }]
+      }]
+    else:
+      return []
   
   def to_dict(self) -> dict:
+    initcontainer = self.initcontainer()
+
     return {
       'apiVersion': 'apps/v1',
       'kind': 'Deployment',
@@ -94,26 +165,13 @@ class KernelDeployment:
         'template': {
           'metadata': { 'labels': { 'run': self.name } },
           'spec': {
-            'initContainers': [
-              {
-                'name': self.name + '-krunner',
-                'image': 'lablup/k8s-copy-krunner',
-                'imagePullPolicy': 'IfNotPresent',
-                'volumeMounts': [{
-                    'name': self.name + '-krunner',
-                    'mountPath': '/krunner'
-                  }, {
-                    'name': 'krunner-provider',
-                    'mountPath': '/provider'
-                }]
-              }
-            ],
+            'initContainers': initcontainer,
             'containers': [
               {
                 'name': self.name + '-session',
                 'image': self.image,
                 'imagePullPolicy': 'IfNotPresent',
-                'command': ['/opt/backend.ai/bin/entrypoint.sh'],
+                'command': ['/opt/kernel/entrypoint.sh'],
                 'args': self.cmd,
                 'env': [{ 'name': k, 'value': v } for k, v in self.env.items()],
                 'volumeMounts':  [{
@@ -122,10 +180,10 @@ class KernelDeployment:
                 }, {
                     'name': self.name + '-jupyter',
                     'mountPath': '/home/work/.jupyter'
-                }, {
+                }] + [{
                     'name':  'krunner-provider',
-                    'mountPath': '/opt/backend.ai'
-                }] +[x.volumemount_dict() for x in self.configMapMounts + self.hostPathMounts],
+                    'mountPath': '/opt/kernel'
+                }] if len(initcontainer) > 0 else [] + [x.volumemount_dict() for x in self.configMapMounts + self.hostPathMounts + self.pvcMounts],
                 'ports': [{ 'containerPort': x } for x in self.ports],
                 'imagePullSecrets': {
                   'name': 'backend-ai-registry-secret'
@@ -138,13 +196,7 @@ class KernelDeployment:
             }, { 
                 'name': self.name + '-jupyter',
                 'emptyDir': {}
-            }, {
-                'name': self.name + '-krunner',
-                'hostPath': {
-                  'path': self.krunnerPath,
-                  'type': 'Directory'
-                }
-            }, {
+            }, self.krunner_volumemount() , {
                 'name': 'krunner-provider', 
                 'emptyDir': {}
             }] + [x.volumedef_dict() for x in self.configMapMounts + self.hostPathMounts]
@@ -200,3 +252,66 @@ class Service:
     elif self.service_type == 'LoadBalancer':
       base['spec']['type'] = 'LoadBalancer'
     return base
+
+class NFSPersistentVolume:
+
+  def __init__(self, server, path, name, capacity): 
+    self.server = server
+    self.path = path
+    self.name = name
+    self.capacity = capacity
+    self.labels = {}
+    self.options = []
+  
+  def label(self, k, v):
+    self.labels[k] = v
+  
+  def to_dict(self) -> dict:
+    return {
+      'apiVersion': 'v1',
+      'kind': 'PersistentVolume',
+      'metadata': {
+        'name': self.name,
+        'labels': self.labels
+      },
+      'spec': {
+        'capacity': {
+          'storage': self.capacity + 'Gi'
+        },
+        'accessModes': [ 'ReadWriteMany' ],
+        'nfs': {
+          'server': self.server,
+          'path': self.path
+        },
+        'mountOptions': self.options
+      }
+    }
+
+class NFSPersistentVolumeClaim:
+
+  def __init__(self, name, pv_name, capacity):
+    self.name = name
+    self.pv_name = pv_name
+    self.capacity = capacity
+    self.labels = {}
+
+  def label(self, k, v):
+    self.labels[k] = v
+  
+  def to_dict(self) -> dict:
+    return {
+      'apiVersion': 'v1',
+      'kind': 'PersistentVolumeClaim',
+      'metadata': {
+        'name': self.name,
+        'labels': self.labels
+      },
+      'spec': {
+        'resources': {
+          'requests': {
+          'storage': self.capacity + 'Gi'
+          }
+        },
+        'accessModes': [ 'ReadWriteMany' ]
+      }
+    }

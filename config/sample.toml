@@ -29,11 +29,30 @@ scaling-group = "default"
 # If set to an empty string, it does NOT create the PID file.
 # pid-file = "./agent.pid"             # env: BACKEND_PID_FILE
 
+
 [registry]
 # Registry for use with k8s cluster 
 # All kernel container images should be saved here 
 addr = { host = "localhost", port = 5000 }
 
+
+[baistatic]
+# NFS information for backend.ai static files
+# This configuration is optional
+# Without this, Backend.AI will try to mount static files from hostPath of worker node
+nfs-addr = "localhost"
+path = "/backend.ai"
+capacity = 10 # In Gi, without any suffix
+options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated with comma 
+
+
+[vfolder-pv]
+# Needed when serving vFolder as NFS
+name = local
+nfs-addr = "localhost"
+path = "/"
+capacity = 10 # In Gi, without any suffix
+options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated with comma 
 
 [container]
 # The port range to expose public service ports.

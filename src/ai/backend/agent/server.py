@@ -48,7 +48,7 @@ from ai.backend.common.types import (
 )
 from ai.backend.common.utils import StringSetFlag
 from . import __version__ as VERSION
-from .exception import NoKernelError, InitializationError, InsufficientResource
+from .exception import NoKernelError, InitializationError, InsufficientResource, PVCError
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 from .kernel import (
     KernelRunner
@@ -65,11 +65,14 @@ from .utils import (
     current_loop, update_nested_dict
 )
 from .k8sconfs import (
+    PVCMountSpec,
     ConfigMapMountSpec,
     HostPathMountSpec,
     KernelDeployment,
     ConfigMap,
-    Service
+    Service,
+    NFSPersistentVolume,
+    NFSPersistentVolumeClaim
 )
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
@@ -187,7 +190,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = None
         self.scan_images_timer = None
         self.images = []
-        
+        self.krunner_as_pvc = False
+        self.vfolder_as_pvc = ''
 
         self.workers = {}
         self.master = None
@@ -222,6 +226,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         await self.scan_images(None)
         # TODO: Create k8s compatible stat collector
+        await self.determine_static_mount_type()
 
         # Send the first heartbeat.
         self.hb_timer    = aiotools.create_timer(self.heartbeat, 3.0)
@@ -242,6 +247,63 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Notify the gateway.
         await self.send_event('instance_started')
 
+    async def determine_static_mount_type(self, distro):
+        nfs_pv = await self.k8sCoreApi.list_persistent_volume(label_selector='backend.ai/bai-static-nfs-server')
+        if len(nfs_pv.items) == 0:
+            # PV does not exists; create one
+            pv = NFSPersistentVolume(
+                self.config['baistatic']['addr'], self.config['baistatic']['path'],
+                'backend-ai-static-files-pv', str(self.config['baistatic']['capacity'])
+            )
+            pv.label('backend.ai/bai-static-nfs-server', self.config['baistatic']['addr'])
+            pv.options = [x.strip() for x in self.config['baistatic']['options'].split(',')]
+            
+            try:
+                pv_response = await self.k8sCoreApi.create_persistent_volume(body=pv.to_dict())
+            except:
+                raise
+        
+        nfs_pvc = self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
+        if len(nfs_pvc.items) == 0:
+            # PV does not exists; create one
+            pvc = NFSPersistentVolumeClaim(
+                'backend-ai-static-files-pvc', 'backend-ai-static-files-pv', str(self.config['baistatic']['capacity'])
+            )
+            pvc.label('backend.ai/bai-static-nfs-server', self.config['baistatic']['addr'])
+            try:
+                pvc_response = await self.k8sCoreApi.create_namespaced_persistent_volume_claim('backend-ai', body=pvc.to_dict())
+            except:
+                raise
+        self.krunner_as_pvc = True
+    
+    async def create_vfolder_pv(self):
+        addr = self.config['vfolder-pv']['nfs-addr']
+        path = self.config['vfolder-pv']['path']
+        capacity = self.config['vfolder-pv']['capacity']
+        options = [x.strip() for x in self.config['vfolder-pv']['options'].split(',')]
+
+        nfs_pv = await self.k8sCoreApi.list_persistent_volume(label_selector='backend.ai/vfolder')
+        if len(nfs_pv.items) == 0:
+            pv = NFSPersistentVolume(addr, path, 'backend-ai-vfolder-pv', capacity)
+            pv.label('backend.ai/vfolder', '')
+            pv.options = options
+            try:
+                pv_response = await k8sCoreApi.create_persistent_volume(body=pv.to_dict())
+            except:
+                raise
+        
+        nfs_pvc = await self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
+        if len(nfs_pvc.items) == 0:
+            pvc = NFSPersistentVolumeClaim(
+                'backend-ai-vfolder-pvc', 'backend-ai-vfolder-pv', str(capacity)
+            )
+            pvc.label('backend.ai/vfolder', '')
+            try:
+                pvc_response = await self.k8sCoreApi.create_namespaced_persistent_volume_claim('backend-ai', body=pvc.to_dict())
+            except:
+                raise
+        self.vfolder_as_pvc = True
+    
     async def fetch_workers(self):
         nodes = await self.k8sCoreApi.list_node()
         for node in nodes.items:
@@ -351,9 +413,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('configured redis_addr: {0}', self.config['redis']['addr'])
         log.info('configured event_addr: {0}', self.config['event']['addr'])
 
-        vfolder_mount = await self.etcd.get('volumes/_mount')
-        if vfolder_mount is None:
-            vfolder_mount = '/mnt'
+        if 'vfolder-pv' in self.config.keys():
+            vfolder_mount = 'nfs:' + self.config['vfolder-pv']['nfs-addr'] + ':' + self.config['vfolder-pv']['path']
+        else:
+            vfolder_mount = await self.etcd.get('volumes/_mount')
+            if vfolder_mount is None:
+                vfolder_mount = '/mnt'
         vfolder_fsprefix = await self.etcd.get('volumes/_fsprefix')
         if vfolder_fsprefix is None:
             vfolder_fsprefix = ''
@@ -410,6 +475,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             self.event_sock.close()
 
         self.zmq_ctx.term()
+
+    async def get_image_manifest(self, image_name, tag):
+        addr, port = self.config['registry']['addr'].as_sockaddr()
+        registry_addr = f'https://{addr}:{port}'
+
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
+            image_manifest = await session.get(f'{registry_addr}/v2/{image_name}/manifests/{tag}')
+            image_manifest = await image_manifest.json()
+            return image_manifest
 
     async def deregister_myself(self):
         # TODO: reimplement using Redis heartbeat stream
@@ -566,14 +640,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             idle_timeout=kernel_config['idle_timeout'],
         )
 
-        registry_addr, registry_port = self.config['registry']['addr']
-        canonical = kernel_config['image']['canonical']
-        
-        _, repo, name_with_tag = canonical.split('/')
-        deployment = KernelDeployment(kernel_id, f'{registry_addr}:{registry_port}/{repo}/{name_with_tag}', f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-'))
-
-        log.debug('Initial container config: {0}', deployment.to_dict())
-
 
         # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
@@ -601,35 +667,95 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         cpu_core_count = len(resource_spec.allocations['cpu']['cpu'])
         environ.update({k: str(cpu_core_count) for k in envs_corecount})
 
-        def _mount(kernel_id: str, hostPath: str, mountPath: str, mountType: str, perm='ro'):
-            name = (kernel_id + '-' + mountPath.split('/')[-1]).replace('.', '-')
-            deployment.mount_hostpath(HostPathMountSpec(name, hostPath, mountPath, mountType, perm))
-
+        
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         arch = platform.machine()
 
-        deployment.krunnerPath = f'/opt/backend.ai/krunner/env.{distro}'
-        _mount(kernel_id, '/opt/backend.ai/runner/entrypoint.sh', 
-               '/opt/backend.ai/bin/entrypoint.sh', 'File')
-        _mount(kernel_id, f'/opt/backend.ai/runner/su-exec.{distro}.bin',
-               '/opt/backend.ai/bin/su-exec', 'File')
-        _mount(kernel_id, f'/opt/backend.ai/runner/jail.{distro}.bin',
-               '/opt/backend.ai/bin/jail', 'File')
-        _mount(kernel_id, f'/opt/backend.ai/hook/libbaihook.{distro}.{arch}.so',
-               '/opt/backend.ai/hook/libbaihook.so', 'File')
-        _mount(kernel_id, '/opt/backend.ai/kernel',
-               '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel', 'Directory')
-        _mount(kernel_id, '/opt/backend.ai/helpers',
-               '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers', 'Directory')
-        _mount(kernel_id, '/opt/backend.ai/runner/jupyter-custom.css',
-               '/home/work/.jupyter/custom/custom.css', 'File')
-        _mount(kernel_id, '/opt/backend.ai/runner/logo.svg',
-               '/home/work/.jupyter/custom/logo.svg', 'File')
-        _mount(kernel_id, '/opt/backend.ai/runner/roboto.ttf',
-               '/home/work/.jupyter/custom/roboto.ttf', 'File')
-        _mount(kernel_id, '/opt/backend.ai/runner/roboto-italic.ttf',
-               '/home/work/.jupyter/custom/roboto-italic.ttf', 'File')
+
+        registry_addr, registry_port = self.config['registry']['addr']
+        canonical = kernel_config['image']['canonical']
+        
+        _, repo, name_with_tag = canonical.split('/')
+        deployment = KernelDeployment(kernel_id, f'{registry_addr}:{registry_port}/{repo}/{name_with_tag}', \
+            arch, f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-'))
+
+        log.debug('Initial container config: {0}', deployment.to_dict())
+
+
+        # Determine if krunner bundled in image needs an update
+        image_manifest = self.get_image_manifest(*name_with_tag.split(':'))
+        history = json.loads(image_manifest['history'][0])
+        labels = history['config']['Labels']
+        
+        current_version = int(Path(
+            pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/krunner-version.{distro}.txt'))
+            .read_text().strip())
+        should_update_krunner_to_latest = 'ai.backend.krunner.version' not in labels.keys() or current_version > labels['ai.backend.krunner.version']
+        deployment.krunner_source = 'image' if should_update_krunner_to_latest else 'local'
+        
+        def _mount(kernel_id: str, hostPath: str, mountPath: str, mountType: str, perm='ro'):
+            name = (kernel_id + '-' + mountPath.split('/')[-1]).replace('.', '-')
+            deployment.mount_hostpath(HostPathMountSpec(name, hostPath, mountPath, mountType, perm))
+
+        if self.krunner_as_pvc:
+            try:
+                nfs_pvc = self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
+                if len(nfs_pvc.items) == 0:
+                    raise PVCError('No PVC for backend.ai static files')
+                pvc = nfs_pvc.items[0]
+                if pvc.status[-1].conditions != 'Bound':
+                    raise PVCError('PVC not Bound')
+            except:
+                raise
+            deployment.baistatic_pvc = pvc.metadata.name
+        
+            deployment.mount_pvc(PVCMountSpec('runner/entrypoint.sh', '/opt/kernel/entrypoint.sh', 'File'))
+            deployment.mount_pvc(PVCMountSpec(f'runner/su-exec.{distro}.bin', '/opt/kernel/su-exec', 'File'))
+            deployment.mount_pvc(PVCMountSpec(f'runner/jail.{distro}.bin', '/opt/kernel/jail', 'File'))
+            deployment.mount_pvc(PVCMountSpec(f'hook/libbaihook.{distro}.{arch}.so', '/opt/kernel/libbaihook.so', 'File'))
+            deployment.mount_pvc(PVCMountSpec('kernel', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel', 'Directory'))
+            deployment.mount_pvc(PVCMountSpec('helpers', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers', 'Directory'))
+            deployment.mount_pvc(PVCMountSpec('runner/jupyter-custom.css', '/home/work/.jupyter/custom/custom.css', 'File'))
+            deployment.mount_pvc(PVCMountSpec('runner/logo.svg', '/home/work/.jupyter/custom/logo.svg', 'File'))
+            deployment.mount_pvc(PVCMountSpec('runner/roboto.ttf', '/home/work/.jupyter/custom/roboto.ttf', 'File'))
+            deployment.mount_pvc(PVCMountSpec('runner/roboto-italic.ttf', '/home/work/.jupyter/custom/roboto-italic.ttf', 'File'))
+        else:
+            _mount(kernel_id, '/opt/backend.ai/runner/entrypoint.sh', 
+                '/opt/backend.ai/bin/entrypoint.sh', 'File')
+            _mount(kernel_id, f'/opt/backend.ai/runner/su-exec.{distro}.bin',
+                '/opt/backend.ai/bin/su-exec', 'File')
+            _mount(kernel_id, f'/opt/backend.ai/runner/jail.{distro}.bin',
+                '/opt/backend.ai/bin/jail', 'File')
+            _mount(kernel_id, f'/opt/backend.ai/hook/libbaihook.{distro}.{arch}.so',
+                '/opt/backend.ai/hook/libbaihook.so', 'File')
+            _mount(kernel_id, '/opt/backend.ai/kernel',
+                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel', 'Directory')
+            _mount(kernel_id, '/opt/backend.ai/helpers',
+                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers', 'Directory')
+            _mount(kernel_id, '/opt/backend.ai/runner/jupyter-custom.css',
+                '/home/work/.jupyter/custom/custom.css', 'File')
+            _mount(kernel_id, '/opt/backend.ai/runner/logo.svg',
+                '/home/work/.jupyter/custom/logo.svg', 'File')
+            _mount(kernel_id, '/opt/backend.ai/runner/roboto.ttf',
+                '/home/work/.jupyter/custom/roboto.ttf', 'File')
+            _mount(kernel_id, '/opt/backend.ai/runner/roboto-italic.ttf',
+                '/home/work/.jupyter/custom/roboto-italic.ttf', 'File')
+        
+        # Check if vFolder PVC is Bound; otherwise raise since we can't use vfolder
+        if len(vfolders) > 0 and self.vfolder_as_pvc:
+            try:
+                nfs_pvc = self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
+                if len(nfs_pvc.items) == 0:
+                    raise PVCError('No PVC for backend.ai static files')
+                pvc = nfs_pvc.items[0]
+                if pvc.status[-1].conditions != 'Bound':
+                    raise PVCError('PVC not Bound')
+            except:
+                raise
+            deployment.vfolder_pvc = pvc.metadata.name
 
         for vfolder in vfolders:
             if len(vfolder) == 4:
@@ -640,8 +766,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             else:
                 raise RuntimeError(
                     'Unexpected number of vfolder mount detail tuple size')
-            host_path = (self.config['vfolder']['mount'] / folder_host /
-                            self.config['vfolder']['fsprefix'] / folder_id)
+            
+            
             folder_perm = MountPermission(folder_perm)
             perm_char = 'ro'
             if folder_perm == MountPermission.RW_DELETE or folder_perm == MountPermission.READ_WRITE:
@@ -649,12 +775,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 # (Currently docker's READ_WRITE includes DELETE)
                 perm_char = 'rw'
             
-            _mount(kernel_id, host_path.absolute().as_posix(), f'/home/work/{folder_name}', 'Directory', perm=perm_char)
-        
+            if self.vfolder_as_pvc:
+                subPath = (folder_host / self.config['vfolder']['fsprefix'] / folder_id)
+                deployment.mount_vfolder_pvc(PVCMountSpec(subPath.absolute().as_posix(), f'/home/work/{folder_name}', 'Directory', perm=perm_char))
+            else:
+                host_path = (self.config['vfolder']['mount'] / folder_host /
+                    self.config['vfolder']['fsprefix'] / folder_id)
+                _mount(kernel_id, host_path.absolute().as_posix(), f'/home/work/{folder_name}', 'Directory', perm=perm_char)
+
         # should no longer be used!
         del vfolders
 
-        environ['LD_PRELOAD'] = '/opt/backend.ai/hook/libbaihook.so'
+        environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
 
         # TODO: Inject ComputeDevice-specific env-varibles and hooks
 
@@ -1149,6 +1281,18 @@ def main(cli_ctx, config_path, debug):
         }).allow_extra('*'),
         t.Key('registry'): t.Dict({
             t.Key('addr'): tx.HostPortPair(allow_blank_host=False)
+        }),
+        t.Key('baistatic'): t.Null | t.Dict({
+            t.Key('nfs-addr'): t.String,
+            t.Key('path'): t.String,
+            t.Key('capacity'): t.Int,
+            t.Key('options'): t.Null | t.String
+        }),
+        t.Key('vfolder-pv'): t.Null | t.Dict({
+            t.Key('nfs-addr'): t.String,
+            t.Key('path'): t.String,
+            t.Key('capacity'): t.Int,
+            t.Key('options'): t.Null | t.String
         }),
         t.Key('logging'): t.Any,  # checked in ai.backend.common.logging
         t.Key('resource'): t.Dict({
