@@ -1,6 +1,18 @@
 Changes
 =======
 
+19.06.0b2 (2018-xx-xx)
+----------------------
+
+* CHANGE: Now krunner-env is served as local Docker volumes instead of dummy contaienrs (#117, #118)
+
+  - This fixes infinite bloating of anonymous Docker volumes implicitly created from dummy containers
+    which consumed the disk space indefinitely.
+
+  - The agent auto-creates and auto-udpates the krunner-env volumes. Separate Docker image deployment
+    and manual image tagging are no longer required!
+
+
 19.06.0b1 (2018-07-13)
 ----------------------
 
