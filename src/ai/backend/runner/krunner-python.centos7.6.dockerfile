@@ -5,7 +5,7 @@ ARG PREFIX=/opt/backend.ai
 ENV PATH=${PREFIX}/bin:$PATH
 ENV LANG=C.UTF-8
 
-#RUN yum update && yum install -y ca-certificates 
+#RUN yum update && yum install -y ca-certificates
 
 ENV GPG_KEY 0D96DF4D4110E5C43FBFB17F2D347EA6AA65421D
 ENV PYTHON_VERSION 3.6.8
@@ -85,7 +85,7 @@ RUN cd ${PREFIX}/bin \
 	&& ln -s python3-config python-config
 
 # if this is called "PIP_VERSION", pip explodes with "ValueError: invalid truth value '<VERSION>'"
-ENV PYTHON_PIP_VERSION 19.1.1 
+ENV PYTHON_PIP_VERSION 19.1.1
 
 RUN set -ex; \
 	\

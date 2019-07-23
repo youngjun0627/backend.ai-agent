@@ -560,7 +560,7 @@ def build_krunner_env(distro: str):
     click.secho(f'Building Python for krunner: {image}', fg='yellow', bold=True)
     subprocess.run([
         'docker', 'build',
-        '-f', f'python36.{distro}.dockerfile',
+        '-f', f'krunner-python.{distro}.dockerfile',
         '-t', f'lablup/backendai-krunner-python:{distro}',
         '.'
     ], cwd=base_path, check=True)

@@ -1747,6 +1747,7 @@ async def server_main(loop, pidx, _args):
 
     await prepare_krunner_env('alpine3.8')
     await prepare_krunner_env('ubuntu16.04')
+    await prepare_krunner_env('centos7.6')
 
     etcd_credentials = None
     if config['etcd']['user']:
