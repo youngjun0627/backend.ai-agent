@@ -42,6 +42,23 @@ Changes
 - Make it possible to use specific IP address ranges for public ports of kernel containers.
   (lablup/backend.ai#37)
 
+19.03.3 (2019-07-12)
+--------------------
+
+- Add missing updates for Jupyter style resources to disable Jupyter cluster
+  extension which is not compatible with us and to remove unused headers in the
+  terminal window.
+
+19.03.2 (2019-07-12)
+--------------------
+
+- Fix permission handling for container-agent intercommunication socket which
+  has prevented unexpected crashes of containers in certain conditions.
+
+- Mount hand-made tmp dirs only when custom tmpfs is enabled.
+
+- Update Jupyter style resources.
+
 19.03.1 (2019-04-21)
 --------------------
 
