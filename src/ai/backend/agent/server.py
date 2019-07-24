@@ -1,4 +1,5 @@
 import base64
+import datetime
 import functools
 import hashlib
 from ipaddress import ip_network, _BaseAddress as BaseIPAddress
@@ -27,8 +28,10 @@ import aiozmq
 from aiozmq import rpc
 import attr
 import asyncio
+import boto3
 import click
 from kubernetes_asyncio import client as K8sClient, config as K8sConfig
+import pytz
 from setproctitle import setproctitle
 import snappy
 import trafaret as t
@@ -48,7 +51,12 @@ from ai.backend.common.types import (
 )
 from ai.backend.common.utils import StringSetFlag
 from . import __version__ as VERSION
-from .exception import NoKernelError, InitializationError, InsufficientResource, PVCError
+from .exception import (
+    NoKernelError, 
+    InitializationError, 
+    InsufficientResource, 
+    K8sError
+)
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 from .kernel import (
     KernelRunner
@@ -192,6 +200,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.images = []
         self.krunner_as_pvc = False
         self.vfolder_as_pvc = ''
+        self.ecr_address = ''
+        self.ecr_token = ''
+        self.ecr_token_expireAt = ''
 
         self.workers = {}
         self.master = None
@@ -247,15 +258,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Notify the gateway.
         await self.send_event('instance_started')
 
-    async def determine_static_mount_type(self, distro):
+    async def determine_static_mount_type(self):
         nfs_pv = await self.k8sCoreApi.list_persistent_volume(label_selector='backend.ai/bai-static-nfs-server')
         if len(nfs_pv.items) == 0:
             # PV does not exists; create one
             pv = NFSPersistentVolume(
-                self.config['baistatic']['addr'], self.config['baistatic']['path'],
+                self.config['baistatic']['nfs-addr'], self.config['baistatic']['path'],
                 'backend-ai-static-files-pv', str(self.config['baistatic']['capacity'])
             )
-            pv.label('backend.ai/bai-static-nfs-server', self.config['baistatic']['addr'])
+            pv.label('backend.ai/bai-static-nfs-server', self.config['baistatic']['nfs-addr'])
             pv.options = [x.strip() for x in self.config['baistatic']['options'].split(',')]
             
             try:
@@ -263,13 +274,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             except:
                 raise
         
-        nfs_pvc = self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
+        nfs_pvc = await self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
         if len(nfs_pvc.items) == 0:
             # PV does not exists; create one
             pvc = NFSPersistentVolumeClaim(
                 'backend-ai-static-files-pvc', 'backend-ai-static-files-pv', str(self.config['baistatic']['capacity'])
             )
-            pvc.label('backend.ai/bai-static-nfs-server', self.config['baistatic']['addr'])
+            pvc.label('backend.ai/bai-static-nfs-server', self.config['baistatic']['nfs-addr'])
             try:
                 pvc_response = await self.k8sCoreApi.create_namespaced_persistent_volume_claim('backend-ai', body=pvc.to_dict())
             except:
@@ -319,18 +330,67 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def update_status(self, status):
         await self.etcd.put('', status, scope=ConfigScopes.NODE)
 
+    async def get_docker_registry_info(self):
+        # Determines Registry URL and its appropriate Authorization header
+        if self.config['registry']['type'] == 'local':
+            addr, port = self.config['registry']['addr'].as_sockaddr()
+            registry_addr = f'https://{addr}:{port}'
+            registry_pull_secrets = await self.k8sCoreApi.list_namespaced_secret('backend-ai')
+            for secret in registry_pull_secrets.items:
+                if secret.metadata.name == 'backend-ai-registry-secret':
+                    pull_secret = secret
+                    break
+            else:
+                raise K8sError('backend-ai-registry-secret does not exist in backend-ai namespace')
+            
+            addr, _ = self.config['registry']['addr'].as_sockaddr()
+
+            auth_data = json.loads(base64.b64decode(pull_secret.data['.dockerconfigjson']))
+            for server, authInfo in auth_data['auths'].items():
+                if addr in server:
+                    token = authInfo['auth']
+                    return registry_addr, { 'Authorization': f'Basic {token}' }
+            else:
+                raise K8sError('No authentication information for registry server configured in agent.toml')
+
+        elif self.config['registry']['type'] == 'ecr':
+            # Check if given token is valid yet
+            utc = pytz.UTC
+            if self.ecr_address and self.ecr_token and self.ecr_token_expireAt and utc.localize(datetime.datetime.now()) < self.ecr_token_expireAt:
+                registry_addr, headers = self.ecr_address, { 'Authorization': 'Basic ' + self.ecr_token } 
+                return registry_addr, headers
+
+            client = boto3.client(
+                'ecr', 
+                aws_access_key_id=self.config['registry']['access-key'],
+                aws_secret_access_key=self.config['registry']['secret-key']
+            )
+            auth_data = client.get_authorization_token(registryIds=[ self.config['registry']['registry-id'] ])
+            self.ecr_address = auth_data['authorizationData'][0]['proxyEndpoint']
+            self.ecr_token = auth_data['authorizationData'][0]['authorizationToken']
+            self.ecr_token_expireAt = auth_data['authorizationData'][0]['expiresAt']
+            log.debug('ECR Access Token expires at: {0}', self.ecr_token_expireAt)
+
+            return self.ecr_address, { 'Authorization': 'Basic ' + self.ecr_token, 'Content-Type': 'application/json' }
+
     async def scan_images(self, interval):
-        addr, port = self.config['registry']['addr'].as_sockaddr()
-        registry_addr = f'https://{addr}:{port}'
+
         updated_images = []
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
+        registry_addr, headers = await self.get_docker_registry_info()
+
+        async with aiohttp.ClientSession(headers=headers, connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
             all_images = await session.get(f'{registry_addr}/v2/_catalog')
-            all_images = await all_images.json()
+            status_code = all_images.status
+            log.debug('/v2/_catalog/: {0}', await all_images.text())
+            all_images = json.loads(await all_images.text())
+            if status_code == 401:
+                raise K8sError('\n'.join([x['message'] for x in all_images['errors']]))
+            
             for image_name in all_images['repositories']:
                 image_tags = await session.get(f'{registry_addr}/v2/{image_name}/tags/list')
-                image_tags = await image_tags.json()
+                image_tags = json.loads(await image_tags.text())
                 updated_images += [f'{image_name}:{x}' for x in image_tags['tags']]
-        
+                    
         for added_image in list(set(updated_images) - set(self.images)):
             log.debug('found kernel image: {0}', added_image)
         for removed_image in list(set(self.images) - set(updated_images)):
@@ -477,11 +537,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.zmq_ctx.term()
 
     async def get_image_manifest(self, image_name, tag):
-        addr, port = self.config['registry']['addr'].as_sockaddr()
-        registry_addr = f'https://{addr}:{port}'
+        registry_addr, headers = await self.get_docker_registry_info()
 
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
+        async with aiohttp.ClientSession(headers=headers, connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
             image_manifest = await session.get(f'{registry_addr}/v2/{image_name}/manifests/{tag}')
+            status_code = image_manifest.status
+            image_manifest = json.loads(await image_manifest.text())
+            if status_code == 401:
+                raise K8sError('\n'.join([x['message'] for x in image_manifest['errors']]))
+            
             image_manifest = await image_manifest.json()
             return image_manifest
 
@@ -672,12 +736,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         arch = platform.machine()
 
-
-        registry_addr, registry_port = self.config['registry']['addr']
+        if self.config['registry']['type'] == 'local':
+            registry_addr, registry_port = self.config['registry']['addr']
+            registry_name = f'{registry_addr}:{registry_port}'
+        elif self.config['registry']['type'] == 'ecr':
+            registry_name = self.ecr_address.replace('https://', '')
+        
         canonical = kernel_config['image']['canonical']
         
         _, repo, name_with_tag = canonical.split('/')
-        deployment = KernelDeployment(kernel_id, f'{registry_addr}:{registry_port}/{repo}/{name_with_tag}', \
+        deployment = KernelDeployment(kernel_id, f'{registry_name}/{repo}/{name_with_tag}', \
             arch, f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-'))
 
         log.debug('Initial container config: {0}', deployment.to_dict())
@@ -704,10 +772,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             try:
                 nfs_pvc = self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
                 if len(nfs_pvc.items) == 0:
-                    raise PVCError('No PVC for backend.ai static files')
+                    raise K8sError('No PVC for backend.ai static files')
                 pvc = nfs_pvc.items[0]
                 if pvc.status[-1].conditions != 'Bound':
-                    raise PVCError('PVC not Bound')
+                    raise K8sError('PVC not Bound')
             except:
                 raise
             deployment.baistatic_pvc = pvc.metadata.name
@@ -749,10 +817,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             try:
                 nfs_pvc = self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
                 if len(nfs_pvc.items) == 0:
-                    raise PVCError('No PVC for backend.ai static files')
+                    raise K8sError('No PVC for backend.ai static files')
                 pvc = nfs_pvc.items[0]
                 if pvc.status[-1].conditions != 'Bound':
-                    raise PVCError('PVC not Bound')
+                    raise K8sError('PVC not Bound')
             except:
                 raise
             deployment.vfolder_pvc = pvc.metadata.name
@@ -1280,8 +1348,8 @@ def main(cli_ctx, config_path, debug):
             t.Key('scratch-size', default='0'): tx.BinarySize,
         }).allow_extra('*'),
         t.Key('registry'): t.Dict({
-            t.Key('addr'): tx.HostPortPair(allow_blank_host=False)
-        }),
+            t.Key('type'): t.String
+        }).allow_extra('*'),
         t.Key('baistatic'): t.Null | t.Dict({
             t.Key('nfs-addr'): t.String,
             t.Key('path'): t.String,
@@ -1305,6 +1373,18 @@ def main(cli_ctx, config_path, debug):
             t.Key('skip-container-deletion', default=False): t.Bool,
         }).allow_extra('*'),
     }).merge(config.etcd_config_iv).allow_extra('*')
+    registry_local_config_iv = t.Dict({
+        t.Key('type'): t.String,
+        t.Key('addr'): tx.HostPortPair()
+    })
+
+    registry_ecr_config_iv = t.Dict({
+        t.Key('type'): t.String,
+        t.Key('registry-id'): t.String,
+        t.Key('region'): t.String,
+        t.Key('access-key'): t.String,
+        t.Key('secret-key'): t.String
+    })
 
     # Determine where to read configuration.
     raw_cfg, cfg_src_path = config.read_from_file(config_path, 'agent')
@@ -1336,6 +1416,19 @@ def main(cli_ctx, config_path, debug):
             print('== Agent configuration ==')
             pprint(cfg)
         cfg['_src'] = cfg_src_path
+
+        registry_target_config_iv = None
+        
+        if cfg['registry']['type'] == 'local':
+            registry_target_config_iv = registry_local_config_iv
+        elif cfg['registry']['type'] == 'ecr':
+            registry_target_config_iv = registry_ecr_config_iv
+        else:
+            print('Validation of agent configuration has failed: registry type {} not supported'.format(cfg['registry']['type']), file=sys.stderr)
+            raise click.Abort()
+        
+        registry_cfg = config.check(cfg['registry'], registry_target_config_iv)
+        cfg['registry'] = registry_cfg
     except config.ConfigurationError as e:
         print('Validation of agent configuration has failed:', file=sys.stderr)
         print(pformat(e.invalid_data), file=sys.stderr)

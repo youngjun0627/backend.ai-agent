@@ -33,7 +33,24 @@ scaling-group = "default"
 [registry]
 # Registry for use with k8s cluster 
 # All kernel container images should be saved here 
+
+# GCR/ECR only works if nodes are from cloud provider
+# When using GCR/ECR as private registry, you don't need to create imagePullSecret
+# ACR(Azure Container Registry) users can just use "local" type  
+
+# Type value should be one of : "ecr", or "local"
+# Configuration items will be different, depending on the value of "type"
+
+# When using "local" type
+type = "local" 
 addr = { host = "localhost", port = 5000 }
+
+# When using "ecr" type 
+type = "ecr"
+region = "ap-northeast-2"
+registry-id = "0123456789"
+access-key = "AKIAIOSFODNN7EXAMPLE"
+sccret-key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
 
 [baistatic]

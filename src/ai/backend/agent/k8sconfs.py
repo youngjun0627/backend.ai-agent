@@ -74,8 +74,11 @@ class KernelDeployment:
   env: Dict[str, str]
   ports: List[int]
 
-  def __init__(self, kernel_id, image, arch, name: str='deployment'):
+  def __init__(self, kernel_id:str, image:str, arch:str, registry_type:str, name: str='deployment'):
     self.name = name
+    self.image = image
+    self.arch = arch
+    self.registry_type = registry_type
 
     self.hostPathMounts = []
     self.pvcMounts = []
@@ -84,12 +87,10 @@ class KernelDeployment:
     self.env = {}
     self.labels = { 'run': name, 'backend.ai/kernel_id': kernel_id }
     self.ports = []
-    self.image = image
     self.krunnerPath = ''
     self.baistatic_pvc = ''
     self.vfolder_pvc = ''
     self.krunner_source = 'local'
-    self.arch = arch
 
   def label(self, k: str, v: str):
     self.labels[k] = str(v)
@@ -187,7 +188,7 @@ class KernelDeployment:
                 'ports': [{ 'containerPort': x } for x in self.ports],
                 'imagePullSecrets': {
                   'name': 'backend-ai-registry-secret'
-                }
+                } if self.registry_type == 'local' else {}
               }
             ],
             'volumes': [{

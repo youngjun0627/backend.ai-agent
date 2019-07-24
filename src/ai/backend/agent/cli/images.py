@@ -62,11 +62,12 @@ class ConfigServer:
             # TODO: provide a way to specify other scope prefixes
         }
         self.etcd = AsyncEtcd(etcd_addr, namespace, scope_prefix_map, credentials=credentials)
+
         self.target_registry = target_registry
 
     async def _rescan_images(self, registry_name: str,
                                 registry_url: yarl.URL,
-                                credentials: dict):
+                                credentials: dict, image: str):
         all_updates = {}
         base_hdrs = {
             'Accept': 'application/vnd.docker.distribution.manifest.v2+json',
@@ -119,14 +120,37 @@ class ConfigServer:
 
             log.info('Updating metadata for {0}:{1}', image, tag)
             url_str = str(registry_url).replace('https://', '')
-            target_registry_url = self.target_registry['host'] + ':' + str(self.target_registry['port'])
+            if self.target_registry['type'] == 'local':
+                target_registry_url = self.target_registry['host']['addr'] + ':' + str(self.target_registry['host']['port'])
+            elif self.target_registry['type'] == 'ecr':
 
+                target_registry_url = self.target_registry['registry-id'] + '.dkr.ecr.' + self.target_registry['region'] + '.amazonaws.com'
+            
             cmds = [
                 f'docker pull {url_str}/{image}:{tag}',
                 f'docker tag {url_str}/{image}:{tag} {target_registry_url}/{image}:{tag}',
                 f'docker push {target_registry_url}/{image}:{tag}',
                 f'docker image rm {url_str}/{image}:{tag}'
             ]
+
+            if self.target_registry['type'] == 'ecr':
+                check_existence = f'aws ecr describe-repositories --repository-name {image}'
+                proc = await create_subprocess_shell(
+                    check_existence, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                log.debug('{0}', check_existence)
+                stdout, stderr = await proc.communicate()
+
+                stderr = list(filter(lambda x: len(x) > 0, stderr.decode().split('\n')))
+                if len(stderr) > 0:
+                    if f'The repository with name \'{image}\' does not exist in the registry with id' not in stderr[0]:
+                        cmds = [
+                            f'aws ecr create-repository --repository-name {image}'
+                        ] + cmds[:]
+                    else:
+                        error = stderr[0]
+                        log.error(f'Unexpected error {error}')
+                        exit(-1)
 
             for cmd in cmds:
                 proc = await create_subprocess_shell(
@@ -169,7 +193,7 @@ class ConfigServer:
                         images.extend(f"{username}/{item['name']}"
                                         for item in data['results']
                                         # a little optimization to ignore legacies
-                                        if not item['name'].startswith('kernel-'))
+                                        if not item['name'].startswith('kernel-') and (len(image) == 0 or image == item['name']))
                     else:
                         log.error('Failed to fetch repository list from {0} '
                                     '(status={1})',
@@ -204,7 +228,7 @@ class ConfigServer:
         for kvlist in chunked(sorted(all_updates.items()), 16):
             await self.etcd.put_dict(dict(kvlist))
 
-    async def rescan_images(self, registry: str = None):
+    async def rescan_images(self, image, registry: str = None):
         if registry is None:
             registries = []
             data = await self.etcd.get_prefix('config/docker/registry')
@@ -221,7 +245,7 @@ class ConfigServer:
             except ValueError:
                 log.error('Unknown registry: "{0}"', registry)
                 continue
-            coros.append(self._rescan_images(registry, registry_url, creds))
+            coros.append(self._rescan_images(registry, registry_url, creds, image))
         await asyncio.gather(*coros)
         # TODO: delete images removed from registry?
 
@@ -239,7 +263,7 @@ def config_ctx(cli_ctx):
         ctx, config['etcd']['addr'],
         config['etcd']['user'], config['etcd']['password'],
         config['etcd']['namespace'], 
-        config['registry']['addr'])
+        config['registry'])
     raw_redis_config = loop.run_until_complete(config_server.etcd.get_prefix('config/redis'))
     config['redis'] = redis_config_iv.check(raw_redis_config)
     ctx['redis_image'] = loop.run_until_complete(aioredis.create_redis(
@@ -283,8 +307,9 @@ def main(ctx, config_path, debug):
 
 @main.command()
 @click.argument('registry')
+@click.option('--image', '-i', help='image to update')
 @click.pass_obj
-def rescan_images(cli_ctx, registry):
+def rescan_images(cli_ctx, registry, image):
     '''
     Update the kernel image metadata from all configured docker registries.
 
@@ -293,7 +318,7 @@ def rescan_images(cli_ctx, registry):
     with cli_ctx.logger, config_ctx(cli_ctx) as (loop, config_server):
         try:
             loop.run_until_complete(
-                config_server.rescan_images(registry))
+                config_server.rescan_images(image, registry))
         except Exception:
             log.exception('An error occurred.')
 
