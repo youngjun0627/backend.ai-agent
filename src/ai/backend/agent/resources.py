@@ -7,14 +7,14 @@ import logging
 from pathlib import Path
 import pkg_resources
 from typing import (
-    Any, Container, Collection, Mapping, Sequence, Optional,
+    Any, Container, Collection, Mapping, Sequence, Optional, Union,
 )
 
 import attr
 
 from ai.backend.common.types import (
     BinarySize,
-    ResourceSlot, MountPermission,
+    ResourceSlot, MountPermission, MountTypes,
     DeviceId, SlotType, Allocation, ResourceAllocations,
 )
 from ai.backend.common.logging import BraceStyleAdapter
@@ -150,20 +150,33 @@ class AbstractComputePlugin(metaclass=ABCMeta):
 
 @attr.s(auto_attribs=True, slots=True)
 class Mount:
-    host_path: Path
-    kernel_path: Path
-    permission: MountPermission
+    type: MountTypes
+    source: Union[Path, str]
+    target: Path
+    permission: MountPermission = MountPermission.READ_ONLY
+    opts: Optional[Mapping[str, Any]] = None
 
     def __str__(self):
         return f'{self.host_path}:{self.kernel_path}:{self.permission.value}'
 
     @classmethod
     def from_str(cls, s):
-        hp, kp, perm = s.split(':')
-        hp = Path(hp)
-        kp = Path(kp)
+        source, target, perm = s.split(':')
+        source = Path(source)
+        type = MountTypes.BIND
+        if not source.is_absolute():
+            if len(source.parts) == 1:
+                source = str(source)
+                type = MountTypes.VOLUME
+            else:
+                raise ValueError('Mount source must be an absolute path '
+                                 'if it is not a volume name.',
+                                 source)
+        target = Path(target)
+        if not target.is_absolute():
+            raise ValueError('Mount target must be an absolute path.', target)
         perm = MountPermission(perm)
-        return cls(hp, kp, perm)
+        return cls(type, source, target, perm, None)
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -489,10 +502,9 @@ async def detect_resources(etcd):
 
 
 async def get_resource_spec_from_container(container):
-    for bind in container['HostConfig']['Binds']:
-        host_path, cont_path, perm = bind.split(':', maxsplit=2)
-        if cont_path == '/home/config':
-            with open(Path(host_path) / 'resource.txt', 'r') as f:
+    for mount in container['HostConfig']['Mounts']:
+        if mount['Target'] == '/home/config':
+            with open(Path(mount['Source']) / 'resource.txt', 'r') as f:
                 return KernelResourceSpec.read_from_file(f)
             break
     else:

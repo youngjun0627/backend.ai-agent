@@ -48,6 +48,13 @@ kernel-gid = -1
 # it is HIGHLY RECOMMENDED to set this to "127.0.0.1" manually.
 # kernel-host = "127.0.0.1"   # env: BACKEND_KERNEL_HOST_OVERRIDE
 
+# One of: "docker", "cgroup"
+# "docker" uses the Docker API to retrieve container statistics.
+# "cgroup" makes the agent to control the creation/destruction of container cgroups so
+# that it can safely retrieve the last-moment statistics even when containers die
+# unexpectedley. But this requires the agent to be run as root.
+stats-type = "docker"
+
 # One of: "docker", "jail".
 # "docker" uses the Docker's default apparmor and seccomp profiles.
 # "jail" uses Backend.AI Jail to programmatically filter syscalls.

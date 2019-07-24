@@ -46,12 +46,13 @@ from ai.backend.common.types import (
     HostPortPair,
     ResourceSlot,
     MountPermission,
+    MountTypes,
 )
 from . import __version__ as VERSION
 from .exception import InitializationError, InsufficientResource
 from .files import scandir, upload_output_files_to_s3
 from .stats import (
-    StatContext,
+    StatContext, StatModes,
     spawn_stat_synchronizer, StatSyncState,
 )
 from .resources import (
@@ -226,7 +227,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = None
         self.stat_sync_task = None
 
-        self.stat_ctx = StatContext(self)
+        self.stat_ctx = StatContext(self, mode=StatModes(config['container']['stats-type']))
         self.live_stat_timer = None
         self.agent_sock_task = None
 
@@ -935,14 +936,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             environ['LOCAL_GROUP_ID'] = str(gid)
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
-        binds = [
-            f'{config_dir}:/home/config:ro',
-            f'{work_dir}:/home/work/:rw',
+        mounts = [
+            Mount(MountTypes.BIND, config_dir, '/home/config', MountPermission.READ_ONLY),
+            Mount(MountTypes.BIND, work_dir, '/home/work/', MountPermission.READ_WRITE,
+                  opts={'Propagation': 'rslave'}),
         ]
         if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
-            binds.append(f'{tmp_dir}:/tmp:rw')
-        binds.extend(f'{v.name}:{v.container_path}:{v.mode}'
-                     for v in extra_mount_list)
+            mounts.append(Mount(MountTypes.BIND, tmp_dir, '/tmp', MountPermission.READ_WRITE))
+        mounts.extend(Mount(MountTypes.VOLUME, v.name, v.container_path, v.mode)
+                      for v in extra_mount_list)
 
         if restarting:
             # Reuse previous CPU share.
@@ -956,7 +958,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
             # Reuse previous mounts.
             for mount in resource_spec.mounts:
-                binds.append(str(mount))
+                mounts.append(mount)
         else:
             # Ensure that we have intrinsic slots.
             assert 'cpu' in slots
@@ -1003,9 +1005,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     # TODO: enforce readable/writable but not deletable
                     # (Currently docker's READ_WRITE includes DELETE)
                     folder_perm = MountPermission.READ_WRITE
-                mount = Mount(host_path, kernel_path, folder_perm)
+                mount = Mount(MountTypes.BIND, host_path, kernel_path, folder_perm)
                 resource_spec.mounts.append(mount)
-                binds.append(str(mount))
+                mounts.append(mount)
 
             # should no longer be used!
             del vfolders
@@ -1014,9 +1016,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         cpu_core_count = len(resource_spec.allocations['cpu']['cpu'])
         environ.update({k: str(cpu_core_count) for k in envs_corecount})
 
-        def _mount(host_path, container_path, perm='ro'):
-            nonlocal binds
-            binds.append(f'{host_path}:{container_path}:{perm}')
+        def _mount(type, src, target, perm='ro', opts=None):
+            nonlocal mounts
+            mounts.append(Mount(type, src, target, MountPermission(perm), opts=opts))
 
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
@@ -1042,26 +1044,30 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         font_italic_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/roboto-italic.ttf'))
 
-        _mount(self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
-        _mount(entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
-        _mount(suexec_path.resolve(), '/opt/kernel/su-exec')
-        _mount(jail_path.resolve(), '/opt/kernel/jail')
-        _mount(hook_path.resolve(), '/opt/kernel/libbaihook.so')
+        _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
+        _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
+        _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
+        _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
+        _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
 
-        _mount(f'backendai-krunner.{distro}', '/opt/backend.ai')
-        _mount(kernel_pkg_path.resolve(),
-               '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
-        _mount(helpers_pkg_path.resolve(),
-               '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers')
+        _mount(MountTypes.VOLUME, f'backendai-krunner.{distro}', '/opt/backend.ai',
+               opts={'Propagation': 'rslave'})
+        _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
+                                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
+        _mount(MountTypes.BIND, helpers_pkg_path.resolve(),
+                                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers')
 
-        _mount(jupyter_custom_css_path.resolve(),
-               '/home/work/.jupyter/custom/custom.css')
-        _mount(logo_path.resolve(),
-               '/home/work/.jupyter/custom/logo.svg')
-        _mount(font_path.resolve(),
-               '/home/work/.jupyter/custom/roboto.ttf')
-        _mount(font_italic_path.resolve(),
-               '/home/work/.jupyter/custom/roboto-italic.ttf')
+        (work_dir / '.jupyter' / 'custom').mkdir(parents=True, exist_ok=True)
+        (work_dir / '.jupyter' / 'custom' / 'custom.css').write_bytes(b'')
+        (work_dir / '.jupyter' / 'custom' / 'logo.svg').write_bytes(b'')
+        (work_dir / '.jupyter' / 'custom' / 'roboto.ttf').write_bytes(b'')
+        (work_dir / '.jupyter' / 'custom' / 'roboto-italic.ttf').write_bytes(b'')
+        _mount(MountTypes.BIND, jupyter_custom_css_path.resolve(),
+                                '/home/extras/.jupyter/custom/custom.css')
+        _mount(MountTypes.BIND, logo_path.resolve(), '/home/extras/.jupyter/custom/logo.svg')
+        _mount(MountTypes.BIND, font_path.resolve(), '/home/extras/.jupyter/custom/roboto.ttf')
+        _mount(MountTypes.BIND, font_italic_path.resolve(),
+                                '/home/extras/.jupyter/custom/roboto-italic.ttf')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
 
         # Inject ComputeDevice-specific env-varibles and hooks
@@ -1080,7 +1086,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 container_hook_path = '/opt/kernel/lib{}{}.so'.format(
                     computer_set.klass.key, secrets.token_hex(6),
                 )
-                _mount(hook_path, container_hook_path)
+                _mount(MountTypes.BIND, hook_path, container_hook_path)
                 environ['LD_PRELOAD'] += ':' + container_hook_path
 
         # PHASE 3: Store the resource spec.
@@ -1123,7 +1129,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                  pformat(attr.asdict(resource_spec)))
 
         # TODO: Refactor out as separate "Docker execution driver plugin" (#68)
-        #   - Refactor volumes/binds lists to a plugin "mount" API
+        #   - Refactor volumes/mounts lists to a plugin "mount" API
         #   - Refactor "/home/work" and "/opt/backend.ai" prefixes to be specified
         #     by the plugin implementation.
 
@@ -1193,7 +1199,18 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'WorkingDir': '/home/work',
             'HostConfig': {
                 'Init': True,
-                'Binds': binds,
+                'Mounts': [
+                    {
+                        'Target': str(mount.target),
+                        'Source': str(mount.source),
+                        'Type': mount.type.value,
+                        'Mode': 'ro' if mount.permission == MountPermission.READ_ONLY else '',
+                        'RW': mount.permission != MountPermission.READ_ONLY,
+                        f'{mount.type.value.capitalize()}Options':
+                            mount.opts if mount.opts else {},
+                    }
+                    for mount in mounts
+                ],
                 'PortBindings': {
                     f'{eport}/tcp': [{'HostPort': str(hport),
                                       'HostIp': container_external_ip}]
@@ -1861,7 +1878,8 @@ def main(cli_ctx, config_path, debug):
             t.Key('kernel-gid', default=-1): tx.GroupID,
             t.Key('kernel-host', default=''): t.String(allow_blank=True),
             t.Key('port-range', default=(30000, 31000)): tx.PortRange,
-            t.Key('sandbox-type'): t.Enum('docker', 'jail'),
+            t.Key('stats-type', default='docker'): t.Null | t.Enum(*[e.value for e in StatModes]),
+            t.Key('sandbox-type', default='docker'): t.Enum('docker', 'jail'),
             t.Key('jail-args', default=[]): t.List(t.String),
             t.Key('scratch-type'): t.Enum('hostdir', 'memory'),
             t.Key('scratch-root', default='./scratches'): tx.Path(type='dir', auto_create=True),

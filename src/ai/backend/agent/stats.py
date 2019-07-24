@@ -61,7 +61,7 @@ def check_cgroup_available():
 
 class StatModes(enum.Enum):
     CGROUP = 'cgroup'
-    API = 'api'
+    DOCKER = 'docker'
 
     def get_preferred_mode():
         '''
@@ -69,7 +69,7 @@ class StatModes(enum.Enum):
         '''
         if check_cgroup_available():
             return StatModes.CGROUP
-        return StatModes.API
+        return StatModes.DOCKER
 
 
 class MetricTypes(enum.Enum):
@@ -364,33 +364,33 @@ class StatContext:
                         else:
                             self.kernel_metrics[kernel_id][metric_key].update(measure)
 
-            # push to the Redis server
-            pipe = self.agent.redis_stat_pool.pipeline()
-            redis_agent_updates = {
-                'node': {
-                    key: obj.to_serializable_dict()
-                    for key, obj in self.node_metrics.items()
-                },
-                'devices': {
-                    metric_key: {dev_id: obj.to_serializable_dict()
-                                 for dev_id, obj in per_device.items()}
-                    for metric_key, per_device in self.device_metrics.items()
-                },
+        # push to the Redis server
+        pipe = self.agent.redis_stat_pool.pipeline()
+        redis_agent_updates = {
+            'node': {
+                key: obj.to_serializable_dict()
+                for key, obj in self.node_metrics.items()
+            },
+            'devices': {
+                metric_key: {dev_id: obj.to_serializable_dict()
+                             for dev_id, obj in per_device.items()}
+                for metric_key, per_device in self.device_metrics.items()
+            },
+        }
+        log.debug('stats: node_updates: {0}: {1}',
+                  self.agent.config['agent']['id'], redis_agent_updates['node'])
+        pipe.set(self.agent.config['agent']['id'], msgpack.packb(redis_agent_updates))
+        pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
+        for kernel_id, metrics in self.kernel_metrics.items():
+            serialized_metrics = {
+                key: obj.to_serializable_dict()
+                for key, obj in metrics.items()
             }
-            log.debug('stats: node_updates: {0}: {1}',
-                      self.agent.config['agent']['id'], redis_agent_updates['node'])
-            pipe.set(self.agent.config['agent']['id'], msgpack.packb(redis_agent_updates))
-            pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
-            for kernel_id, metrics in self.kernel_metrics.items():
-                serialized_metrics = {
-                    key: obj.to_serializable_dict()
-                    for key, obj in metrics.items()
-                }
-                log.debug('stats: kernel_updates: {0}: {1}',
-                          kernel_id, serialized_metrics)
-                pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-                pipe.expire(kernel_id, self.cache_lifespan)
-            await pipe.execute()
+            log.debug('stats: kernel_updates: {0}: {1}',
+                      kernel_id, serialized_metrics)
+            pipe.set(kernel_id, msgpack.packb(serialized_metrics))
+            pipe.expire(kernel_id, self.cache_lifespan)
+        await pipe.execute()
 
     async def collect_container_stat(self, container_id: str) -> Mapping[MetricKey, Metric]:
         '''
@@ -611,7 +611,7 @@ def main(args):
 
         log.info('started statistics collection for {}', args.cid)
 
-        if args.type == 'cgroup':
+        if args.type == StatModes.CGROUP:
             with closing(sync_sock), join_cgroup_and_namespace(args.cid,
                                                                ping_agent,
                                                                signal_sock):
@@ -627,7 +627,7 @@ def main(args):
                         break
                     # Agent periodically collects container stats.
                     time.sleep(0.3)
-        elif args.type == 'api':
+        elif args.type == StatModes.DOCKER:
             loop = asyncio.get_event_loop()
             with closing(sync_sock):
                 # Notify the agent to start the container.
@@ -661,8 +661,8 @@ if __name__ == '__main__':
     parser.add_argument('config_path', type=str)
     parser.add_argument('sockpath', type=str)
     parser.add_argument('cid', type=str)
-    parser.add_argument('-t', '--type', choices=['cgroup', 'api'],
-                        default='cgroup')
+    parser.add_argument('-t', '--type', choices=list(StatModes), type=StatModes,
+                        default=StatModes.DOCKER)
     args = parser.parse_args()
     setproctitle(f'backend.ai: stat-collector {args.cid[:7]}')
 

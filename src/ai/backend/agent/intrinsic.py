@@ -132,7 +132,7 @@ class CPUPlugin(AbstractComputePlugin):
 
         if ctx.mode == StatModes.CGROUP:
             impl = sysfs_impl
-        elif ctx.mode == StatModes.API:
+        elif ctx.mode == StatModes.DOCKER:
             impl = api_impl
 
         q = Decimal('0.000')
@@ -381,7 +381,7 @@ class MemoryPlugin(AbstractComputePlugin):
 
         if ctx.mode == StatModes.CGROUP:
             impl = sysfs_impl
-        elif ctx.mode == StatModes.API:
+        elif ctx.mode == StatModes.DOCKER:
             impl = api_impl
 
         per_container_mem_used_bytes = {}
