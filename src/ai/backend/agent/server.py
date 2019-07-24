@@ -1050,8 +1050,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
 
-        _mount(MountTypes.VOLUME, f'backendai-krunner.{distro}', '/opt/backend.ai',
-               opts={'Propagation': 'rslave'})
+        _mount(MountTypes.VOLUME, f'backendai-krunner.{distro}', '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
                                 '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
         _mount(MountTypes.BIND, helpers_pkg_path.resolve(),
