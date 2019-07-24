@@ -5,12 +5,12 @@ from dataclasses import dataclass
 import io
 import json
 import logging
+import lzma
 import time
 from pathlib import Path
 import pkg_resources
 import platform
 import secrets
-import shutil
 import subprocess
 
 from async_timeout import timeout
@@ -500,40 +500,62 @@ async def prepare_krunner_env(distro: str):
     docker = Docker()
     arch = platform.machine()
     name = f'backendai-krunner.{distro}'
+    extractor_image = 'backendai-krunner-extractor:latest'
+
+    for item in (await docker.images.list()):
+        if item['RepoTags'] is None:
+            continue
+        if item['RepoTags'][0] == extractor_image:
+            break
+    else:
+        log.info('preparing the Docker image for krunner extractor...')
+        extractor_archive = pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/krunner-extractor.img.tar.xz')
+        with lzma.open(extractor_archive, 'rb') as extractor_img:
+            subprocess.run(['docker', 'load'], stdin=extractor_img, check=True)
+
     try:
+        log.info('checking krunner-env for {}...', distro)
         try:
             vol = DockerVolume(docker, name)
-            vol_data = await vol.show()
+            await vol.show()
         except DockerError as e:
             if e.status == 404:
                 # create volume
-                vol = await docker.volumes.create({
+                await docker.volumes.create({
                     'Name': name,
                     'Driver': 'local',
                 })
-                vol_data = await vol.show()
-        vol_root = Path(vol_data['Mountpoint'])
-        try:
-            existing_version = int((vol_root / 'VERSION').read_text().strip())
-        except FileNotFoundError:
-            existing_version = 0
+        proc = subprocess.run([
+            'docker', 'run', '--rm', '-it',
+            '-v', f'{name}:/root/volume',
+            extractor_image,
+            'sh', '-c', 'cat /root/volume/VERSION 2>/dev/null || echo 0',
+        ], stdout=subprocess.PIPE)
+        existing_version = int(proc.stdout.decode().strip())
         current_version = int(Path(
             pkg_resources.resource_filename(
                 'ai.backend.agent',
                 f'../runner/krunner-version.{distro}.txt'))
             .read_text().strip())
         if existing_version < current_version:
-            archive = Path(pkg_resources.resource_filename(
+            log.info('updating {} volume from version {} to {}', name, existing_version, current_version)
+            archive_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
                 f'../runner/krunner-env.{distro}.{arch}.tar.xz')).resolve()
-            log.info('updating {} volume from version {} to {}', name, existing_version, current_version)
-            for entry in vol_root.iterdir():
-                if entry.is_dir():
-                    shutil.rmtree(entry)
-                elif entry.is_file():
-                    entry.unlink()
-            shutil.unpack_archive(str(archive), str(vol_root))
-            (vol_root / 'VERSION').write_text(str(current_version))
+            extractor_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/krunner-extractor.sh')).resolve()
+
+            subprocess.run([
+                'docker', 'run', '--rm', '-it',
+                '-v', f'{archive_path}:/root/archive.tar.xz',
+                '-v', f'{extractor_path}:/root/krunner-extractor.sh',
+                '-v', f'{name}:/root/volume',
+                '-e', f'KRUNNER_VERSION={current_version}',
+                extractor_image,
+                '/root/krunner-extractor.sh',
+            ])
     finally:
         await docker.close()
     return name
