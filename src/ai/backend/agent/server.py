@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from decimal import Decimal
 import functools
 import hashlib
 from ipaddress import ip_network, _BaseAddress as BaseIPAddress
@@ -1080,17 +1081,21 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             update_nested_dict(computer_docker_args,
                                await computer_set.klass.generate_docker_args(
                                    self.docker, device_alloc))
-            hook_paths = await computer_set.klass.get_hooks(distro, arch)
-            if hook_paths:
-                log.debug('accelerator {} provides hooks: {}',
-                          computer_set.klass.__name__,
-                          ', '.join(map(str, hook_paths)))
-            for hook_path in hook_paths:
-                container_hook_path = '/opt/kernel/lib{}{}.so'.format(
-                    computer_set.klass.key, secrets.token_hex(6),
-                )
-                _mount(MountTypes.BIND, hook_path, container_hook_path)
-                environ['LD_PRELOAD'] += ':' + container_hook_path
+            alloc_sum = Decimal(0)
+            for dev_id, per_dev_alloc in device_alloc.items():
+                alloc_sum += sum(per_dev_alloc.values())
+            if alloc_sum > 0:
+                hook_paths = await computer_set.klass.get_hooks(distro, arch)
+                if hook_paths:
+                    log.debug('accelerator {} provides hooks: {}',
+                              computer_set.klass.__name__,
+                              ', '.join(map(str, hook_paths)))
+                for hook_path in hook_paths:
+                    container_hook_path = '/opt/kernel/lib{}{}.so'.format(
+                        computer_set.klass.key, secrets.token_hex(6),
+                    )
+                    _mount(MountTypes.BIND, hook_path, container_hook_path)
+                    environ['LD_PRELOAD'] += ':' + container_hook_path
 
         # PHASE 3: Store the resource spec.
 
