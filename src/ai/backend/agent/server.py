@@ -32,7 +32,7 @@ import click
 from setproctitle import setproctitle
 import snappy
 import trafaret as t
-import uvloop
+# import uvloop
 import zmq
 import zmq.asyncio
 
@@ -1964,7 +1964,7 @@ def main(cli_ctx, config_path, debug):
                 if debug:
                     log_config.debug('debug mode enabled.')
 
-                uvloop.install()
+                # uvloop.install()
                 aiotools.start_server(server_main, num_workers=1,
                                       use_threading=True, args=(cfg, ))
                 log.info('exit.')
