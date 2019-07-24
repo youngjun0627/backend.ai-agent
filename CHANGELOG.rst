@@ -12,6 +12,9 @@ Changes
   - The agent auto-creates and auto-udpates the krunner-env volumes. Separate Docker image deployment
     and manual image tagging are no longer required!
 
+  - The krunner-env image archives are distributed as separate "backend.ai-krunner-{distro}" wheel
+    packages.
+
 * IMPROVED: Now the agent can be run *without* root, given that:
 
   - The docker socket is accessible by the agent's user permission.
