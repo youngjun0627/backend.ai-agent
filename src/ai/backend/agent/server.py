@@ -410,11 +410,24 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await runner.close()
 
     async def sync_container_stats(self):
-        stat_sync_sock = self.zmq_ctx.socket(zmq.REP)
-        stat_sync_sock.setsockopt(zmq.LINGER, 1000)
-        stat_sync_sock.bind('ipc://' + str(self.stat_sync_sockpath))
-        log.info('opened stat-sync socket at {}', self.stat_sync_sockpath)
+        my_uid = os.getuid()
+        my_gid = os.getgid()
+        kernel_uid = self.config['container']['kernel-uid']
+        kernel_gid = self.config['container']['kernel-gid']
         try:
+            stat_sync_sock = self.zmq_ctx.socket(zmq.REP)
+            stat_sync_sock.setsockopt(zmq.LINGER, 1000)
+            stat_sync_sock.bind('ipc://' + str(self.stat_sync_sockpath))
+            if my_uid == 0:
+                os.chown(self.agent_sockpath, kernel_uid, kernel_gid)
+            else:
+                if my_uid != kernel_uid:
+                    log.error('The UID of agent ({}) must be same to the container UID ({}).',
+                              my_uid, kernel_uid)
+                if my_gid != kernel_gid:
+                    log.error('The GID of agent ({}) must be same to the container GID ({}).',
+                              my_gid, kernel_gid)
+            log.info('opened stat-sync socket at {}', self.stat_sync_sockpath)
             recv = functools.partial(stat_sync_sock.recv_serialized,
                                      lambda frames: [*map(msgpack.unpackb, frames)])
             send = functools.partial(stat_sync_sock.send_serialized,
@@ -439,9 +452,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     await send([{'ack': True}])
         except asyncio.CancelledError:
             pass
+        except zmq.ZMQError:
+            log.exception('zmq socket error with {}', self.stat_sync_sockpath)
         finally:
             stat_sync_sock.close()
-            self.stat_sync_sockpath.unlink()
+            try:
+                self.stat_sync_sockpath.unlink()
+            except IOError:
+                pass
 
     async def collect_node_stat(self, interval):
         await asyncio.shield(self.stat_ctx.collect_node_stat())
@@ -610,12 +628,22 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         All strings are UTF-8 encoded.
         '''
-        agent_sock = self.zmq_ctx.socket(zmq.REP)
-        agent_sock.bind(f'ipc://{self.agent_sockpath}')
-        os.chown(self.agent_sockpath,
-                 self.config['container']['kernel-uid'],
-                 self.config['container']['kernel-gid'])
+        my_uid = os.getuid()
+        my_gid = os.getgid()
+        kernel_uid = self.config['container']['kernel-uid']
+        kernel_gid = self.config['container']['kernel-gid']
         try:
+            agent_sock = self.zmq_ctx.socket(zmq.REP)
+            agent_sock.bind(f'ipc://{self.agent_sockpath}')
+            if my_uid == 0:
+                os.chown(self.agent_sockpath, kernel_uid, kernel_gid)
+            else:
+                if my_uid != kernel_uid:
+                    log.error('The UID of agent ({}) must be same to the container UID ({}).',
+                              my_uid, kernel_uid)
+                if my_gid != kernel_gid:
+                    log.error('The GID of agent ({}) must be same to the container GID ({}).',
+                              my_gid, kernel_gid)
             while True:
                 msg = await agent_sock.recv_multipart()
                 if not msg:
@@ -648,6 +676,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 await agent_sock.send_multipart(reply)
         except asyncio.CancelledError:
             pass
+        except zmq.ZMQError:
+            log.exception('zmq socket error with {}', self.agent_sockpath)
         finally:
             agent_sock.close()
 
