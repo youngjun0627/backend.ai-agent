@@ -939,8 +939,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Inject Backend.AI-intrinsic mount points and extra mounts
         mounts = [
             Mount(MountTypes.BIND, config_dir, '/home/config', MountPermission.READ_ONLY),
-            Mount(MountTypes.BIND, work_dir, '/home/work/', MountPermission.READ_WRITE,
-                  opts={'Propagation': 'rslave'}),
+            Mount(MountTypes.BIND, work_dir, '/home/work/', MountPermission.READ_WRITE),
         ]
         if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
             mounts.append(Mount(MountTypes.BIND, tmp_dir, '/tmp', MountPermission.READ_WRITE))
