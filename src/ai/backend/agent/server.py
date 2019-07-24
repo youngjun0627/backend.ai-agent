@@ -1946,6 +1946,11 @@ def main(cli_ctx, config_path, debug):
               file=sys.stderr)
         raise click.Abort()
 
+    if os.getuid() != 0 and cfg['container']['stats-type'] == 'cgroup':
+        print('Cannot use cgroup statistics collection mode unless the agent runs as root.',
+              file=sys.stderr)
+        raise click.Abort()
+
     if cli_ctx.invoked_subcommand is None:
         cfg['agent']['pid-file'].write_text(str(os.getpid()))
         try:
