@@ -1212,8 +1212,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                         'Target': str(mount.target),
                         'Source': str(mount.source),
                         'Type': mount.type.value,
-                        'Mode': 'ro' if mount.permission == MountPermission.READ_ONLY else '',
-                        'RW': mount.permission != MountPermission.READ_ONLY,
+                        'ReadOnly': mount.permission == MountPermission.READ_ONLY,
                         f'{mount.type.value.capitalize()}Options':
                             mount.opts if mount.opts else {},
                     }
