@@ -1067,11 +1067,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         (work_dir / '.jupyter' / 'custom' / 'roboto.ttf').write_bytes(b'')
         (work_dir / '.jupyter' / 'custom' / 'roboto-italic.ttf').write_bytes(b'')
         _mount(MountTypes.BIND, jupyter_custom_css_path.resolve(),
-                                '/home/extras/.jupyter/custom/custom.css')
-        _mount(MountTypes.BIND, logo_path.resolve(), '/home/extras/.jupyter/custom/logo.svg')
-        _mount(MountTypes.BIND, font_path.resolve(), '/home/extras/.jupyter/custom/roboto.ttf')
+                                '/home/work/.jupyter/custom/custom.css')
+        _mount(MountTypes.BIND, logo_path.resolve(), '/home/work/.jupyter/custom/logo.svg')
+        _mount(MountTypes.BIND, font_path.resolve(), '/home/work/.jupyter/custom/roboto.ttf')
         _mount(MountTypes.BIND, font_italic_path.resolve(),
-                                '/home/extras/.jupyter/custom/roboto-italic.ttf')
+                                '/home/work/.jupyter/custom/roboto-italic.ttf')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
 
         # Inject ComputeDevice-specific env-varibles and hooks
