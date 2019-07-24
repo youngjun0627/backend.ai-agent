@@ -1057,6 +1057,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         _mount(MountTypes.BIND, helpers_pkg_path.resolve(),
                                 '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers')
 
+        # Since these files are bind-mounted inside a bind-mounted directory,
+        # we need to touch them first to avoid their "ghost" files are created
+        # as root in the host-side filesystem, which prevents deletion of scratch
+        # directories when the agent is running as non-root.
         (work_dir / '.jupyter' / 'custom').mkdir(parents=True, exist_ok=True)
         (work_dir / '.jupyter' / 'custom' / 'custom.css').write_bytes(b'')
         (work_dir / '.jupyter' / 'custom' / 'logo.svg').write_bytes(b'')
