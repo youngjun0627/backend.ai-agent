@@ -6,9 +6,6 @@ from typing import Iterable, MutableMapping, Sequence, Union
 
 from aiodocker.docker import DockerContainer
 import netifaces
-from packaging import version
-
-from . import __version__ as VERSION
 
 IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
@@ -45,13 +42,6 @@ def remove_exponent(num: Decimal):
 
 def read_sysfs(path, type_=int, default_val=0):
     return type_(Path(path).read_text().strip())
-
-
-def get_krunner_image_ref(distro):
-    v = version.parse(VERSION)
-    if v.is_devrelease or v.is_prerelease:
-        return f'lablup/backendai-krunner-env:dev-{distro}'
-    return f'lablup/backendai-krunner-env:{VERSION}-{distro}'
 
 
 async def get_kernel_id_from_container(val):

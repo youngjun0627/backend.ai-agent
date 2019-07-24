@@ -10,18 +10,17 @@ import time
 from pathlib import Path
 import pkg_resources
 import platform
+import re
 import secrets
 import subprocess
 
 from async_timeout import timeout
 from aiodocker.docker import Docker, DockerVolume
 from aiodocker.exceptions import DockerError
-import click
 import aiozmq
 import msgpack
 import zmq
 
-from .utils import get_krunner_image_ref
 from ai.backend.common.utils import StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
 
@@ -498,6 +497,7 @@ async def prepare_krunner_env(distro: str):
     If not, automatically create it and update its content from the packaged pre-built krunner tar
     archives.
     '''
+    distro_name = re.search(r'^([a-z]+)\d+\.\d+$', distro).group(1)
     docker = Docker()
     arch = platform.machine()
     name = f'backendai-krunner.{distro}'
@@ -536,15 +536,15 @@ async def prepare_krunner_env(distro: str):
         existing_version = int(proc.stdout.decode().strip())
         current_version = int(Path(
             pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/krunner-version.{distro}.txt'))
+                f'ai.backend.krunner.{distro_name}',
+                f'./krunner-version.{distro}.txt'))
             .read_text().strip())
         if existing_version < current_version:
             log.info('updating {} volume from version {} to {}',
                      name, existing_version, current_version)
             archive_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/krunner-env.{distro}.{arch}.tar.xz')).resolve()
+                f'ai.backend.krunner.{distro_name}',
+                f'./krunner-env.{distro}.{arch}.tar.xz')).resolve()
             extractor_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
                 f'../runner/krunner-extractor.sh')).resolve()
@@ -560,65 +560,3 @@ async def prepare_krunner_env(distro: str):
     finally:
         await docker.close()
     return name
-
-
-@click.group()
-def main():
-    '''
-    Commands to manage the kernel runner environment.
-    '''
-    pass
-
-
-@main.command()
-@click.argument('distro', default='ubuntu16.04')
-def build_krunner_env(distro: str):
-    '''
-    Build the kernel runner environment containers and tar archives which provides the /opt/backend.ai
-    volume to all other kernel contaienrs.
-    '''
-    base_path = Path(pkg_resources.resource_filename('ai.backend.agent',
-                                                     '../runner'))
-    image = get_krunner_image_ref(distro)
-    click.secho(f'Building Python for krunner: {image}', fg='yellow', bold=True)
-    subprocess.run([
-        'docker', 'build',
-        '-f', f'krunner-python.{distro}.dockerfile',
-        '-t', f'lablup/backendai-krunner-python:{distro}',
-        '.'
-    ], cwd=base_path, check=True)
-    click.secho(f'Building krunner: {image}', fg='yellow', bold=True)
-    cid = secrets.token_hex(8)
-    arch = platform.machine()  # docker builds the image for the current arch.
-    subprocess.run([
-        'docker', 'build',
-        '-f', f'krunner-env.{distro}.dockerfile',
-        '-t', image,
-        '.'
-    ], cwd=base_path, check=True)
-    subprocess.run([
-        'docker', 'create',
-        '--name', cid,
-        image,
-    ], cwd=base_path, check=True)
-    try:
-        subprocess.run([
-            'docker', 'cp',
-            f'{cid}:/root/image.tar.xz',
-            str(base_path / f'krunner-env.{distro}.{arch}.tar.xz'),
-        ], cwd=base_path, check=True)
-        proc = subprocess.run([
-            'docker', 'inspect', cid,
-        ], cwd=base_path, stdout=subprocess.PIPE, check=True)
-        cinfo = json.loads(proc.stdout)
-        labels = cinfo[0]['Config']['Labels']
-        version = labels['ai.backend.krunner.version']
-        (base_path / f'krunner-version.{distro}.txt').write_text(str(version))
-    finally:
-        subprocess.run([
-            'docker', 'rm', cid,
-        ], cwd=base_path, check=True)
-
-
-if __name__ == '__main__':
-    main()
