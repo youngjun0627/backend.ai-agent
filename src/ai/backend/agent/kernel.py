@@ -492,6 +492,7 @@ class KernelRunner:
 
 
 async def prepare_krunner_env(distro: str):
+    # TODO: make all subprocess calls asynchronous and run this function in parallel for all distro.
     '''
     Check if the volume "backendai-krunner.{distro}.{arch}" exists and is up-to-date.
     If not, automatically create it and update its content from the packaged pre-built krunner tar
@@ -502,19 +503,19 @@ async def prepare_krunner_env(distro: str):
     name = f'backendai-krunner.{distro}'
     extractor_image = 'backendai-krunner-extractor:latest'
 
-    for item in (await docker.images.list()):
-        if item['RepoTags'] is None:
-            continue
-        if item['RepoTags'][0] == extractor_image:
-            break
-    else:
-        log.info('preparing the Docker image for krunner extractor...')
-        extractor_archive = pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/krunner-extractor.img.tar.xz')
-        with lzma.open(extractor_archive, 'rb') as extractor_img:
-            subprocess.run(['docker', 'load'], stdin=extractor_img, check=True)
-
     try:
+        for item in (await docker.images.list()):
+            if item['RepoTags'] is None:
+                continue
+            if item['RepoTags'][0] == extractor_image:
+                break
+        else:
+            log.info('preparing the Docker image for krunner extractor...')
+            extractor_archive = pkg_resources.resource_filename(
+                'ai.backend.agent', '../runner/krunner-extractor.img.tar.xz')
+            with lzma.open(extractor_archive, 'rb') as extractor_img:
+                subprocess.run(['docker', 'load'], stdin=extractor_img, check=True)
+
         log.info('checking krunner-env for {}...', distro)
         try:
             vol = DockerVolume(docker, name)
@@ -539,14 +540,14 @@ async def prepare_krunner_env(distro: str):
                 f'../runner/krunner-version.{distro}.txt'))
             .read_text().strip())
         if existing_version < current_version:
-            log.info('updating {} volume from version {} to {}', name, existing_version, current_version)
+            log.info('updating {} volume from version {} to {}',
+                     name, existing_version, current_version)
             archive_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
                 f'../runner/krunner-env.{distro}.{arch}.tar.xz')).resolve()
             extractor_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
                 f'../runner/krunner-extractor.sh')).resolve()
-
             subprocess.run([
                 'docker', 'run', '--rm', '-it',
                 '-v', f'{archive_path}:/root/archive.tar.xz',
