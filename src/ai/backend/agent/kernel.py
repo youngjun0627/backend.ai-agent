@@ -2,18 +2,25 @@ import asyncio
 import codecs
 from collections import OrderedDict
 from dataclasses import dataclass
+import glob
 import io
 import json
 import logging
+import lzma
 import time
 from pathlib import Path
+import platform
 import pkg_resources
+import os
 import secrets
+import shutil
 import subprocess
+from typing import List
 
 from async_timeout import timeout
-import click
 import aiozmq
+import click
+from aiodocker import Docker
 import msgpack
 import zmq
 
@@ -77,6 +84,101 @@ class ScaleFailedError(Exception):
 class ResultRecord:
     msg_type: str = None
     data: str = None
+
+async def prepare_kernel_statics(mount_path: str):
+    runner_path = Path(pkg_resources.resource_filename('ai.backend.agent', '../runner'))
+    kernel_path = Path(pkg_resources.resource_filename('ai.backend.agent', '../kernel'))
+    helpers_path = Path(pkg_resources.resource_filename('ai.backend.agent', '../helpers'))
+    kernel_dest_path = Path(mount_path) / Path('kernel')
+    helpers_dest_path = Path(mount_path) / Path('helpers')
+
+    runner_path = str(runner_path.resolve())
+    kernel_path = str(kernel_path.resolve())
+    helpers_path = str(helpers_path.resolve())
+    kernel_dest_path = str(kernel_dest_path.resolve())
+    helpers_dest_path = str(helpers_dest_path.resolve())
+    
+    for binary in glob.glob(f'{runner_path}/*.bin'):
+        shutil.copy(binary, mount_path)
+    for so in glob.glob(f'{runner_path}/*.so'):
+        shutil.copy(so, mount_path)
+    for ttf in glob.glob(f'{runner_path}/*.ttf'):
+        shutil.copy(ttf, mount_path)
+    
+    shutil.copy(f'{runner_path}/entrypoint.sh', mount_path)
+    shutil.copy(f'{runner_path}/jupyter-custom.css', mount_path)
+    shutil.copy(f'{runner_path}/logo.svg', mount_path)
+
+    if not os.path.isdir(kernel_dest_path):
+        shutil.copytree(kernel_path, kernel_dest_path)
+    if not os.path.isdir(helpers_dest_path):
+        shutil.copytree(helpers_path, helpers_dest_path)
+
+async def prepare_krunner_env(distro: str, mount_path: str):
+    # TODO: make all subprocess calls asynchronous and run this function in parallel for all distro.
+    '''
+    Check if the volume "backendai-krunner.{distro}.{arch}" exists and is up-to-date.
+    If not, automatically create it and update its content from the packaged pre-built krunner tar
+    archives.
+    '''
+    docker = Docker()
+    arch = platform.machine()
+    name = f'backendai-krunner.{distro}'
+    extractor_image = 'backendai-krunner-extractor:latest'
+
+    try:
+        for item in (await docker.images.list()):
+            if item['RepoTags'] is None:
+                continue
+            if item['RepoTags'][0] == extractor_image:
+                break
+        else:
+            log.info('preparing the Docker image for krunner extractor...')
+            extractor_archive = pkg_resources.resource_filename(
+                'ai.backend.agent', '../runner/krunner-extractor.img.tar.xz')
+            with lzma.open(extractor_archive, 'rb') as extractor_img:
+                subprocess.run(['docker', 'load'], stdin=extractor_img, check=True)
+        
+        log.info('checking krunner-env for {0} at {1}...', distro, mount_path)
+        krunner_path = Path(mount_path) / Path(name)
+
+        krunner_path.mkdir(parents=True, exist_ok=True)
+        
+        proc = subprocess.run([
+            'docker', 'run', '--rm', '-it',
+            '-v', f'{mount_path}/{name}:/root/volume',
+            extractor_image,
+            'sh', '-c', 'cat /root/volume/VERSION 2>/dev/null || echo 0',
+        ], stdout=subprocess.PIPE)
+        existing_version = int(proc.stdout.decode().strip())
+        current_version = int(Path(
+            pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/krunner-version.{distro}.txt'))
+            .read_text().strip())
+
+        log.debug('Current krunner version: {0}, Existing krunner version: {1}', current_version, existing_version)
+        if existing_version < current_version:
+            log.info('updating {} volume from version {} to {}',
+                    name, existing_version, current_version)
+            archive_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/krunner-env.{distro}.{arch}.tar.xz')).resolve()
+            extractor_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/krunner-extractor.sh')).resolve()
+            subprocess.run([
+                'docker', 'run', '--rm', '-it',
+                '-v', f'{archive_path}:/root/archive.tar.xz',
+                '-v', f'{extractor_path}:/root/krunner-extractor.sh',
+                '-v', f'{mount_path}/{name}:/root/volume',
+                '-e', f'KRUNNER_VERSION={current_version}',
+                extractor_image,
+                '/root/krunner-extractor.sh',
+            ])
+    finally:
+        await docker.close()
+    return name
 
 
 class KernelRunner:

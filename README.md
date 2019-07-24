@@ -27,22 +27,26 @@ and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv) (optional but 
 
 To let manager determine available kernel images in K8s cluster and secure kernel image integrity of whole K8s cluster, Backend.AI Agent requires a private registry. There are no requirements for registry spec; However, all K8s worker nodes should pull images from the registry without any error.
 
-If you are planning to use private registry from cloud providers (ECR, GCP Container Registry, ...), you should set namespace to `lablup`.
-
 Also, after deploying the private registry, imagePullSecrets `backend-ai-registry-secret` in namespace `backend-ai` needs to be installed in target K8s cluster. Check [K8s documentation](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/) if you don't have knowledges on imagePullSecrets.
+
+When using ECR as a private registry, you should:
+- provide registry-id instead of registry address in agent.toml
+- Log in to AWS using AWS CLI with `aws configure`
+
 
 * Backend.AI Krunner files
 
-There are two options to serve krunner files:
-1. Using NFS volume as krunner server
-    - Add NFS connection info to agent.toml. Check `config/sample.toml` for details.
-2. Installing krunner files to all worker nodes
-    - Download and extract [Static file](https://backend-ai-k8s-agent-static.s3.ap-northeast-2.amazonaws.com/bai-static.tar.gz) to each worker node's `/opt/backend.ai` folder. `scripts/deploy-static/deploy_static_files.py` will automatically copy files to worker nodes.
+1. Add NFS connection info to agent.toml. Check `config/sample.toml` for details.
+2. Mount NFS folder on the machine where agent will run, and add mounted path to agent.toml (check sample.toml).
 
 First, you need **a working manager installation**.
 For the detailed instructions on installing the manager, please refer
 [the manager's README](https://github.com/lablup/backend.ai-manager/blob/master/README.md)
 and come back here again.
+
+#### One-shot installation
+
+You can use installation script `install-halfstack.sh`. Installation script is only for debian-based OS.
 
 #### Common steps
 
@@ -138,6 +142,7 @@ containers).  Note that the directory must exist in prior and the agent-running
 user must have ownership of it.  You can change the location by
 `scratch-root` option in `agent.toml`.
 
+
 ### Adding Backend.AI kernel images to private registry
 
 To import all available kernel images from lablup docker repository (**THIS WILL TAKE REALLY LONG TIME!!!**):
@@ -147,14 +152,11 @@ python -m ai.backend.agent.cli.images rescan-images index.docker.io
 ```
 
 or, to only pull images you want: 
-1. Go to Lablup's [Docker Hub](https://hub.docker.com/u/lablup) and check image name and tag of kernel image you want to pull.
+1. Go to Lablup's [Docker Hub](https://hub.docker.com/u/lablup) and check image name of kernel image you want to pull.
 2. Execute: 
 
 ```sh
-docker pull lablup/<image>:<tag>
-docker tag lablup/<image>:<tag> <Private Registry URL>/lablup/image:<tag>
-docker push <Private Registry URL>/lablup/image:<tag>
-docker rm <Private Registry URL>/lablup/image:<tag>
+python -m ai.backend.agent.cli.images rescan-images index.docker.io -i <image name>
 ```
 3. Repeat 1 and 2 for every images you want.
 

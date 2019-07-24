@@ -1,8 +1,8 @@
-FROM lablup/backendai-krunner-python:ubuntu16.04
+FROM lablup/backendai-krunner-python:centos7.6
 
 ARG PREFIX=/opt/backend.ai
 
-RUN apt-get update && apt-get install -y xz-utils
+RUN yum install -y xz
 RUN ${PREFIX}/bin/pip install --no-cache-dir -U pip setuptools
 
 COPY requirements.txt /root/

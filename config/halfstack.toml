@@ -16,9 +16,27 @@ pid-file = "./agent.pid"
 addr = { host = "localhost", port = 5000 }
 
 
+[baistatic]
+# NFS information for backend.ai static files
+nfs-addr = "localhost"
+path = "/backend.ai"
+capacity = 10 # In Gi, without any suffix
+options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated with comma 
+mounted-at = "/home/ubuntu/halfstack/backend.ai-static"
+
+[vfolder-pv]
+# Needed when serving vFolder as NFS
+name = local
+nfs-addr = "localhost"
+path = "/"
+capacity = 10 # In Gi, without any suffix
+options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated with comma 
+
+
 [container]
 port-range = [30000, 31000]
 kernel-uid = -1
+kernel-gid = -1
 kernel-host = "127.0.0.1"
 sandbox-type = "docker"
 scratch-type = "hostdir"

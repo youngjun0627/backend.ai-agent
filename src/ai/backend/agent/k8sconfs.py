@@ -50,7 +50,7 @@ class ConfigMapMountSpec:
     }
 
 class PVCMountSpec:
-  def __init_(self, subPath: str, mountPath: str, mountType: str, perm: str='ro'):
+  def __init__(self, subPath: str, mountPath: str, mountType: str, perm: str='ro'):
     self.name = ''
     self.mountPath = mountPath
     self.subPath = subPath
@@ -74,14 +74,16 @@ class KernelDeployment:
   env: Dict[str, str]
   ports: List[int]
 
-  def __init__(self, kernel_id:str, image:str, arch:str, registry_type:str, name: str='deployment'):
+  def __init__(self, kernel_id:str, image:str, distro:str, arch:str, ecr_url: str='', name: str='deployment'):
     self.name = name
     self.image = image
+    self.distro = distro
     self.arch = arch
-    self.registry_type = registry_type
+    self.ecr_url = ecr_url
 
     self.hostPathMounts = []
     self.pvcMounts = []
+    self.execMounts = []
     self.configMapMounts = []
     self.cmd = []
     self.env = {}
@@ -90,7 +92,6 @@ class KernelDeployment:
     self.krunnerPath = ''
     self.baistatic_pvc = ''
     self.vfolder_pvc = ''
-    self.krunner_source = 'local'
 
   def label(self, k: str, v: str):
     self.labels[k] = str(v)
@@ -99,8 +100,13 @@ class KernelDeployment:
     mountSpec.name = self.name + '-krunner'
     self.pvcMounts.append(mountSpec)
 
+  def mount_exec(self, mountSpec: PVCMountSpec):
+    mountSpec.name = self.name + '-krunner'
+    mountSpec.perm = 'rw'
+    self.execMounts.append(mountSpec)
+  
   def mount_vfolder_pvc(self, mountSpec: PVCMountSpec):
-    mountSpec.name = self.vfolder_pvc
+    mountSpec.name = self.name + '-vfolder'
     self.pvcMounts.append(mountSpec)
 
   def mount_hostpath(self, mountSpec: HostPathMountSpec):
@@ -113,46 +119,27 @@ class KernelDeployment:
     self.ports.append(port)
 
   def krunner_volumemount(self):
-    if self.baistatic_pvc:
-      return {
-        'name': self.name + '-krunner',
-        'persistentVolumeClaim': {
-          'claimName': self.baistatic_pvc
-        }
+    return {
+      'name': self.name + '-krunner',
+      'persistentVolumeClaim': {
+        'claimName': self.baistatic_pvc
       }
-    else:
-      return {
-        'name': self.name + '-krunner',
-        'hostPath': {
-          'path': self.krunnerPath,
-          'type': 'Directory'
-        }
-      }
+    }
 
-  def initcontainer(self) -> dict:
-    if self.krunner_source == 'image':
-      distro = self.image.split(':')[-1]
-      arch = self.arch
-
+  def vfolder_volumemount(self):
+    if len(self.vfolder_pvc) > 0:
       return [{
-        'name': self.name + '-krunner',
-        'image': f'lablup/env:{distro}',
-        'imagePullPolicy': 'IfNotPresent',
-        'volumeMounts': [{
-            'name': self.name + '-krunner',
-            'mountPath': '/root/image.tar.xz',
-            'subPath': f'krunner-env.{distro}.{arch}.tar.xz'
-          }, {
-            'name': 'krunner-provider',
-            'mountPath': '/provider'
-        }]
+        'name': self.name + '-vfolder',
+        'persistentVolumeClaim': {
+          'claimName': self.vfolder_pvc
+        }
       }]
     else:
       return []
-  
-  def to_dict(self) -> dict:
-    initcontainer = self.initcontainer()
 
+
+  def to_dict(self) -> dict:
+    distro = self.distro
     return {
       'apiVersion': 'apps/v1',
       'kind': 'Deployment',
@@ -166,13 +153,23 @@ class KernelDeployment:
         'template': {
           'metadata': { 'labels': { 'run': self.name } },
           'spec': {
-            'initContainers': initcontainer,
+            'initContainers': [
+              {
+                'name': self.name + '-permission',
+                'image': 'lablup/k8s-copy-krunner',
+                'imagePullPolicy': 'Always',
+                'volumeMounts': [{
+                  'name': self.name + '-executables',
+                  'mountPath': '/provider'
+                }] + [x.volumemount_dict() for x in self.execMounts]
+              }
+            ],
             'containers': [
               {
                 'name': self.name + '-session',
                 'image': self.image,
                 'imagePullPolicy': 'IfNotPresent',
-                'command': ['/opt/kernel/entrypoint.sh'],
+                'command': ['sh', '/opt/kernel/entrypoint.sh'],
                 'args': self.cmd,
                 'env': [{ 'name': k, 'value': v } for k, v in self.env.items()],
                 'volumeMounts':  [{
@@ -181,26 +178,31 @@ class KernelDeployment:
                 }, {
                     'name': self.name + '-jupyter',
                     'mountPath': '/home/work/.jupyter'
-                }] + [{
-                    'name':  'krunner-provider',
+                }, {
+                    'name':  self.name + '-krunner',
+                    'mountPath': '/opt/backend.ai',
+                    'subPath': f'backendai-krunner.{distro}'
+                }, {
+                    'name': self.name + '-executables',
                     'mountPath': '/opt/kernel'
-                }] if len(initcontainer) > 0 else [] + [x.volumemount_dict() for x in self.configMapMounts + self.hostPathMounts + self.pvcMounts],
+                }] + [x.volumemount_dict() for x in self.configMapMounts + self.hostPathMounts + self.pvcMounts],
                 'ports': [{ 'containerPort': x } for x in self.ports],
                 'imagePullSecrets': {
                   'name': 'backend-ai-registry-secret'
-                } if self.registry_type == 'local' else {}
+                } if len(self.ecr_url) == 0 else {}
               }
             ],
             'volumes': [{
-                'name': self.name + '-workdir',
-                'emptyDir': {}
-            }, { 
-                'name': self.name + '-jupyter',
-                'emptyDir': {}
-            }, self.krunner_volumemount() , {
-                'name': 'krunner-provider', 
-                'emptyDir': {}
-            }] + [x.volumedef_dict() for x in self.configMapMounts + self.hostPathMounts]
+                  'name': self.name + '-workdir',
+                  'emptyDir': {}
+              }, { 
+                  'name': self.name + '-jupyter',
+                  'emptyDir': {}
+              }, {
+                  'name': self.name + '-executables',
+                  'emptyDir': {}
+              }, self.krunner_volumemount()
+            ] + self.vfolder_volumemount() + [x.volumedef_dict() for x in self.configMapMounts + self.hostPathMounts]
           }
         }
       }
@@ -300,7 +302,7 @@ class NFSPersistentVolumeClaim:
     self.labels[k] = v
   
   def to_dict(self) -> dict:
-    return {
+    base = {
       'apiVersion': 'v1',
       'kind': 'PersistentVolumeClaim',
       'metadata': {
@@ -313,6 +315,10 @@ class NFSPersistentVolumeClaim:
           'storage': self.capacity + 'Gi'
           }
         },
-        'accessModes': [ 'ReadWriteMany' ]
+        'accessModes': [ 'ReadWriteMany' ],
+        'storageClassName': ''
       }
     }
+    return base
+
+

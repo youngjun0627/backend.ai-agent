@@ -34,11 +34,11 @@ scaling-group = "default"
 # Registry for use with k8s cluster 
 # All kernel container images should be saved here 
 
-# GCR/ECR only works if nodes are from cloud provider
-# When using GCR/ECR as private registry, you don't need to create imagePullSecret
+# ECR only works if nodes are from cloud provider
+# When using ECR as private registry, you don't need to create imagePullSecret
 # ACR(Azure Container Registry) users can just use "local" type  
 
-# Type value should be one of : "ecr", or "local"
+# Type value should be one of : "ecr" or "local"
 # Configuration items will be different, depending on the value of "type"
 
 # When using "local" type
@@ -47,29 +47,24 @@ addr = { host = "localhost", port = 5000 }
 
 # When using "ecr" type 
 type = "ecr"
-region = "ap-northeast-2"
-registry-id = "0123456789"
-access-key = "AKIAIOSFODNN7EXAMPLE"
-sccret-key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+profile = "default" # This should refer profile to use from AWS CLI configuration
+registry-id = "123456789012"
 
 
 [baistatic]
 # NFS information for backend.ai static files
-# This configuration is optional
-# Without this, Backend.AI will try to mount static files from hostPath of worker node
 nfs-addr = "localhost"
 path = "/backend.ai"
 capacity = 10 # In Gi, without any suffix
-options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated with comma 
-
+options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated by comma 
+mounted-at = "/home/ubuntu/halfstack/backend.ai-static"
 
 [vfolder-pv]
 # Needed when serving vFolder as NFS
-name = local
 nfs-addr = "localhost"
 path = "/"
 capacity = 10 # In Gi, without any suffix
-options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated with comma 
+options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated by comma 
 
 [container]
 # The port range to expose public service ports.
@@ -80,6 +75,7 @@ port-range = [30000, 31000]  # env: BACKEND_CONTAINER_PORT_RANGE
 # The UID to be set to the container's main process.
 # If not specified, it uses the same user which the agent runs as.
 kernel-uid = -1
+kernel-gid = -1
 
 # Change the reported host/address of the containers.
 # The manager will use this value to connect to containers.

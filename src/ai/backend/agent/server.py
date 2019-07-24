@@ -1,4 +1,5 @@
 import base64
+import configparser
 import datetime
 import functools
 import hashlib
@@ -59,7 +60,9 @@ from .exception import (
 )
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 from .kernel import (
-    KernelRunner
+    KernelRunner,
+    prepare_krunner_env,
+    prepare_kernel_statics
 )
 from .resources import (
     detect_resources,
@@ -198,7 +201,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.clean_timer = None
         self.scan_images_timer = None
         self.images = []
-        self.krunner_as_pvc = False
         self.vfolder_as_pvc = ''
         self.ecr_address = ''
         self.ecr_token = ''
@@ -224,6 +226,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.read_agent_config()
         await self.update_status('starting')
 
+        if 'vfolder-pv' in self.config.keys():
+            await self.create_vfolder_pv()
+
+        if self.config['registry']['type'] == 'ecr':
+            await self.get_aws_credentials()
+
         self.redis_stat_pool = await aioredis.create_redis_pool(
             self.config['redis']['addr'].as_sockaddr(), password=(self.config['redis']['password']
                       if self.config['redis']['password'] else None),
@@ -237,7 +245,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         await self.scan_images(None)
         # TODO: Create k8s compatible stat collector
-        await self.determine_static_mount_type()
+        await self.check_krunner_pv_status()
 
         # Send the first heartbeat.
         self.hb_timer    = aiotools.create_timer(self.heartbeat, 3.0)
@@ -258,7 +266,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Notify the gateway.
         await self.send_event('instance_started')
 
-    async def determine_static_mount_type(self):
+    async def get_aws_credentials(self):
+        region = configparser.ConfigParser()
+        credentials = configparser.ConfigParser()
+
+        aws_path = Path.home() / Path('.aws')
+        region.read_string((aws_path / Path('config')).read_text())
+        credentials.read_string((aws_path / Path('credentials')).read_text())
+
+        profile = self.config['registry']['profile']
+        self.config['registry']['region'] = region[profile]['region'] 
+        self.config['registry']['access-key'] = credentials[profile]['aws_access_key_id']
+        self.config['registry']['secret-key'] = credentials[profile]['aws_secret_access_key']
+
+    async def check_krunner_pv_status(self):
         nfs_pv = await self.k8sCoreApi.list_persistent_volume(label_selector='backend.ai/bai-static-nfs-server')
         if len(nfs_pv.items) == 0:
             # PV does not exists; create one
@@ -285,12 +306,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 pvc_response = await self.k8sCoreApi.create_namespaced_persistent_volume_claim('backend-ai', body=pvc.to_dict())
             except:
                 raise
-        self.krunner_as_pvc = True
     
     async def create_vfolder_pv(self):
+        log.debug('Trying to create vFolder PV/PVC...')
+        
         addr = self.config['vfolder-pv']['nfs-addr']
         path = self.config['vfolder-pv']['path']
-        capacity = self.config['vfolder-pv']['capacity']
+        capacity = str(self.config['vfolder-pv']['capacity'])
         options = [x.strip() for x in self.config['vfolder-pv']['options'].split(',')]
 
         nfs_pv = await self.k8sCoreApi.list_persistent_volume(label_selector='backend.ai/vfolder')
@@ -299,7 +321,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             pv.label('backend.ai/vfolder', '')
             pv.options = options
             try:
-                pv_response = await k8sCoreApi.create_persistent_volume(body=pv.to_dict())
+                pv_response = await self.k8sCoreApi.create_persistent_volume(body=pv.to_dict())
             except:
                 raise
         
@@ -669,6 +691,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     self.error_monitor.capture_exception()
                     log.exception('reset: destroying {0}', kernel_id)
             await asyncio.gather(*tasks)
+
     
     async def _create_kernel(self, kernel_id: str, kernel_config: dict, restarting: bool=False) -> dict:
 
@@ -708,7 +731,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
             uid = self.config['container']['kernel-uid']
+            gid = self.config['container']['kernel-gid']
+            environ['LOCAL_USER_ID'] = str(gid)
             environ['LOCAL_USER_ID'] = str(uid)
+            if os.getuid() == 0:  # only possible when I am root.
+                os.chown(work_dir, uid, uid)
+                os.chown(work_dir / '.jupyter', uid, uid)
+                os.chown(work_dir, uid, gid)
+                os.chown(work_dir / '.jupyter', uid, gid)
+
 
         # Ensure that we have intrinsic slots.
         assert 'cpu' in slots
@@ -745,81 +776,52 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         canonical = kernel_config['image']['canonical']
         
         _, repo, name_with_tag = canonical.split('/')
-        deployment = KernelDeployment(kernel_id, f'{registry_name}/{repo}/{name_with_tag}', \
-            arch, f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-'))
+        if self.config['registry']['type'] != 'local':
+            deployment = KernelDeployment(kernel_id, f'{registry_name}/{repo}/{name_with_tag}', \
+                distro, arch, ecr_url=registry_name, name=f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-'))
+        else:
+            deployment = KernelDeployment(kernel_id, f'{registry_name}/{repo}/{name_with_tag}', \
+                distro, arch, name=f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-'))
+
+        deployment.krunner_source = 'image'
 
         log.debug('Initial container config: {0}', deployment.to_dict())
-
-
-        # Determine if krunner bundled in image needs an update
-        image_manifest = self.get_image_manifest(*name_with_tag.split(':'))
-        history = json.loads(image_manifest['history'][0])
-        labels = history['config']['Labels']
-        
-        current_version = int(Path(
-            pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/krunner-version.{distro}.txt'))
-            .read_text().strip())
-        should_update_krunner_to_latest = 'ai.backend.krunner.version' not in labels.keys() or current_version > labels['ai.backend.krunner.version']
-        deployment.krunner_source = 'image' if should_update_krunner_to_latest else 'local'
         
         def _mount(kernel_id: str, hostPath: str, mountPath: str, mountType: str, perm='ro'):
             name = (kernel_id + '-' + mountPath.split('/')[-1]).replace('.', '-')
             deployment.mount_hostpath(HostPathMountSpec(name, hostPath, mountPath, mountType, perm))
 
-        if self.krunner_as_pvc:
-            try:
-                nfs_pvc = self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
-                if len(nfs_pvc.items) == 0:
-                    raise K8sError('No PVC for backend.ai static files')
-                pvc = nfs_pvc.items[0]
-                if pvc.status[-1].conditions != 'Bound':
-                    raise K8sError('PVC not Bound')
-            except:
-                raise
-            deployment.baistatic_pvc = pvc.metadata.name
+        try:
+            nfs_pvc = await self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
+            if len(nfs_pvc.items) == 0:
+                raise K8sError('No PVC for backend.ai static files')
+            pvc = nfs_pvc.items[0]
+            if pvc.status.phase != 'Bound':
+                raise K8sError('PVC not Bound')
+        except:
+            raise
+        deployment.baistatic_pvc = pvc.metadata.name
         
-            deployment.mount_pvc(PVCMountSpec('runner/entrypoint.sh', '/opt/kernel/entrypoint.sh', 'File'))
-            deployment.mount_pvc(PVCMountSpec(f'runner/su-exec.{distro}.bin', '/opt/kernel/su-exec', 'File'))
-            deployment.mount_pvc(PVCMountSpec(f'runner/jail.{distro}.bin', '/opt/kernel/jail', 'File'))
-            deployment.mount_pvc(PVCMountSpec(f'hook/libbaihook.{distro}.{arch}.so', '/opt/kernel/libbaihook.so', 'File'))
-            deployment.mount_pvc(PVCMountSpec('kernel', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel', 'Directory'))
-            deployment.mount_pvc(PVCMountSpec('helpers', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers', 'Directory'))
-            deployment.mount_pvc(PVCMountSpec('runner/jupyter-custom.css', '/home/work/.jupyter/custom/custom.css', 'File'))
-            deployment.mount_pvc(PVCMountSpec('runner/logo.svg', '/home/work/.jupyter/custom/logo.svg', 'File'))
-            deployment.mount_pvc(PVCMountSpec('runner/roboto.ttf', '/home/work/.jupyter/custom/roboto.ttf', 'File'))
-            deployment.mount_pvc(PVCMountSpec('runner/roboto-italic.ttf', '/home/work/.jupyter/custom/roboto-italic.ttf', 'File'))
-        else:
-            _mount(kernel_id, '/opt/backend.ai/runner/entrypoint.sh', 
-                '/opt/backend.ai/bin/entrypoint.sh', 'File')
-            _mount(kernel_id, f'/opt/backend.ai/runner/su-exec.{distro}.bin',
-                '/opt/backend.ai/bin/su-exec', 'File')
-            _mount(kernel_id, f'/opt/backend.ai/runner/jail.{distro}.bin',
-                '/opt/backend.ai/bin/jail', 'File')
-            _mount(kernel_id, f'/opt/backend.ai/hook/libbaihook.{distro}.{arch}.so',
-                '/opt/backend.ai/hook/libbaihook.so', 'File')
-            _mount(kernel_id, '/opt/backend.ai/kernel',
-                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel', 'Directory')
-            _mount(kernel_id, '/opt/backend.ai/helpers',
-                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers', 'Directory')
-            _mount(kernel_id, '/opt/backend.ai/runner/jupyter-custom.css',
-                '/home/work/.jupyter/custom/custom.css', 'File')
-            _mount(kernel_id, '/opt/backend.ai/runner/logo.svg',
-                '/home/work/.jupyter/custom/logo.svg', 'File')
-            _mount(kernel_id, '/opt/backend.ai/runner/roboto.ttf',
-                '/home/work/.jupyter/custom/roboto.ttf', 'File')
-            _mount(kernel_id, '/opt/backend.ai/runner/roboto-italic.ttf',
-                '/home/work/.jupyter/custom/roboto-italic.ttf', 'File')
+        deployment.mount_exec(PVCMountSpec('entrypoint.sh', '/krunner/entrypoint.sh', 'File'))
+        deployment.mount_exec(PVCMountSpec(f'su-exec.{distro}.bin', '/krunner/su-exec', 'File'))
+        deployment.mount_exec(PVCMountSpec(f'jail.{distro}.bin', '/krunner/jail', 'File'))
+        deployment.mount_exec(PVCMountSpec(f'libbaihook.{distro}.{arch}.so', '/krunner/libbaihook.so', 'File'))
+        deployment.mount_pvc(PVCMountSpec('kernel', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel', 'Directory'))
+        deployment.mount_pvc(PVCMountSpec('helpers', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers', 'Directory'))
+        deployment.mount_pvc(PVCMountSpec('jupyter-custom.css', '/home/work/.jupyter/custom/custom.css', 'File'))
+        deployment.mount_pvc(PVCMountSpec('logo.svg', '/home/work/.jupyter/custom/logo.svg', 'File'))
+        deployment.mount_pvc(PVCMountSpec('roboto.ttf', '/home/work/.jupyter/custom/roboto.ttf', 'File'))
+        deployment.mount_pvc(PVCMountSpec('roboto-italic.ttf', '/home/work/.jupyter/custom/roboto-italic.ttf', 'File'))
+    
         
         # Check if vFolder PVC is Bound; otherwise raise since we can't use vfolder
         if len(vfolders) > 0 and self.vfolder_as_pvc:
             try:
-                nfs_pvc = self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
+                nfs_pvc = await self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
                 if len(nfs_pvc.items) == 0:
                     raise K8sError('No PVC for backend.ai static files')
                 pvc = nfs_pvc.items[0]
-                if pvc.status[-1].conditions != 'Bound':
+                if pvc.status.phase != 'Bound':
                     raise K8sError('PVC not Bound')
             except:
                 raise
@@ -835,7 +837,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 raise RuntimeError(
                     'Unexpected number of vfolder mount detail tuple size')
             
-            
             folder_perm = MountPermission(folder_perm)
             perm_char = 'ro'
             if folder_perm == MountPermission.RW_DELETE or folder_perm == MountPermission.READ_WRITE:
@@ -845,7 +846,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             
             if self.vfolder_as_pvc:
                 subPath = (folder_host / self.config['vfolder']['fsprefix'] / folder_id)
-                deployment.mount_vfolder_pvc(PVCMountSpec(subPath.absolute().as_posix(), f'/home/work/{folder_name}', 'Directory', perm=perm_char))
+                log.debug('Trying to mount {0} to {1}', str(subPath), folder_id)
+                deployment.mount_vfolder_pvc(PVCMountSpec(str(subPath), f'/home/work/{folder_name}', 'Directory', perm=perm_char))
             else:
                 host_path = (self.config['vfolder']['mount'] / folder_host /
                     self.config['vfolder']['fsprefix'] / folder_id)
@@ -897,7 +899,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         cmdargs = []
         if self.config['container']['sandbox-type'] == 'jail':
             cmdargs += [
-                "/opt/backend.ai/bin/jail",
+                "/opt/kernel/jail",
                 "-policy", "/etc/backend.ai/jail/policy.yml",
             ]
             if self.config['container']['jail-args']:
@@ -1105,6 +1107,13 @@ print(json.dumps(files))''' % {'path': path}
 
         return { 'files': outs, 'errors': '', 'abspath': abspath }
 
+    async def _accept_file(self, kernel_id, filename, filedata):
+        pass
+        # TODO: implement
+    async def _download_file(self, kernel_id, filepath):
+        pass
+        # TODO: implement
+
     async def _get_logs(self, kernel_id):
         try:
             kernel_info = self.container_registry[kernel_id]
@@ -1133,7 +1142,7 @@ print(json.dumps(files))''' % {'path': path}
 
         try:
             myself = asyncio.Task.current_task()
-            self.container_registry['kernel_id']['runner_tasks'].add(myself)
+            self.container_registry[kernel_id]['runner_tasks'].add(myself)
 
             await runner.attach_output_queue(run_id)
 
@@ -1261,6 +1270,12 @@ print(json.dumps(files))''' % {'path': path}
 async def server_main(loop, pidx, _args):
     config = _args[0]
 
+    nfs_mount_path = config['baistatic']['mounted-at']
+    await prepare_krunner_env('alpine3.8', nfs_mount_path)
+    await prepare_krunner_env('ubuntu16.04', nfs_mount_path)
+    await prepare_krunner_env('centos7.6', nfs_mount_path)
+    await prepare_kernel_statics(nfs_mount_path)
+
     etcd_credentials = None
     if config['etcd']['user']:
         etcd_credentials = {
@@ -1339,6 +1354,7 @@ def main(cli_ctx, config_path, debug):
         }).allow_extra('*'),
         t.Key('container'): t.Dict({
             t.Key('kernel-uid', default=-1): tx.UserID,
+            t.Key('kernel-gid', default=-1): tx.UserID,
             t.Key('kernel-host', default=''): t.String(allow_blank=True),
             t.Key('port-range', default=(30000, 31000)): tx.PortRange,
             t.Key('sandbox-type'): t.Enum('docker', 'jail'),
@@ -1354,7 +1370,8 @@ def main(cli_ctx, config_path, debug):
             t.Key('nfs-addr'): t.String,
             t.Key('path'): t.String,
             t.Key('capacity'): t.Int,
-            t.Key('options'): t.Null | t.String
+            t.Key('options'): t.Null | t.String,
+            t.Key('mounted-at'): t.String
         }),
         t.Key('vfolder-pv'): t.Null | t.Dict({
             t.Key('nfs-addr'): t.String,
@@ -1380,10 +1397,8 @@ def main(cli_ctx, config_path, debug):
 
     registry_ecr_config_iv = t.Dict({
         t.Key('type'): t.String,
-        t.Key('registry-id'): t.String,
-        t.Key('region'): t.String,
-        t.Key('access-key'): t.String,
-        t.Key('secret-key'): t.String
+        t.Key('profile'): t.String,
+        t.Key('registry-id'): t.String
     })
 
     # Determine where to read configuration.
