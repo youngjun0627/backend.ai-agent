@@ -1,7 +1,7 @@
 Changes
 =======
 
-19.06.0b2 (2019-xx-xx)
+19.06.0b2 (2019-07-25)
 ----------------------
 
 * CHANGE: Now krunner-env is served as local Docker volumes instead of dummy contaienrs (#117, #118)
@@ -12,6 +12,22 @@ Changes
   - The agent auto-creates and auto-udpates the krunner-env volumes. Separate Docker image deployment
     and manual image tagging are no longer required!
 
+* IMPROVED: Now the agent can be run *without* root, given that:
+
+  - The docker socket is accessible by the agent's user permission.
+    (usually you have to add the user to the "docker" system group)
+
+  - container.stats-type is set to "docker".
+
+  - The permission/ownership of /tmp/backend.ai/ipc and agent/event sockets inside it is writable by the
+    user/group of the agent.
+
+  - container.kernel-uid, container.kernel-gid is set to -1 or the same values that
+    ai/backend/agent/server.py file stored in the disk has (e.g., inside virtualenv's site-packages
+    directory).
+
+* Also improved the clean up of scratch directories due to permission issues caused by bind-mounting
+  files inside bind-mounted directories.
 
 19.06.0b1 (2019-07-13)
 ----------------------
