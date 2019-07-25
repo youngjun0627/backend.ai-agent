@@ -1614,6 +1614,7 @@ print(json.dumps(files))''' % {'path': path}
         agent_info = {
             'ip': str(self.config['agent']['rpc-listen-addr'].host),
             'region': self.config['agent']['region'],
+            'scaling_group': self.config['agent']['scaling-group'],
             'addr': f"tcp://{self.config['agent']['rpc-listen-addr']}",
             'resource_slots': res_slots,
             'version': VERSION,
