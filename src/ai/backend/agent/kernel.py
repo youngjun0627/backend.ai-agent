@@ -528,7 +528,7 @@ async def prepare_krunner_env(distro: str):
                     'Driver': 'local',
                 })
         proc = subprocess.run([
-            'docker', 'run', '--rm', '-it',
+            'docker', 'run', '--rm', '-i',
             '-v', f'{name}:/root/volume',
             extractor_image,
             'sh', '-c', 'cat /root/volume/VERSION 2>/dev/null || echo 0',
@@ -549,7 +549,7 @@ async def prepare_krunner_env(distro: str):
                 'ai.backend.agent',
                 f'../runner/krunner-extractor.sh')).resolve()
             subprocess.run([
-                'docker', 'run', '--rm', '-it',
+                'docker', 'run', '--rm', '-i',
                 '-v', f'{archive_path}:/root/archive.tar.xz',
                 '-v', f'{extractor_path}:/root/krunner-extractor.sh',
                 '-v', f'{name}:/root/volume',
