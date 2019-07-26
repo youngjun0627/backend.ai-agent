@@ -1815,13 +1815,13 @@ async def server_main(loop, pidx, _args):
         subnet_hint = await etcd.get('config/network/subnet/agent')
         if subnet_hint is not None:
             subnet_hint = ip_network(subnet_hint)
-        log.debug('auto-detceting agent host')
+        log.debug('auto-detecting agent host')
         config['agent']['rpc-listen-addr'] = HostPortPair(
             await identity.get_instance_ip(subnet_hint),
             rpc_addr.port,
         )
     if not config['container']['kernel-host']:
-        log.debug('auto-detceting kernel host')
+        log.debug('auto-detecting kernel host')
         config['container']['kernel-host'] = await get_subnet_ip(
             etcd, 'container', config['agent']['rpc-listen-addr'].host
         )
