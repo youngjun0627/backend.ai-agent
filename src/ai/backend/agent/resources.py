@@ -157,7 +157,7 @@ class Mount:
     opts: Optional[Mapping[str, Any]] = None
 
     def __str__(self):
-        return f'{self.host_path}:{self.kernel_path}:{self.permission.value}'
+        return f'{self.source}:{self.target}:{self.permission.value}'
 
     @classmethod
     def from_str(cls, s):
