@@ -12,7 +12,6 @@ import pkg_resources
 import platform
 import re
 import secrets
-import subprocess
 
 from async_timeout import timeout
 from aiodocker.docker import Docker, DockerVolume
@@ -514,7 +513,9 @@ async def prepare_krunner_env(distro: str):
             extractor_archive = pkg_resources.resource_filename(
                 'ai.backend.agent', '../runner/krunner-extractor.img.tar.xz')
             with lzma.open(extractor_archive, 'rb') as extractor_img:
-                subprocess.run(['docker', 'load'], stdin=extractor_img, check=True)
+                proc = await asyncio.create_subprocess_exec(*['docker', 'load'], stdin=extractor_img)
+                if (await proc.wait() != 0):
+                    raise RuntimeError('loading krunner extractor image has failed!')
 
         log.info('checking krunner-env for {}...', distro)
         try:
@@ -527,13 +528,16 @@ async def prepare_krunner_env(distro: str):
                     'Name': name,
                     'Driver': 'local',
                 })
-        proc = subprocess.run([
+        proc = await asyncio.create_subprocess_exec(*[
             'docker', 'run', '--rm', '-i',
             '-v', f'{name}:/root/volume',
             extractor_image,
             'sh', '-c', 'cat /root/volume/VERSION 2>/dev/null || echo 0',
-        ], stdout=subprocess.PIPE)
-        existing_version = int(proc.stdout.decode().strip())
+        ], stdout=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        if (await proc.wait() != 0):
+            raise RuntimeError('checking krunner environment version has failed!')
+        existing_version = int(stdout.decode().strip())
         current_version = int(Path(
             pkg_resources.resource_filename(
                 f'ai.backend.krunner.{distro_name}',
@@ -548,7 +552,7 @@ async def prepare_krunner_env(distro: str):
             extractor_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
                 f'../runner/krunner-extractor.sh')).resolve()
-            subprocess.run([
+            proc = await asyncio.create_subprocess_exec(*[
                 'docker', 'run', '--rm', '-i',
                 '-v', f'{archive_path}:/root/archive.tar.xz',
                 '-v', f'{extractor_path}:/root/krunner-extractor.sh',
@@ -557,6 +561,10 @@ async def prepare_krunner_env(distro: str):
                 extractor_image,
                 '/root/krunner-extractor.sh',
             ])
+            if (await proc.wait() != 0):
+                raise RuntimeError('extracting krunner environment has failed!')
+    except Exception:
+        log.exception('unexpected error')
     finally:
         await docker.close()
     return name

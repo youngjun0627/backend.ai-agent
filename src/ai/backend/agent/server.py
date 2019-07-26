@@ -1791,9 +1791,13 @@ print(json.dumps(files))''' % {'path': path}
 async def server_main(loop, pidx, _args):
     config = _args[0]
 
-    await prepare_krunner_env('alpine3.8')
-    await prepare_krunner_env('ubuntu16.04')
-    await prepare_krunner_env('centos7.6')
+    log.info('Preparing kernel runner environments...')
+    await asyncio.gather(
+        prepare_krunner_env('alpine3.8'),
+        prepare_krunner_env('ubuntu16.04'),
+        prepare_krunner_env('centos7.6'),
+        return_exceptions=True,
+    )
 
     etcd_credentials = None
     if config['etcd']['user']:
