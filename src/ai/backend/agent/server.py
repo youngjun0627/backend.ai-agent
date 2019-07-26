@@ -476,7 +476,12 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('running with Docker {0} with API {1}',
                  docker_version['Version'], docker_version['ApiVersion'])
 
-        computers, self.slots = await detect_resources(self.etcd)
+        reserved_slots = {
+            'cpu': self.config['resource']['reserved-cpu'],
+            'mem': self.config['resource']['reserved-mem'],
+            'disk': self.config['resource']['reserved-disk'],
+        }
+        computers, self.slots = await detect_resources(self.etcd, reserved_slots)
         for name, klass in computers.items():
             devices = await klass.list_devices()
             alloc_map = await klass.create_alloc_map()

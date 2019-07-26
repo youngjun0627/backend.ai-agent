@@ -454,7 +454,7 @@ def bitmask2set(mask):
     return frozenset(bset)
 
 
-async def detect_resources(etcd):
+async def detect_resources(etcd, reserved_slots):
     '''
     Detect available computing resource of the system.
     It also loads the accelerator plugins.
@@ -492,9 +492,9 @@ async def detect_resources(etcd):
 
     for key, klass in compute_device_types.items():
         known_slot_types.update(klass.slot_types)
-        accel_slots = await klass.available_slots()
-        for skey, sval in accel_slots.items():
-            slots[skey] = sval
+        resource_slots = await klass.available_slots()
+        for skey, sval in resource_slots.items():
+            slots[skey] = sval - reserved_slots.get(skey, 0)
 
     log.info('Resource slots: {!r}', slots)
     log.info('Slot types: {!r}', known_slot_types)
