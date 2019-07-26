@@ -193,15 +193,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.blocking_cleans = {}
 
         self.event_sock = None
-        self.k8sCoreApi = None
-        self.k8sAppsApi = None
         self.computers: Mapping[str, ComputerContext] = {}
         self.container_registry = {}
         self.hb_timer = None
         self.clean_timer = None
         self.scan_images_timer = None
         self.images = []
-        self.vfolder_as_pvc = ''
+        self.vfolder_as_pvc = False
         self.ecr_address = ''
         self.ecr_token = ''
         self.ecr_token_expireAt = ''
@@ -213,11 +211,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     async def init(self):
         await K8sConfig.load_kube_config()
-        self.k8sCoreApi = K8sClient.CoreV1Api()
-        self.k8sAppsApi = K8sClient.AppsV1Api()
+        k8sCoreApi = K8sClient.CoreV1Api()
         self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
 
-        self.slots = await detect_resources(self.k8sCoreApi)
+        self.slots = await detect_resources(k8sCoreApi)
         
         ipc_base_path.mkdir(parents=True, exist_ok=True)
         self.zmq_ctx = zmq.asyncio.Context()
@@ -280,7 +277,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         self.config['registry']['secret-key'] = credentials[profile]['aws_secret_access_key']
 
     async def check_krunner_pv_status(self):
-        nfs_pv = await self.k8sCoreApi.list_persistent_volume(label_selector='backend.ai/bai-static-nfs-server')
+        await K8sConfig.load_kube_config()
+        k8sCoreApi = K8sClient.CoreV1Api()
+        nfs_pv = await k8sCoreApi.list_persistent_volume(label_selector='backend.ai/bai-static-nfs-server')
         if len(nfs_pv.items) == 0:
             # PV does not exists; create one
             pv = NFSPersistentVolume(
@@ -291,11 +290,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             pv.options = [x.strip() for x in self.config['baistatic']['options'].split(',')]
             
             try:
-                pv_response = await self.k8sCoreApi.create_persistent_volume(body=pv.to_dict())
+                pv_response = await k8sCoreApi.create_persistent_volume(body=pv.to_dict())
             except:
                 raise
         
-        nfs_pvc = await self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
+        nfs_pvc = await k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
         if len(nfs_pvc.items) == 0:
             # PV does not exists; create one
             pvc = NFSPersistentVolumeClaim(
@@ -303,11 +302,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             )
             pvc.label('backend.ai/bai-static-nfs-server', self.config['baistatic']['nfs-addr'])
             try:
-                pvc_response = await self.k8sCoreApi.create_namespaced_persistent_volume_claim('backend-ai', body=pvc.to_dict())
+                pvc_response = await k8sCoreApi.create_namespaced_persistent_volume_claim('backend-ai', body=pvc.to_dict())
             except:
                 raise
     
     async def create_vfolder_pv(self):
+        await K8sConfig.load_kube_config()
+        k8sCoreApi = K8sClient.CoreV1Api()
         log.debug('Trying to create vFolder PV/PVC...')
         
         addr = self.config['vfolder-pv']['nfs-addr']
@@ -315,30 +316,33 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         capacity = str(self.config['vfolder-pv']['capacity'])
         options = [x.strip() for x in self.config['vfolder-pv']['options'].split(',')]
 
-        nfs_pv = await self.k8sCoreApi.list_persistent_volume(label_selector='backend.ai/vfolder')
+        nfs_pv = await k8sCoreApi.list_persistent_volume(label_selector='backend.ai/vfolder')
         if len(nfs_pv.items) == 0:
             pv = NFSPersistentVolume(addr, path, 'backend-ai-vfolder-pv', capacity)
             pv.label('backend.ai/vfolder', '')
             pv.options = options
             try:
-                pv_response = await self.k8sCoreApi.create_persistent_volume(body=pv.to_dict())
+                pv_response = await k8sCoreApi.create_persistent_volume(body=pv.to_dict())
             except:
                 raise
         
-        nfs_pvc = await self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
+        nfs_pvc = await k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
         if len(nfs_pvc.items) == 0:
             pvc = NFSPersistentVolumeClaim(
                 'backend-ai-vfolder-pvc', 'backend-ai-vfolder-pv', str(capacity)
             )
             pvc.label('backend.ai/vfolder', '')
             try:
-                pvc_response = await self.k8sCoreApi.create_namespaced_persistent_volume_claim('backend-ai', body=pvc.to_dict())
+                pvc_response = await k8sCoreApi.create_namespaced_persistent_volume_claim('backend-ai', body=pvc.to_dict())
             except:
                 raise
+        log.debug('NFS vFolder mounted')
         self.vfolder_as_pvc = True
     
     async def fetch_workers(self):
-        nodes = await self.k8sCoreApi.list_node()
+        await K8sConfig.load_kube_config()
+        k8sCoreApi = K8sClient.CoreV1Api()
+        nodes = await k8sCoreApi.list_node()
         for node in nodes.items:
             if 'node-role.kubernetes.io/master' in node.metadata.labels.keys():
                 continue
@@ -353,11 +357,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         await self.etcd.put('', status, scope=ConfigScopes.NODE)
 
     async def get_docker_registry_info(self):
+        await K8sConfig.load_kube_config()
+        k8sCoreApi = K8sClient.CoreV1Api()
         # Determines Registry URL and its appropriate Authorization header
         if self.config['registry']['type'] == 'local':
             addr, port = self.config['registry']['addr'].as_sockaddr()
             registry_addr = f'https://{addr}:{port}'
-            registry_pull_secrets = await self.k8sCoreApi.list_namespaced_secret('backend-ai')
+            registry_pull_secrets = await k8sCoreApi.list_namespaced_secret('backend-ai')
             for secret in registry_pull_secrets.items:
                 if secret.metadata.name == 'backend-ai-registry-secret':
                     pull_secret = secret
@@ -695,6 +701,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     
     async def _create_kernel(self, kernel_id: str, kernel_config: dict, restarting: bool=False) -> dict:
 
+        await K8sConfig.load_kube_config()
+        k8sCoreApi = K8sClient.CoreV1Api()
+        k8sAppsApi = K8sClient.AppsV1Api()
         await self.send_event('kernel_preparing', kernel_id)
         log.debug('create_kernel: kernel_config -> {0}', json.dumps(kernel_config, ensure_ascii=False, indent=2))
         # Read image-specific labels and settings
@@ -792,7 +801,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             deployment.mount_hostpath(HostPathMountSpec(name, hostPath, mountPath, mountType, perm))
 
         try:
-            nfs_pvc = await self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
+            nfs_pvc = await k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
             if len(nfs_pvc.items) == 0:
                 raise K8sError('No PVC for backend.ai static files')
             pvc = nfs_pvc.items[0]
@@ -817,7 +826,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # Check if vFolder PVC is Bound; otherwise raise since we can't use vfolder
         if len(vfolders) > 0 and self.vfolder_as_pvc:
             try:
-                nfs_pvc = await self.k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
+                nfs_pvc = await k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
                 if len(nfs_pvc.items) == 0:
                     raise K8sError('No PVC for backend.ai static files')
                 pvc = nfs_pvc.items[0]
@@ -923,51 +932,86 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         deployment.mount_configmap(ConfigMapMountSpec('resource', configmap.name, 'resource', '/home/config/resource.txt'))
         deployment.ports = exposed_ports
 
-        repl_service = Service(kernel_id, deployment.name + '-service', deployment.name, [ (2000, 'repl-in'), (2001, 'repl-out') ], service_type='ClusterIP')
-        expose_service = Service(kernel_id, deployment.name + '-nodeport', deployment.name, [ (port, f'{kernel_id}-svc-{index}') for port, index in zip(exposed_ports, range(1, len(exposed_ports) + 1)) ], service_type='NodePort')
+        # TODO: Implement ELB
+        # service_type = 'LoadBalancer' if self.config['agent']['use-loadbalancer'] else 'NodePort'
+        service_type = 'NodePort'
+
+        repl_service = Service(kernel_id, deployment.name + '-repl', deployment.name, \
+            [ (2000, 'repl-in'), (2001, 'repl-out') ], service_type='NodePort')
+        expose_service = Service(kernel_id, deployment.name + '-expose', deployment.name, \
+            [ (port, f'{kernel_id}-svc-{index}') for port, index in zip(exposed_ports, range(1, len(exposed_ports) + 1)) ], service_type=service_type)
+
         log.debug('container config: {!r}', deployment.to_dict())
         log.debug('nodeport config: {!r}', expose_service.to_dict())
         # We are all set! Create and start the container.
 
         node_ports = []
         try:
-            clusterip_api_response = await self.k8sCoreApi.create_namespaced_service('backend-ai', body=repl_service.to_dict())
+            repl_service_api_response = await k8sCoreApi.create_namespaced_service('backend-ai', body=repl_service.to_dict())
         except:
             raise
         
         if len(exposed_ports) > 0:
             try:    
-                nodeport_api_response = await self.k8sCoreApi.create_namespaced_service('backend-ai', body=expose_service.to_dict())
-                node_ports = nodeport_api_response.spec.ports
+                exposed_service_api_response = await k8sCoreApi.create_namespaced_service('backend-ai', body=expose_service.to_dict())
+                node_ports = exposed_service_api_response.spec.ports
             except:
-                await self.k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
+                await k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
                 raise
+        
         try:
-            await self.k8sCoreApi.create_namespaced_config_map('backend-ai', body=configmap.to_dict(), pretty='pretty_example')
+            await k8sCoreApi.create_namespaced_config_map('backend-ai', body=configmap.to_dict(), pretty='pretty_example')
         except:
-            await self.k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
-            await self.k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
+            await k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
+            await k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
             raise
         try:
-            await self.k8sAppsApi.create_namespaced_deployment('backend-ai', body=deployment.to_dict(), pretty='pretty_example')
+            await k8sAppsApi.create_namespaced_deployment('backend-ai', body=deployment.to_dict(), pretty='pretty_example')
         except:
-            await self.k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
-            await self.k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
-            await self.k8sCoreApi.delete_namespaced_config_map(configmap.name, 'backend-ai')
+            await k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
+            await k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
+            await k8sCoreApi.delete_namespaced_config_map(configmap.name, 'backend-ai')
             raise
 
         stdin_port = 0
         stdout_port = 0
-        repl_in_port = 2000
-        repl_out_port = 2001
+        repl_in_port = 0
+        repl_out_port = 0
 
         exposed_ports = {}
 
-        node_external_ips = [x['ExternalIP'] for x in list(filter(lambda x: 'ExternalIP' in x, self.workers.values()))]
-        # if len(node_external_ips) > 0:
-        #     target_node_ip = random.choice(node_external_ips)
+        # TODO: Implement ELB
+        # if self.config['agent']['use-loadbalancer']:
+        #     async def get_elb_address(service_name):
+        #         api_response = await k8sCoreApi.read_namespaced_service(service_name, 'backend-ai')
+        #         time_waited = 0
+        #         while api_response.status.load_balancer.ingress == None:
+        #             if time_waited > 10:
+        #                 await self._destroy_kernel(kernel_id, 'elb-assign-error')
+        #                 raise K8sError(f'Timeout while waiting ELB address for {service_name}')
+        #             log.debug('Waiting for {0} ELB Address to be assigned...', service_name)
+        #             await asyncio.sleep(1)
+        #             time_waited += 1
+        #             api_response = await k8sCoreApi.read_namespaced_service(service_name, 'backend-ai')
+                
+        #         ingress = api_response.status.load_balancer.ingress[0]
+        #         return ingress.hostname if ingress.hostname else ingress.ip
+            
+        #     target_node_ip = await get_elb_address(expose_service.name)
+        #     for port in node_ports:
+        #         exposed_ports[port.port] = port.port
+            
+        #     for k in service_ports.keys():
+        #         service_ports[k]['host_port'] = exposed_ports[k]
         # else:
         #     target_node_ip = random.choice([x['InternalIP'] for x in self.workers.values()])
+
+        #     for port in node_ports:
+        #         exposed_ports[port.port] = port.node_port
+            
+        #     for k in service_ports.keys():
+        #         service_ports[k]['host_port'] = exposed_ports[k]
+
         target_node_ip = random.choice([x['InternalIP'] for x in self.workers.values()])
 
         for port in node_ports:
@@ -976,12 +1020,33 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         for k in service_ports.keys():
             service_ports[k]['host_port'] = exposed_ports[k]
 
+        cluster_ip = random.choice([x['InternalIP'] for x in self.workers.values()])
+
+        for nodeport in repl_service_api_response.spec.ports:
+            log.debug('{0}', nodeport)
+            if nodeport.target_port == 2000:
+                log.debug('assigning {0} as REPL in port', nodeport.node_port)
+                repl_in_port = nodeport.node_port
+            elif nodeport.target_port == 2001:
+                log.debug('assigning {0} as REPL out port', nodeport.node_port)
+                repl_out_port = nodeport.node_port
+
+        if repl_in_port == 0:
+            await self._destroy_kernel(kernel_id, 'nodeport-assign-error')
+            raise K8sError('REPL in port not assigned')
+        if repl_out_port == 0:
+            await self._destroy_kernel(kernel_id, 'elb-assign-error')
+            raise K8sError('REPL out port not assigned')
+                
+        log.debug('Exposed ports: {0}', exposed_ports)
+        log.debug('Service ports: {0}', service_ports)
+
         self.container_registry[kernel_id] = {
             'deployment_name': deployment.name,
             'lang': image_ref,
             'version': version,
             'kernel_host': target_node_ip,
-            'cluster_ip': clusterip_api_response.spec.cluster_ip,
+            'cluster_ip': cluster_ip,
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,    # legacy
@@ -994,8 +1059,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'agent_tasks': [],
         }
 
-        log.debug('kernel repl-in address: {0}:{1}', clusterip_api_response.spec.cluster_ip, repl_in_port)
-        log.debug('kernel repl-out address: {0}:{1}', clusterip_api_response.spec.cluster_ip, repl_out_port)
+        log.debug('kernel repl-in address: {0}:{1}', cluster_ip, repl_in_port)
+        log.debug('kernel repl-out address: {0}:{1}', cluster_ip, repl_out_port)
         await self.send_event('kernel_started', kernel_id)
         return {
             'id': kernel_id,
@@ -1011,6 +1076,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
 
     async def _destroy_kernel(self, kernel_id, reason):
+        await K8sConfig.load_kube_config()
+        k8sCoreApi = K8sClient.CoreV1Api()
+        k8sAppsApi = K8sClient.AppsV1Api()
         async def force_cleanup(reason='self-terminated'):
                 await self.send_event('kernel_terminated',
                                       kernel_id, 'self-terminated',
@@ -1025,10 +1093,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             return None
         deployment_name = kernel['deployment_name']
         try:
-            await self.k8sCoreApi.delete_namespaced_service(f'{deployment_name}-service', 'backend-ai')
-            await self.k8sCoreApi.delete_namespaced_service(f'{deployment_name}-nodeport', 'backend-ai')
-            await self.k8sCoreApi.delete_namespaced_config_map(f'{deployment_name}-configmap', 'backend-ai')
-            await self.k8sAppsApi.delete_namespaced_deployment(f'{deployment_name}', 'backend-ai')
+            await k8sCoreApi.delete_namespaced_service(f'{deployment_name}-service', 'backend-ai')
+            await k8sCoreApi.delete_namespaced_service(f'{deployment_name}-nodeport', 'backend-ai')
+            await k8sCoreApi.delete_namespaced_config_map(f'{deployment_name}-configmap', 'backend-ai')
+            await k8sAppsApi.delete_namespaced_deployment(f'{deployment_name}', 'backend-ai')
         except:
             log.warning('_destroy({0}) kernel missing (already dead?)', kernel_id)
         
@@ -1040,6 +1108,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def _ensure_runner(self, kernel_id, *, api_version=3):
         runner = self.container_registry[kernel_id].get('runner')
         
+        await K8sConfig.load_kube_config()
+        k8sAppsApi = K8sClient.AppsV1Api()
         if runner is not None:
             log.debug('_execute_code:v{0}({1}) use '
                         'existing runner', api_version, kernel_id)
@@ -1051,7 +1121,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 self.container_registry[kernel_id]['repl_out_port'],
                 self.container_registry[kernel_id]['cluster_ip'],
                 0,
-                self.k8sAppsApi,
+                k8sAppsApi,
                 client_features)
             log.debug('_execute:v{0}({1}) start new runner',
                         api_version, kernel_id)
@@ -1070,8 +1140,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         return {'status': 'finished', 'completions': result}
 
     async def _list_files(self, kernel_id: str, path: str):
+        await K8sConfig.load_kube_config()
+        k8sCoreApi = K8sClient.CoreV1Api()
         deployment_name = self.container_registry[kernel_id]['deployment_name']
-        pods = await self.k8sCoreApi.list_namespaced_pod('backend-ai', label_selector=f'run={deployment_name}')
+        pods = await k8sCoreApi.list_namespaced_pod('backend-ai', label_selector=f'run={deployment_name}')
         pod_name = pods.items[0].metadata.name
         
         code = '''from pathlib import Path
@@ -1079,7 +1151,7 @@ abspath = Path('%(path)s').resolve(strict=True)
 suffix = '/' if abspath.is_dir() else ''
 print(str(abspath) + suffix)
 ''' % {'path': path}
-        abspath = await self.k8sCoreApi.connect_get_namespaced_pod_exec(pod_name, 'backend-ai', command=f'python -c "{code}"')
+        abspath = await k8sCoreApi.connect_get_namespaced_pod_exec(pod_name, 'backend-ai', command=f'python -c "{code}"')
 
         if not abspath.startswith('/home/work'):
             return { 'files': '', 'errors': 'No such file or directory' }
@@ -1103,7 +1175,7 @@ for f in os.scandir('%(path)s'):
         'filename': f.name,
     })
 print(json.dumps(files))''' % {'path': path}
-        outs = await self.k8sCoreApi.connect_get_namespaced_pod_exec(pod_name, 'backend-ai', command=f'python -c "{code}"')
+        outs = await k8sCoreApi.connect_get_namespaced_pod_exec(pod_name, 'backend-ai', command=f'python -c "{code}"')
 
         return { 'files': outs, 'errors': '', 'abspath': abspath }
 
@@ -1119,12 +1191,15 @@ print(json.dumps(files))''' % {'path': path}
             kernel_info = self.container_registry[kernel_id]
         except KeyError:
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! ')
+
+        await K8sConfig.load_kube_config()
+        k8sCoreApi = K8sClient.CoreV1Api()
         deployment_name = kernel_info['deployment_name']
-        pods = await self.k8sCoreApi.list_namespaced_pod('backend-ai', label_selector=f'run={deployment_name}')
+        pods = await k8sCoreApi.list_namespaced_pod('backend-ai', label_selector=f'run={deployment_name}')
         if len(pods.items) == 0:
             return { 'logs': '' }
         pod_name = pods.items[0].metadata.name
-        logs = await self.k8sCoreApi.read_namespaced_pod_log(pod_name, 'backend-ai')
+        logs = await k8sCoreApi.read_namespaced_pod_log(pod_name, 'backend-ai')
         return { 'logs': logs }
     
     async def _execute(self, api_version, kernel_id,
@@ -1351,6 +1426,7 @@ def main(cli_ctx, config_path, debug):
             t.Key('pid-file', default=os.devnull): tx.Path(type='file',
                                                            allow_nonexisting=True,
                                                            allow_devnull=True),
+            # t.Key('use-loadbalancer'): t.Bool
         }).allow_extra('*'),
         t.Key('container'): t.Dict({
             t.Key('kernel-uid', default=-1): tx.UserID,

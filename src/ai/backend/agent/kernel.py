@@ -21,6 +21,7 @@ from async_timeout import timeout
 import aiozmq
 import click
 from aiodocker import Docker
+from kubernetes_asyncio import client as K8sClient, config as K8sConfig
 import msgpack
 import zmq
 
@@ -192,7 +193,6 @@ class KernelRunner:
         self.repl_in_port = repl_in_port
         self.repl_out_port = repl_out_port
         self.cluster_ip = cluster_ip
-        self.k8sAppsApi = k8sAppsApi
         self.input_stream = None
         self.output_stream = None
         assert exec_timeout >= 0
@@ -255,7 +255,9 @@ class KernelRunner:
             self.read_task = None
 
     async def scale(self, num: int):
-        return await self.k8sAppsApi.replace_namespaced_deployment_scale(self.deployment_name, 'backend-ai', body={
+        await K8sConfig.load_kube_config()
+        k8sAppsApi = K8sClient.AppsV1Api()
+        return await k8sAppsApi.replace_namespaced_deployment_scale(self.deployment_name, 'backend-ai', body={
             'apiVersion': 'autoscaling/v1',
             'kind': 'Scale',
             'metadata': {
@@ -267,7 +269,9 @@ class KernelRunner:
         })
 
     async def is_scaled(self):
-        scale = await self.k8sAppsApi.read_namespaced_deployment(self.deployment_name, 'backend-ai')
+        await K8sConfig.load_kube_config()
+        k8sAppsApi = K8sClient.AppsV1Api()
+        scale = await k8sAppsApi.read_namespaced_deployment(self.deployment_name, 'backend-ai')
         if scale.to_dict()['status']['replicas'] == 0:
             return False
         for condition in scale.to_dict()['status']['conditions']:
