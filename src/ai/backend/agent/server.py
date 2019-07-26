@@ -70,6 +70,7 @@ from .utils import (
     get_kernel_id_from_container,
     host_pid_to_container_pid,
     container_pid_to_host_pid,
+    get_subnet_ip,
 )
 from .fs import create_scratch_filesystem, destroy_scratch_filesystem
 
@@ -1154,20 +1155,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             exposed_ports.append(2003)
         log.debug('exposed ports: {!r}', exposed_ports)
 
-        subnet = await self.etcd.get('config/network/subnet/container')
-        if subnet is None:
-            container_external_ip = '0.0.0.0'
-        else:
-            subnet = ip_network(subnet)
-            if subnet.prefixlen == 0:
-                container_external_ip = '0.0.0.0'
-            else:
-                local_ipaddrs = [*identity.fetch_local_ipaddrs(subnet)]
-                if local_ipaddrs:
-                    container_external_ip = str(local_ipaddrs[0])
-                else:
-                    container_external_ip = '0.0.0.0'
-
+        kernel_host = self.config['container']['kernel-host']
         if len(exposed_ports) > len(self.port_pool):
             raise RuntimeError('Container ports are not sufficiently available.')
         host_ports = []
@@ -1219,7 +1207,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 ],
                 'PortBindings': {
                     f'{eport}/tcp': [{'HostPort': str(hport),
-                                      'HostIp': container_external_ip}]
+                                      'HostIp': kernel_host}]
                     for eport, hport in zip(exposed_ports, host_ports)
                 },
                 'PublishAllPorts': False,  # we manage port mapping manually!
@@ -1285,7 +1273,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 stdin_port = host_port
             elif port == 2003:  # legacy
                 stdout_port = host_port
-        kernel_host = self.config['container']['kernel-host']
 
         self.container_registry[kernel_id] = {
             'lang': image_ref,
@@ -1818,9 +1805,6 @@ async def server_main(loop, pidx, _args):
                      config['etcd']['namespace'],
                      scope_prefix_map,
                      credentials=etcd_credentials)
-    subnet_hint = await etcd.get('config/network/subnet/agent')
-    if subnet_hint is not None:
-        subnet_hint = ip_network(subnet_hint)
 
     if not config['agent']['id']:
         config['agent']['id'] = await identity.get_instance_id()
@@ -1828,12 +1812,21 @@ async def server_main(loop, pidx, _args):
         config['agent']['instance-type'] = await identity.get_instance_type()
     rpc_addr = config['agent']['rpc-listen-addr']
     if not rpc_addr.host:
+        subnet_hint = await etcd.get('config/network/subnet/agent')
+        if subnet_hint is not None:
+            subnet_hint = ip_network(subnet_hint)
+        log.debug('auto-detceting agent host')
         config['agent']['rpc-listen-addr'] = HostPortPair(
             await identity.get_instance_ip(subnet_hint),
             rpc_addr.port,
         )
     if not config['container']['kernel-host']:
-        config['container']['kernel-host'] = config['container']['kernel-host']
+        log.debug('auto-detceting kernel host')
+        config['container']['kernel-host'] = await get_subnet_ip(
+            etcd, 'container', config['agent']['rpc-listen-addr'].host
+        )
+    log.info('Agent external IP: {}', config['agent']['rpc-listen-addr'].host)
+    log.info('Container external IP: {}', config['container']['kernel-host'])
     if not config['agent']['region']:
         config['agent']['region'] = await identity.get_instance_region()
     log.info('Node ID: {0} (machine-type: {1}, host: {2})',

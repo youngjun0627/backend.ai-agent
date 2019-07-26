@@ -1,11 +1,18 @@
 import asyncio
 from decimal import Decimal
 import ipaddress
+import logging
 from pathlib import Path
 from typing import Iterable, MutableMapping, Sequence, Union
 
 from aiodocker.docker import DockerContainer
 import netifaces
+
+from ai.backend.common import identity
+from ai.backend.common.etcd import AsyncEtcd
+from ai.backend.common.logging import BraceStyleAdapter
+
+log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.utils'))
 
 IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
@@ -58,6 +65,25 @@ async def get_kernel_id_from_container(val):
         return name.rsplit('.', 2)[-1]
     except (IndexError, ValueError):
         return None
+
+
+async def get_subnet_ip(etcd: AsyncEtcd, network: str, fallback_addr: str = '0.0.0.0'):
+    subnet = await etcd.get(f'config/network/subnet/{network}')
+    if subnet is None:
+        addr = fallback_addr
+    else:
+        subnet = ipaddress.ip_network(subnet)
+        if subnet.prefixlen == 0:
+            addr = fallback_addr
+        else:
+            local_ipaddrs = [*identity.fetch_local_ipaddrs(subnet)]
+            log.debug('get_subnet_ip(): subnet {} candidates: {}',
+                      subnet, local_ipaddrs)
+            if local_ipaddrs:
+                addr = str(local_ipaddrs[0])
+            else:
+                addr = fallback_addr
+    return addr
 
 
 async def host_pid_to_container_pid(container_id, host_pid):
