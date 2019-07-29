@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # This will do:
-# Install docker, kubectl and docker-compose (if not installed)
-# Install pyenv and virtualenv venv-agent-k8s, venv-manager
+# Install docker, kubectl, pyenv and docker-compose (if not installed)
+# Set up 3 virtualenvs managed by pyenv: venv-agent-k8s, venv-manager, venv-common
 # Clone halfstack(agent, manager, common, meta) repositories at folder $HOME/halfstack
 # Deploy halfstack docker-compose (https://github.com/lablup/backend.ai/blob/master/docker-compose.halfstack.yml)
-# This script requires:
+# This script is intended to be run inside:
 # Debian-based OS (Debian/Ubuntu)
 # Kubeconfig installed and configured on .kube/config or $KUBECONFIG path
 

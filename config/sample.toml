@@ -41,11 +41,11 @@ scaling-group = "default"
 # Type value should be one of : "ecr" or "local"
 # Configuration items will be different, depending on the value of "type"
 
-# When using "local" type
+# When using self-deployed private registry
 type = "local" 
 addr = { host = "localhost", port = 5000 }
 
-# When using "ecr" type 
+# When using ECR
 type = "ecr"
 profile = "default" # This should refer profile to use from AWS CLI configuration
 registry-id = "123456789012"
@@ -59,12 +59,14 @@ capacity = 10 # In Gi, without any suffix
 options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated by comma 
 mounted-at = "/home/ubuntu/halfstack/backend.ai-static"
 
+
 [vfolder-pv]
 # Needed when serving vFolder as NFS
 nfs-addr = "localhost"
 path = "/"
 capacity = 10 # In Gi, without any suffix
 options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated by comma 
+
 
 [container]
 # The port range to expose public service ports.

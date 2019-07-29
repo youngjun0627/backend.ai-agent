@@ -15,38 +15,34 @@ The Backend.AI Agent is a small daemon that does:
 
 ## Installation
 
-### For development
-
-#### Prerequisites
-
-* `libsnappy-dev` or `snappy-devel` system package depending on your distro
-* Python 3.6 or higher with [pyenv](https://github.com/pyenv/pyenv)
-and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv) (optional but recommneded)
-* Docker 18.03 or later with docker-compose (18.09 or later is recommended)
-* Private Registry for Backend.AI kernel images
-
-To let manager determine available kernel images in K8s cluster and secure kernel image integrity of whole K8s cluster, Backend.AI Agent requires a private registry. There are no requirements for registry spec; However, all K8s worker nodes should pull images from the registry without any error.
-
-Also, after deploying the private registry, imagePullSecrets `backend-ai-registry-secret` in namespace `backend-ai` needs to be installed in target K8s cluster. Check [K8s documentation](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/) if you don't have knowledges on imagePullSecrets.
-
-When using ECR as a private registry, you should:
-- provide registry-id instead of registry address in agent.toml
-- Log in to AWS using AWS CLI with `aws configure`
-
-
-* Backend.AI Krunner files
-
-1. Add NFS connection info to agent.toml. Check `config/sample.toml` for details.
-2. Mount NFS folder on the machine where agent will run, and add mounted path to agent.toml (check sample.toml).
-
 First, you need **a working manager installation**.
 For the detailed instructions on installing the manager, please refer
 [the manager's README](https://github.com/lablup/backend.ai-manager/blob/master/README.md)
 and come back here again.
 
+### For development
+
+#### Prequisites
+
+* `libsnappy-dev` or `snappy-devel` system package depending on your distro
+* Python 3.6 or higher with [pyenv](https://github.com/pyenv/pyenv)
+and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv) (optional but recommneded)
+* Docker 18.03 or later with docker-compose (18.09 or later is recommended)
+* Properly configured Kubeconfig file - should be located at `$HOME/.kube/config` or `$KUBECONFIG` path
+* [Git LFS](https://git-lfs.github.com/) installed and configured
+* Private Registry for Backend.AI kernel images
+
+To let manager determine available kernel images in K8s cluster and secure kernel image integrity of whole K8s cluster, Backend.AI Agent requires a private registry. There are no requirements for registry spec; However, all K8s worker nodes should pull images from the registry without any error.
+
+Also, after deploying the private registry, imagePullSecret `backend-ai-registry-secret` needs to be created in target K8s cluster, with namespace `backend-ai`. Check [K8s documentation](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/) if you don't know how to create imagePullSecret.
+
+When using ECR as a private registry, you should:
+- provide `registry-id` instead of registry address in `agent.toml`
+- be logged in to AWS using AWS CLI with `aws configure`
+
 #### One-shot installation
 
-You can use installation script `install-halfstack.sh`. Installation script is only for debian-based OS.
+You can use installation script `install-halfstack.sh`. Installation script is intended only for debian-based OS.
 
 #### Common steps
 
@@ -56,6 +52,7 @@ Next, prepare the source clone of the agent and install from it as follows.
 $ git clone https://github.com/lablup/backend.ai-agent agent
 $ cd agent
 $ git checkout feature/k8s-integration
+$ git lfs pull
 $ pyenv virtualenv venv-agent
 $ pyenv local venv-agent
 $ pip install -U pip setuptools
@@ -73,7 +70,7 @@ Note that you need a working manager running with the halfstack already!
 
 * `backend.ai-dev`
   - `manager` (git clone from [the manager repo](https://github.com/lablup/backend.ai-manager))
-  - `agent` (git clone from here)
+  - `agent` (git clone from here, with branch `feature/k8s-integration`)
   - `common` (git clone from [the common repo](https://github.com/lablup/backend.ai-common))
 
 Install `backend.ai-common` as an editable package in the agent (and the manager) virtualenvs
@@ -142,6 +139,12 @@ containers).  Note that the directory must exist in prior and the agent-running
 user must have ownership of it.  You can change the location by
 `scratch-root` option in `agent.toml`.
 
+### Setting up NFS-based vFolder for Backend.AI 
+
+When you are trying to deploy Backend.AI Agent to K8s cluster from Cloud Provider(EKS, GKE, AKS, ...), you can provide NFS connection info directly to Backend.AI agent. All vFolder mounts will be set up and managed by K8s' PersistentVolume and PersistentVolumeClaim. To set up:
+
+1. Add NFS connection information to `agent.toml`. Check `config/sample.toml` for details.
+2. Mount NFS volume to Backend.AI manager's mount target provided when setting up Backend.AI manager (if you have deployed halfstack with one-shot installation script, just mount to `$HOME/vfroot`).
 
 ### Adding Backend.AI kernel images to private registry
 
@@ -217,3 +220,7 @@ should be able to access the public Internet (maybe via some corporate firewalls
 | redis:6379               | Redis API access |
 | docker-registry:{80,443} | HTTP watcher API |
 | (Other hosts)            | Depending on user program requirements |
+
+The agent and K8s cluster should run in the same local network or VPC, and should be 
+reachable to each other with appropriate Security Group if cluster is provisioned within Cloud Provicers. 
+Agent uses NodePort service to communicate between agent and pod, so nodeport should be configured properly at K8s.

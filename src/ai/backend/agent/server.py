@@ -75,7 +75,7 @@ from .resources import (
 from .utils import (
     current_loop, update_nested_dict
 )
-from .k8sconfs import (
+from .k8sapi import (
     PVCMountSpec,
     ConfigMapMountSpec,
     HostPathMountSpec,
@@ -700,7 +700,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
     
     async def _create_kernel(self, kernel_id: str, kernel_config: dict, restarting: bool=False) -> dict:
-
+        
+        # Load K8s API object
         await K8sConfig.load_kube_config()
         k8sCoreApi = K8sClient.CoreV1Api()
         k8sAppsApi = K8sClient.AppsV1Api()
@@ -776,6 +777,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         arch = platform.machine()
 
+        # Add private registry information
         if self.config['registry']['type'] == 'local':
             registry_addr, registry_port = self.config['registry']['addr']
             registry_name = f'{registry_addr}:{registry_port}'
@@ -784,6 +786,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         
         canonical = kernel_config['image']['canonical']
         
+        # Create deployment object with given image name
         _, repo, name_with_tag = canonical.split('/')
         if self.config['registry']['type'] != 'local':
             deployment = KernelDeployment(kernel_id, f'{registry_name}/{repo}/{name_with_tag}', \
@@ -800,17 +803,17 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             name = (kernel_id + '-' + mountPath.split('/')[-1]).replace('.', '-')
             deployment.mount_hostpath(HostPathMountSpec(name, hostPath, mountPath, mountType, perm))
 
-        try:
-            nfs_pvc = await k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
-            if len(nfs_pvc.items) == 0:
-                raise K8sError('No PVC for backend.ai static files')
-            pvc = nfs_pvc.items[0]
-            if pvc.status.phase != 'Bound':
-                raise K8sError('PVC not Bound')
-        except:
-            raise
+        # Check if NFS PVC for static files exists and bound
+        nfs_pvc = await k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/bai-static-nfs-server')
+        if len(nfs_pvc.items) == 0:
+            raise K8sError('No PVC for backend.ai static files')
+        pvc = nfs_pvc.items[0]
+        if pvc.status.phase != 'Bound':
+            raise K8sError('PVC not Bound')
+    
         deployment.baistatic_pvc = pvc.metadata.name
         
+        # Mount essential files
         deployment.mount_exec(PVCMountSpec('entrypoint.sh', '/krunner/entrypoint.sh', 'File'))
         deployment.mount_exec(PVCMountSpec(f'su-exec.{distro}.bin', '/krunner/su-exec', 'File'))
         deployment.mount_exec(PVCMountSpec(f'jail.{distro}.bin', '/krunner/jail', 'File'))
@@ -823,7 +826,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         deployment.mount_pvc(PVCMountSpec('roboto-italic.ttf', '/home/work/.jupyter/custom/roboto-italic.ttf', 'File'))
     
         
-        # Check if vFolder PVC is Bound; otherwise raise since we can't use vfolder
+        # If agent is using vFolder by NFS PVC, check if vFolder PVC exists and Bound
+        # # otherwise raise since we can't use vfolder
         if len(vfolders) > 0 and self.vfolder_as_pvc:
             try:
                 nfs_pvc = await k8sCoreApi.list_namespaced_persistent_volume_claim('backend-ai', label_selector='backend.ai/vfolder')
@@ -869,20 +873,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # TODO: Inject ComputeDevice-specific env-varibles and hooks
 
-        # PHASE 3: Store the resource spec.
+        # PHASE 3: Store the resource spec as plain text, and store it to ConfigMap later.
 
         resource_txt = resource_spec.write_to_text()
         environ_txt = ''
 
         for k, v in environ.items():
             environ_txt += f'{k}={v}\n'
-                
-        # accel_envs = computer_docker_args.get('Env', [])
-        # for env in accel_envs:
-        #    environ_txt += f'{env}\n'
-
-        # TODO: Add additional args from config
-        
+    
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
                  pformat(attr.asdict(resource_spec)))
@@ -890,6 +888,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         exposed_ports = []
         service_ports = {}
         
+        # Extract port expose information from kernel creation request
         for item in image_labels.get('ai.backend.service-ports', '').split(','):
             if not item:
                 continue
@@ -921,44 +920,43 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             cmdargs.append(runtime_path)
 
 
-
+        # Prepare ConfigMap to store resource spec
         configmap = ConfigMap(kernel_id, deployment.name + '-configmap')
         configmap.put('environ', environ_txt)
         configmap.put('resource', resource_txt)
 
+        # Set up appropriate arguments for kernel image
         deployment.cmd = cmdargs
         deployment.env = environ
         deployment.mount_configmap(ConfigMapMountSpec('environ', configmap.name, 'environ', '/home/config/environ.txt'))
         deployment.mount_configmap(ConfigMapMountSpec('resource', configmap.name, 'resource', '/home/config/resource.txt'))
         deployment.ports = exposed_ports
 
-        # TODO: Implement ELB
-        # service_type = 'LoadBalancer' if self.config['agent']['use-loadbalancer'] else 'NodePort'
-        service_type = 'NodePort'
-
+        # Create K8s service object to expose REPL port
         repl_service = Service(kernel_id, deployment.name + '-repl', deployment.name, \
             [ (2000, 'repl-in'), (2001, 'repl-out') ], service_type='NodePort')
+        # Create K8s service object to expose Service port 
         expose_service = Service(kernel_id, deployment.name + '-expose', deployment.name, \
-            [ (port, f'{kernel_id}-svc-{index}') for port, index in zip(exposed_ports, range(1, len(exposed_ports) + 1)) ], service_type=service_type)
+            [ (port, f'{kernel_id}-svc-{index}') for port, index in zip(exposed_ports, range(1, len(exposed_ports) + 1)) ], service_type='NodePort')
 
         log.debug('container config: {!r}', deployment.to_dict())
         log.debug('nodeport config: {!r}', expose_service.to_dict())
         # We are all set! Create and start the container.
 
         node_ports = []
-        try:
-            repl_service_api_response = await k8sCoreApi.create_namespaced_service('backend-ai', body=repl_service.to_dict())
-        except:
-            raise
-        
+
+        # Send request to K8s API
         if len(exposed_ports) > 0:
             try:    
                 exposed_service_api_response = await k8sCoreApi.create_namespaced_service('backend-ai', body=expose_service.to_dict())
                 node_ports = exposed_service_api_response.spec.ports
             except:
-                await k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
                 raise
-        
+        try:
+            repl_service_api_response = await k8sCoreApi.create_namespaced_service('backend-ai', body=repl_service.to_dict())
+        except:
+            await k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
+            raise
         try:
             await k8sCoreApi.create_namespaced_config_map('backend-ai', body=configmap.to_dict(), pretty='pretty_example')
         except:
@@ -980,38 +978,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         exposed_ports = {}
 
-        # TODO: Implement ELB
-        # if self.config['agent']['use-loadbalancer']:
-        #     async def get_elb_address(service_name):
-        #         api_response = await k8sCoreApi.read_namespaced_service(service_name, 'backend-ai')
-        #         time_waited = 0
-        #         while api_response.status.load_balancer.ingress == None:
-        #             if time_waited > 10:
-        #                 await self._destroy_kernel(kernel_id, 'elb-assign-error')
-        #                 raise K8sError(f'Timeout while waiting ELB address for {service_name}')
-        #             log.debug('Waiting for {0} ELB Address to be assigned...', service_name)
-        #             await asyncio.sleep(1)
-        #             time_waited += 1
-        #             api_response = await k8sCoreApi.read_namespaced_service(service_name, 'backend-ai')
-                
-        #         ingress = api_response.status.load_balancer.ingress[0]
-        #         return ingress.hostname if ingress.hostname else ingress.ip
-            
-        #     target_node_ip = await get_elb_address(expose_service.name)
-        #     for port in node_ports:
-        #         exposed_ports[port.port] = port.port
-            
-        #     for k in service_ports.keys():
-        #         service_ports[k]['host_port'] = exposed_ports[k]
-        # else:
-        #     target_node_ip = random.choice([x['InternalIP'] for x in self.workers.values()])
-
-        #     for port in node_ports:
-        #         exposed_ports[port.port] = port.node_port
-            
-        #     for k in service_ports.keys():
-        #         service_ports[k]['host_port'] = exposed_ports[k]
-
+        # Randomly select IP from all available worker nodes 
+        # When service is exposed via NodePort, we do not have to make request only to the worker node where pod is started
         target_node_ip = random.choice([x['InternalIP'] for x in self.workers.values()])
 
         for port in node_ports:
@@ -1020,8 +988,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         for k in service_ports.keys():
             service_ports[k]['host_port'] = exposed_ports[k]
 
-        cluster_ip = random.choice([x['InternalIP'] for x in self.workers.values()])
-
+        # Check NodePort assigend to REPL 
         for nodeport in repl_service_api_response.spec.ports:
             log.debug('{0}', nodeport)
             if nodeport.target_port == 2000:
@@ -1031,6 +998,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 log.debug('assigning {0} as REPL out port', nodeport.node_port)
                 repl_out_port = nodeport.node_port
 
+        # Settings validation
         if repl_in_port == 0:
             await self._destroy_kernel(kernel_id, 'nodeport-assign-error')
             raise K8sError('REPL in port not assigned')
@@ -1046,7 +1014,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'lang': image_ref,
             'version': version,
             'kernel_host': target_node_ip,
-            'cluster_ip': cluster_ip,
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,    # legacy
@@ -1059,8 +1026,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'agent_tasks': [],
         }
 
-        log.debug('kernel repl-in address: {0}:{1}', cluster_ip, repl_in_port)
-        log.debug('kernel repl-out address: {0}:{1}', cluster_ip, repl_out_port)
+        log.debug('kernel repl-in address: {0}:{1}', target_node_ip, repl_in_port)
+        log.debug('kernel repl-out address: {0}:{1}', target_node_ip, repl_out_port)
         await self.send_event('kernel_started', kernel_id)
         return {
             'id': kernel_id,
@@ -1076,6 +1043,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
 
     async def _destroy_kernel(self, kernel_id, reason):
+
+        # Load K8s API object
         await K8sConfig.load_kube_config()
         k8sCoreApi = K8sClient.CoreV1Api()
         k8sAppsApi = K8sClient.AppsV1Api()
@@ -1119,7 +1088,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                 self.container_registry[kernel_id]['deployment_name'], 
                 self.container_registry[kernel_id]['repl_in_port'],
                 self.container_registry[kernel_id]['repl_out_port'],
-                self.container_registry[kernel_id]['cluster_ip'],
+                self.container_registry[kernel_id]['kernel_host'],
                 0,
                 k8sAppsApi,
                 client_features)
@@ -1187,17 +1156,20 @@ print(json.dumps(files))''' % {'path': path}
         # TODO: implement
 
     async def _get_logs(self, kernel_id):
+
+        await K8sConfig.load_kube_config()
+        k8sCoreApi = K8sClient.CoreV1Api()
         try:
             kernel_info = self.container_registry[kernel_id]
         except KeyError:
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! ')
 
-        await K8sConfig.load_kube_config()
-        k8sCoreApi = K8sClient.CoreV1Api()
         deployment_name = kernel_info['deployment_name']
-        pods = await k8sCoreApi.list_namespaced_pod('backend-ai', label_selector=f'run={deployment_name}')
-        if len(pods.items) == 0:
+        runner = self.container_registry[kernel_id].get('runner')
+        if runner is None or not await runner.is_scaled():
             return { 'logs': '' }
+        
+        pods = await k8sCoreApi.list_namespaced_pod('backend-ai', label_selector=f'run={deployment_name}')
         pod_name = pods.items[0].metadata.name
         logs = await k8sCoreApi.read_namespaced_pod_log(pod_name, 'backend-ai')
         return { 'logs': logs }

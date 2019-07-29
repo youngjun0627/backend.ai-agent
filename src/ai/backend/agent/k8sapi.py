@@ -1,5 +1,17 @@
 import yaml
 from typing import Dict, List
+
+'''This file contains API templates for Python K8s Client. 
+Since I don't prefer using templates provided from vanila k8s client, 
+all API definitions for Backend.AI Agent will use needs to be defined here.
+All API definitions defined here (especially for use with outside this file) 
+should implement to_dict() method, which returns complete definition in dictionary.
+To pass API body from objects defined here, simply put return value of to_dict() method as a body:
+e.g) await k8sCoreApi.create_persistent_volume(body=pv.to_dict())'''
+
+class AbstractAPIObject:
+  def to_dict(self) -> dict:
+    return {}
   
 class HostPathMountSpec:
   def __init__(self, name: str, hostPath: str, mountPath: str, mountType: str, perm: str):
@@ -118,7 +130,7 @@ class KernelDeployment:
   def bind_port(self, port: int):
     self.ports.append(port)
 
-  def krunner_volumemount(self):
+  def krunner_volumemount(self) -> dict:
     return {
       'name': self.name + '-krunner',
       'persistentVolumeClaim': {
@@ -126,7 +138,7 @@ class KernelDeployment:
       }
     }
 
-  def vfolder_volumemount(self):
+  def vfolder_volumemount(self) -> dict:
     if len(self.vfolder_pvc) > 0:
       return [{
         'name': self.name + '-vfolder',
@@ -181,7 +193,8 @@ class KernelDeployment:
                 }, {
                     'name':  self.name + '-krunner',
                     'mountPath': '/opt/backend.ai',
-                    'subPath': f'backendai-krunner.{distro}'
+                    'subPath': f'backendai-krunner.{distro}',
+                    'readOnly': True
                 }, {
                     'name': self.name + '-executables',
                     'mountPath': '/opt/kernel'
@@ -208,7 +221,7 @@ class KernelDeployment:
       }
     }
 
-class ConfigMap:
+class ConfigMap(AbstractAPIObject):
   items: Dict[str, str] = {}
 
   def __init__(self, kernel_id, name: str): 
@@ -229,7 +242,7 @@ class ConfigMap:
       'data': self.items
     }
 
-class Service:
+class Service(AbstractAPIObject):
   def __init__(self, kernel_id: str, name: str, deployment_name: str, container_port: list, service_type='NodePort'):
     self.name = name
     self.deployment_name = deployment_name
@@ -256,7 +269,7 @@ class Service:
       base['spec']['type'] = 'LoadBalancer'
     return base
 
-class NFSPersistentVolume:
+class NFSPersistentVolume(AbstractAPIObject):
 
   def __init__(self, server, path, name, capacity): 
     self.server = server
@@ -290,7 +303,7 @@ class NFSPersistentVolume:
       }
     }
 
-class NFSPersistentVolumeClaim:
+class NFSPersistentVolumeClaim(AbstractAPIObject):
 
   def __init__(self, name, pv_name, capacity):
     self.name = name
