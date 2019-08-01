@@ -42,8 +42,9 @@ When using ECR as a private registry, you should:
 
 #### One-shot installation
 
-You can use installation script `install-halfstack.sh`. Installation script is intended only for debian-based OS.
-
+```sh
+curl https://raw.githubusercontent.com/lablup/backend.ai-agent/feature/k8s-integration/install-halfstack.sh | bash -
+```
 #### Common steps
 
 Next, prepare the source clone of the agent and install from it as follows.
