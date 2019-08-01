@@ -814,10 +814,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         deployment.baistatic_pvc = pvc.metadata.name
         
         # Mount essential files
-        deployment.mount_exec(PVCMountSpec('entrypoint.sh', '/krunner/entrypoint.sh', 'File'))
-        deployment.mount_exec(PVCMountSpec(f'su-exec.{distro}.bin', '/krunner/su-exec', 'File'))
-        deployment.mount_exec(PVCMountSpec(f'jail.{distro}.bin', '/krunner/jail', 'File'))
-        deployment.mount_exec(PVCMountSpec(f'libbaihook.{distro}.{arch}.so', '/krunner/libbaihook.so', 'File'))
+        deployment.mount_pvc(PVCMountSpec('entrypoint.sh', '/opt/kernel/entrypoint.sh', 'File'))
+        deployment.mount_pvc(PVCMountSpec(f'su-exec.{distro}.bin', '/opt/kernel/su-exec', 'File'))
+        deployment.mount_pvc(PVCMountSpec(f'jail.{distro}.bin', '/opt/kernel/jail', 'File'))
+        deployment.mount_pvc(PVCMountSpec(f'libbaihook.{distro}.{arch}.so', '/opt/kernel/libbaihook.so', 'File'))
         deployment.mount_pvc(PVCMountSpec('kernel', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel', 'Directory'))
         deployment.mount_pvc(PVCMountSpec('helpers', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers', 'Directory'))
         deployment.mount_pvc(PVCMountSpec('jupyter-custom.css', '/home/work/.jupyter/custom/custom.css', 'File'))

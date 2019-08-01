@@ -165,17 +165,6 @@ class KernelDeployment:
         'template': {
           'metadata': { 'labels': { 'run': self.name } },
           'spec': {
-            'initContainers': [
-              {
-                'name': self.name + '-permission',
-                'image': 'lablup/k8s-copy-krunner',
-                'imagePullPolicy': 'Always',
-                'volumeMounts': [{
-                  'name': self.name + '-executables',
-                  'mountPath': '/provider'
-                }] + [x.volumemount_dict() for x in self.execMounts]
-              }
-            ],
             'containers': [
               {
                 'name': self.name + '-session',
@@ -195,9 +184,6 @@ class KernelDeployment:
                     'mountPath': '/opt/backend.ai',
                     'subPath': f'backendai-krunner.{distro}',
                     'readOnly': True
-                }, {
-                    'name': self.name + '-executables',
-                    'mountPath': '/opt/kernel'
                 }] + [x.volumemount_dict() for x in self.configMapMounts + self.hostPathMounts + self.pvcMounts],
                 'ports': [{ 'containerPort': x } for x in self.ports],
                 'imagePullSecrets': {
@@ -210,9 +196,6 @@ class KernelDeployment:
                   'emptyDir': {}
               }, { 
                   'name': self.name + '-jupyter',
-                  'emptyDir': {}
-              }, {
-                  'name': self.name + '-executables',
                   'emptyDir': {}
               }, self.krunner_volumemount()
             ] + self.vfolder_volumemount() + [x.volumedef_dict() for x in self.configMapMounts + self.hostPathMounts]
