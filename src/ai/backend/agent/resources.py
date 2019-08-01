@@ -18,7 +18,7 @@ from ai.backend.common.types import (
     DeviceId, SlotType, Allocation, ResourceAllocations,
 )
 from ai.backend.common.logging import BraceStyleAdapter
-from .exception import InsufficientResource
+from .exception import InsufficientResource, InitializationError
 from .stats import StatContext, NodeMeasurement, ContainerMeasurement
 
 
@@ -480,13 +480,13 @@ async def detect_resources(etcd, reserved_slots):
         if accel_klass is None:
             # plugin init failed. skip!
             continue
-        assert all(skey.startswith(f'{accel_klass.key}.')
-                   for skey, _ in accel_klass.slot_types), \
-               "Slot types defined by an accelerator plugin must be prefixed " \
-               "by the plugin's key."
+        if not all(skey.startswith(f'{accel_klass.key}.') for skey, _ in accel_klass.slot_types):
+            raise InitializationError(
+                "Slot types defined by an accelerator plugin must be prefixed "
+                "by the plugin's key.")
         if accel_klass.key in compute_device_types:
-            raise RuntimeError(
-                "A plugin defining the same key already exists. "
+            raise InitializationError(
+                f"A plugin defining the same key '{accel_klass.key}' already exists. "
                 "You may need to uninstall it first.")
         compute_device_types[accel_klass.key] = accel_klass
 
@@ -494,7 +494,11 @@ async def detect_resources(etcd, reserved_slots):
         known_slot_types.update(klass.slot_types)
         resource_slots = await klass.available_slots()
         for skey, sval in resource_slots.items():
-            slots[skey] = sval - reserved_slots.get(skey, 0)
+            slots[skey] = max(0, sval - reserved_slots.get(skey, 0))
+            if slots[skey] <= 0 and skey in ('cpu', 'mem'):
+                raise InitializationError(
+                    f"The resource slot '{skey}' is not sufficient (zero or below zero). "
+                    "Try to adjust the reserved resources or use a larger machine.")
 
     log.info('Resource slots: {!r}', slots)
     log.info('Slot types: {!r}', known_slot_types)
