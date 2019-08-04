@@ -199,6 +199,19 @@ class CPUPlugin(AbstractComputePlugin):
         alloc_map.allocations['cpu'].update(
             resource_spec.allocations['cpu']['cpu'])
 
+    @classmethod
+    async def get_attached_devices(cls, device_alloc) -> Sequence[Mapping[str, str]]:
+        device_ids = [*device_alloc['cpu'].keys()]
+        available_devices = await cls.list_devices()
+        attached_devices = []
+        for device in available_devices:
+            if device.device_id in device_ids:
+                attached_devices.append({
+                    'device_id': device.device_id,
+                    'model_name': '',
+                })
+        return attached_devices
+
 
 class MemoryDevice(AbstractComputeDevice):
     pass
@@ -459,3 +472,16 @@ class MemoryPlugin(AbstractComputePlugin):
         assert isinstance(alloc_map, DiscretePropertyAllocMap)
         memory_limit = container['HostConfig']['Memory']
         alloc_map.allocations['mem']['root'] += memory_limit
+
+    @classmethod
+    async def get_attached_devices(cls, device_alloc) -> Sequence[Mapping[str, str]]:
+        device_ids = [*device_alloc['mem'].keys()]
+        available_devices = await cls.list_devices()
+        attached_devices = []
+        for device in available_devices:
+            if device.device_id in device_ids:
+                attached_devices.append({
+                    'device_id': device.device_id,
+                    'model_name': '',
+                })
+        return attached_devices

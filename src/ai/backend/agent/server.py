@@ -1249,6 +1249,13 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                                                self.stat_sync_sockpath,
                                                self.stat_ctx.mode, cid):
                 await container.start()
+
+            # Get attached devices information (including model_name).
+            attached_devices = {}
+            for dev_type, device_alloc in resource_spec.allocations.items():
+                computer_set = self.computers[dev_type]
+                devices = await computer_set.klass.get_attached_devices(device_alloc)
+                attached_devices[dev_type] = devices
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1310,6 +1317,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             'service_ports': list(service_ports.values()),
             'container_id': container._id,
             'resource_spec': resource_spec.to_json(),
+            'attached_devices': attached_devices,
         }
 
     async def _destroy_kernel(self, kernel_id, reason):

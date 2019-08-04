@@ -147,6 +147,14 @@ class AbstractComputePlugin(metaclass=ABCMeta):
         '''
         pass
 
+    @classmethod
+    @abstractmethod
+    async def get_attached_devices(cls, device_alloc) -> Mapping[str, str]:
+        '''
+        Make up container-attached device information with allocated device id.
+        '''
+        pass
+
 
 @attr.s(auto_attribs=True, slots=True)
 class Mount:
@@ -182,7 +190,7 @@ class Mount:
 @attr.s(auto_attribs=True, slots=True)
 class KernelResourceSpec:
     '''
-    This struct-like object stores the kernel resoucre allocation information
+    This struct-like object stores the kernel resource allocation information
     with serialization and deserialization.
 
     It allows seamless reconstruction of allocations even when the agent restarts
