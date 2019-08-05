@@ -85,9 +85,9 @@ jobs:
         provider: pypi
         distributions: sdist bdist_wheel
         skip_upload_docs: true
-        user: lablup
+        user: "@token"
         password:
-          secure: "TdL1VbJ/eLyFT3Aq9xz9M7m6c2At5BgLoKYEjjQB0mCo67aTrI8M2japAQ7wafVeBGGP4Mo8nnY+90tjmINg/x8bXvxCv7avEf9eq0HU6u+DIgeTYVPtZMNRbPWl8z7MPxOQBIwwszSV0dw9EHHTx14oSKtEnd9v9210+HJJtnNujo00QiNgU8NQVqAcBKCMyrqAeNlG4K0clZ1sD77W58gfCYfbIcYXNFV7n/J8ke/aSyBnow/n4JSj9kDUJgOojfg8jQ+d0/sUFxaYoaakvozz6zGvlRm57+NlBic1onMrHF7nuOLBFNDZguMTuemxDXqv7fZXp2QATA7u9WZtS2kW3alebQcbXq+SW9omG8uhbhHRkPiXMBUPvBz59fMPvy29zpN6b7f+ihA9QP47zi4pt6N6Z7Xovm3R+RctTSqZkWqc47eajVWZRevJ5Iw68woF0/p1w6pGm84eWonJDUlmofuwcmeYduj+J+y5bEPt9gHdUKM14uzhWQzsiV4NkapTWoX2IGILp/svJUTUrB2D7BrUrPKZ3NLKFjlVdXmhJZdcZ6ovsxh8C+Ls3i+fDAd3TKxy0TugwKXYScs26vRWcLx8mRlDCoY/BFyb7LtzDv/4/vyHvmJBY9XTxoz7PJRV1C2zUK1XOXjbh4iy4SYNIDB70izlswetRUgKlNQ="
+          secure: "aHegqKMyGtx+tHimsTI6flKzinlQdsSm438QvCwr+RyUIHqcAiW/4aVHn5j7Cr56gJpxTROQftupCAeZBG/ZzICF8GtDcMoSF45qCfNuWf2dbAWE+xKpxTk5gvddP0YdY8jN68BifvQUoobrONiY+pN80AlwK9/+4+tRdp0WqsMLA1Zji6zXUzneI3H4QTXaL0dKjL36NXUOsaJTF2JYMNsmTHS5Zc7Pxxoh3m0yUJtMKxoh2s67CEkC/U01PhMSbP9MUx7cgtahxKkwA6+OOITo2TjAYEnqwjoMZYyYfZf7c9H3hVv48gGCufO1W5c7fJs3mUXVaLLeVS8V+wvi+xNUm4iIPXtDiZmj6c3s8mqUQ92nIMik8OY/Ar0AsAHDwl+RBwI6kamwWS7CDrZktoLdxFGOptmdsFHLFYiYRh/nH5fSbOd+mAE8PNaByd0zm3SQ1QbSICP+Ku2NXOaKRDKI3tzHIGYbAiaS7wXZ1E5wqAzCACd9sgIOiFh9TIDOwYYFz/E4dufl8vW2sAyD++2ExO82dO5LkR2+iRrWxgWiIvne5imyjTgfx51fSHOyQFVNPgvh5VZ1hOGlgehdb350Bd9JJEKrrNuulfpuYeZzADjZxz8qv0FfqAyo3dzsUyr8h7gGc4LINu1maTtPI3DY10KkO5HhFb+/B7nP3J0="
   allow_failures:
     - python: "3.7"
 
