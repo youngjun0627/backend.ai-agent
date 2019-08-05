@@ -1,6 +1,21 @@
 Changes
 =======
 
+19.09.0b3 (2019-08-05)
+----------------------
+
+* Include attached_devices in the kernel creation response (lablup/backend.ai-manager#154)
+
+  - Compute plugins now should implement ``get_attched_devices()`` method.
+
+* Improved support for separation of agent host and kernel (container) hosts
+  (lablup/backend.ai#37)
+
+* Add support for scaling-groups as configured by including them in heartbeats
+  (backend.ai-manager#167)
+
+* Implement reserved resource slots for CPU and memory (#110, #112)
+
 19.06.0b2 (2019-07-25)
 ----------------------
 
