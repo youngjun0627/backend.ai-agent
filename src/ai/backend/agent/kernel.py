@@ -16,7 +16,6 @@ import secrets
 from async_timeout import timeout
 from aiodocker.docker import Docker, DockerVolume
 from aiodocker.exceptions import DockerError
-import aiozmq
 import msgpack
 import zmq
 
@@ -88,8 +87,9 @@ class KernelRunner:
         self.kernel_host = kernel_host
         self.repl_in_port = repl_in_port
         self.repl_out_port = repl_out_port
-        self.input_stream = None
-        self.output_stream = None
+        self.zctx = zmq.asyncio.Context()
+        self.input_sock = None
+        self.output_sock = None
         assert exec_timeout >= 0
         self.exec_timeout = exec_timeout
         self.max_record_size = 10485760  # 10 MBytes
@@ -105,13 +105,13 @@ class KernelRunner:
     async def start(self):
         self.started_at = time.monotonic()
 
-        self.input_stream = await aiozmq.create_zmq_stream(
-            zmq.PUSH, connect=f'tcp://{self.kernel_host}:{self.repl_in_port}')
-        self.input_stream.transport.setsockopt(zmq.LINGER, 50)
+        self.input_sock = self.zctx.socket(zmq.PUSH)
+        self.input_sock.connect(f'tcp://{self.kernel_host}:{self.repl_in_port}')
+        self.input_sock.setsockopt(zmq.LINGER, 50)
 
-        self.output_stream = await aiozmq.create_zmq_stream(
-            zmq.PULL, connect=f'tcp://{self.kernel_host}:{self.repl_out_port}')
-        self.output_stream.transport.setsockopt(zmq.LINGER, 50)
+        self.output_sock = self.zctx.socket(zmq.PULL)
+        self.output_sock.connect(f'tcp://{self.kernel_host}:{self.repl_out_port}')
+        self.output_sock.setsockopt(zmq.LINGER, 50)
 
         self.read_task = asyncio.ensure_future(self.read_output())
         if self.exec_timeout > 0:
@@ -123,57 +123,54 @@ class KernelRunner:
         if self.watchdog_task and not self.watchdog_task.done():
             self.watchdog_task.cancel()
             await self.watchdog_task
-        if (self.input_stream and not self.input_stream.at_closing() and
-            self.input_stream.transport):
-            # only when really closable...
-            self.input_stream.close()
-        if (self.output_stream and not self.output_stream.at_closing() and
-            self.output_stream.transport):
-            # only when really closable...
-            self.output_stream.close()
+        if self.input_sock:
+            self.input_sock.close()
+        if self.output_sock:
+            self.output_sock.close()
         if self.read_task and not self.read_task.done():
             self.read_task.cancel()
             await self.read_task
             self.read_task = None
+        self.zctx.term()
 
     async def feed_batch(self, opts):
         clean_cmd = opts.get('clean', '')
         if clean_cmd is None:
             clean_cmd = ''
-        self.input_stream.write([
+        await self.input_sock.send_multipart([
             b'clean',
             clean_cmd.encode('utf8'),
         ])
         build_cmd = opts.get('build', '')
         if build_cmd is None:
             build_cmd = ''
-        self.input_stream.write([
+        await self.input_sock.send_multipart([
             b'build',
             build_cmd.encode('utf8'),
         ])
         exec_cmd = opts.get('exec', '')
         if exec_cmd is None:
             exec_cmd = ''
-        self.input_stream.write([
+        await self.input_sock.send_multipart([
             b'exec',
             exec_cmd.encode('utf8'),
         ])
 
     async def feed_code(self, text):
-        self.input_stream.write([b'code', text.encode('utf8')])
+        await self.input_sock.send_multipart([b'code', text.encode('utf8')])
 
     async def feed_input(self, text):
-        self.input_stream.write([b'input', text.encode('utf8')])
+        await self.input_sock.send_multipart([b'input', text.encode('utf8')])
 
     async def feed_interrupt(self):
-        self.input_stream.write([b'interrupt', b''])
+        await self.input_sock.send_multipart([b'interrupt', b''])
 
     async def feed_and_get_completion(self, code_text, opts):
         payload = {
             'code': code_text,
         }
         payload.update(opts)
-        self.input_stream.write([
+        await self.input_sock.send_multipart([
             b'complete',
             json.dumps(payload).encode('utf8'),
         ])
@@ -185,12 +182,12 @@ class KernelRunner:
             return []
 
     async def feed_start_service(self, service_info):
-        self.input_stream.write([
+        await self.input_sock.send_multipart([
             b'start-service',
             json.dumps(service_info).encode('utf8'),
         ])
         try:
-            with timeout(30):
+            with timeout(10):
                 result = await self.service_queue.get()
             self.service_queue.task_done()
             return json.loads(result)
@@ -429,7 +426,7 @@ class KernelRunner:
         )
         while True:
             try:
-                msg_type, msg_data = await self.output_stream.read()
+                msg_type, msg_data = await self.output_sock.recv_multipart()
                 # TODO: test if save-load runner states is working
                 #       by printing received messages here
                 if len(msg_data) > self.max_record_size:
@@ -482,7 +479,7 @@ class KernelRunner:
                     decoders[0].decode(b'', True)
                     decoders[1].decode(b'', True)
                     self.finished_at = time.monotonic()
-            except (asyncio.CancelledError, aiozmq.ZmqStreamClosed, GeneratorExit):
+            except (asyncio.CancelledError, GeneratorExit):
                 break
             except Exception:
                 log.exception('unexpected error')
