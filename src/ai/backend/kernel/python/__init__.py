@@ -92,15 +92,14 @@ class Runner(BaseRunner):
             return 127
 
     async def start_service(self, service_info):
-        print(service_info['name'])
         if service_info['name'] in ['jupyter', 'jupyterlab']:
             with tempfile.NamedTemporaryFile(
                     'w', encoding='utf-8', suffix='.py', delete=False) as config:
                 print('c.NotebookApp.allow_root = True', file=config)
                 print('c.NotebookApp.ip = "0.0.0.0"', file=config)
-                print('c.NotebookApp.port = {}'.format(service_info['port']),
-                      file=config)
+                print('c.NotebookApp.port = {}'.format(service_info['port']), file=config)
                 print('c.NotebookApp.token = ""', file=config)
+                print('c.FileContentsManager.delete_to_trash = False', file=config)
             jupyter_service_type = service_info['name']
             if jupyter_service_type == 'jupyter':
                 jupyter_service_type = 'notebook'

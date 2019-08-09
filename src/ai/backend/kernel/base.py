@@ -397,6 +397,7 @@ class BaseRunner(ABC):
             if service_info['name'] in self.services_running:
                 result = {'status': 'running'}
                 return
+            print(f"starting service {service_info['name']}")
             cmdargs, env = await self.start_service(service_info)
             if cmdargs is None:
                 log.warning('The service {0} is not supported.',
