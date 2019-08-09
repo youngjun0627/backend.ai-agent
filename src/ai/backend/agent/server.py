@@ -32,7 +32,7 @@ import click
 from setproctitle import setproctitle
 import snappy
 import trafaret as t
-# import uvloop
+import uvloop
 import zmq
 import zmq.asyncio
 
@@ -1889,6 +1889,7 @@ def main(cli_ctx, config_path, debug):
             t.Key('pid-file', default=os.devnull): tx.Path(type='file',
                                                            allow_nonexisting=True,
                                                            allow_devnull=True),
+            t.Key('event-loop', default='asyncio'): t.Enum('asyncio', 'uvloop'),
         }).allow_extra('*'),
         t.Key('container'): t.Dict({
             t.Key('kernel-uid', default=-1): tx.UserID,
@@ -1975,7 +1976,9 @@ def main(cli_ctx, config_path, debug):
                 if debug:
                     log_config.debug('debug mode enabled.')
 
-                # uvloop.install()
+                if cfg['agent']['event-loop'] == 'uvloop':
+                    uvloop.install()
+                    log.info('Using uvloop as the event loop backend')
                 aiotools.start_server(server_main, num_workers=1,
                                       use_threading=True, args=(cfg, ))
                 log.info('exit.')

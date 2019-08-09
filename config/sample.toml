@@ -29,6 +29,12 @@ scaling-group = "default"
 # If set to an empty string, it does NOT create the PID file.
 # pid-file = "./agent.pid"             # env: BACKEND_PID_FILE
 
+# One of: "asyncio", "uvloop"
+# This changes the event loop backend.
+# uvloop is a fast libuv-based implementation but sometimes has
+# compatibility issues.
+# event-loop = "asyncio"
+
 
 [container]
 # The port range to expose public service ports.
