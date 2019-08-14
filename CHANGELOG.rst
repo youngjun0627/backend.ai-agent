@@ -1,6 +1,19 @@
 Changes
 =======
 
+19.09.0b4 (2019-08-14)
+----------------------
+
+* FIX: Disable trash bins in the Jupyter browsers (lablup/backend.ai#45)
+
+* FIX: Revert "net.netfilter.nf_conntrack_tcp_timeout_established" in the recommended kernel parameters
+  to the Linux kernel's default (5 days = 432000 seconds). (lablup/backend.ai#46)
+
+* CHANGE: The CPU overcommit factor (previously fixed to 2) is now adjustable by the environment variable
+  "BACKEND_CPU_OVERCOMMIT_FACTOR" and the dfault is now 1.
+
+* NEW: Add an option to change the underlying event loop implementation.
+
 19.09.0b3 (2019-08-05)
 ----------------------
 
@@ -75,6 +88,11 @@ Changes
 
 - Make it possible to use specific IP address ranges for public ports of kernel containers.
   (lablup/backend.ai#37)
+
+19.03.4 (2019-08-14)
+--------------------
+
+- Fix inability to delete files in the Jupyter file browser running in containers.
 
 19.03.3 (2019-07-12)
 --------------------
