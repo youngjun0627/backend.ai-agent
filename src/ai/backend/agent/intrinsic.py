@@ -49,13 +49,15 @@ class CPUPlugin(AbstractComputePlugin):
     @classmethod
     async def list_devices(cls) -> Collection[CPUDevice]:
         num_cores = libnuma.get_available_cores()
+        overcommit_factor = int(os.environ.get('BACKEND_CPU_OVERCOMMIT_FACTOR', '1'))
+        assert 1 <= overcommit_factor <= 4
         return [
             CPUDevice(
                 device_id=str(core_idx),
                 hw_location='root',
                 numa_node=libnuma.node_of_cpu(core_idx),
                 memory_size=0,
-                processing_units=2,  # TODO: hyper-threading? / over-commit factor?
+                processing_units=1 * overcommit_factor,
             )
             for core_idx in sorted(num_cores)
         ]
