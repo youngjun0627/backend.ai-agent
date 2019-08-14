@@ -1,6 +1,11 @@
 Changes
 =======
 
+19.03.4 (2019-08-14)
+--------------------
+
+- Fix inability to delete files in the Jupyter file browser running in containers.
+
 19.03.3 (2019-07-12)
 --------------------
 
