@@ -1807,6 +1807,11 @@ async def server_main(loop, pidx, _args):
         return_exceptions=True,
     )
 
+    if not config['agent']['id']:
+        config['agent']['id'] = await identity.get_instance_id()
+    if not config['agent']['instance-type']:
+        config['agent']['instance-type'] = await identity.get_instance_type()
+
     etcd_credentials = None
     if config['etcd']['user']:
         etcd_credentials = {
@@ -1823,10 +1828,6 @@ async def server_main(loop, pidx, _args):
                      scope_prefix_map,
                      credentials=etcd_credentials)
 
-    if not config['agent']['id']:
-        config['agent']['id'] = await identity.get_instance_id()
-    if not config['agent']['instance-type']:
-        config['agent']['instance-type'] = await identity.get_instance_type()
     rpc_addr = config['agent']['rpc-listen-addr']
     if not rpc_addr.host:
         subnet_hint = await etcd.get('config/network/subnet/agent')
