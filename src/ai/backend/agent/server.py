@@ -944,11 +944,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
         mounts = [
-            Mount(MountTypes.BIND, config_dir, '/home/config', MountPermission.READ_ONLY),
-            Mount(MountTypes.BIND, work_dir, '/home/work/', MountPermission.READ_WRITE),
+            Mount(MountTypes.BIND, config_dir, '/home/config',
+                  MountPermission.READ_ONLY),
+            Mount(MountTypes.BIND, work_dir, '/home/work/',
+                  MountPermission.READ_WRITE),
         ]
-        if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
-            mounts.append(Mount(MountTypes.BIND, tmp_dir, '/tmp', MountPermission.READ_WRITE))
+        if (sys.platform.startswith('linux') and
+            self.config['container']['scratch-type'] == 'memory'):
+            mounts.append(Mount(MountTypes.BIND, tmp_dir, '/tmp',
+                                MountPermission.READ_WRITE))
         mounts.extend(Mount(MountTypes.VOLUME, v.name, v.container_path, v.mode)
                       for v in extra_mount_list)
 
@@ -1056,7 +1060,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
 
-        _mount(MountTypes.VOLUME, f'backendai-krunner.{distro}', '/opt/backend.ai')
+        krunner_volume = self.config['container']['krunner-volumes'].get(distro)
+        if krunner_volume is None:
+            raise RuntimeError(f'Cannot run container based on {distro}')
+        _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
                                 '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
         _mount(MountTypes.BIND, helpers_pkg_path.resolve(),
@@ -1112,7 +1119,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             pass
         else:
             os.makedirs(scratch_dir, exist_ok=True)
-            if sys.platform.startswith('linux') and self.config['container']['scratch-type'] == 'memory':
+            if (sys.platform.startswith('linux') and
+                self.config['container']['scratch-type'] == 'memory'):
                 os.makedirs(tmp_dir, exist_ok=True)
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
@@ -1264,7 +1272,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
         except Exception:
             # Oops, we have to restore the allocated resources!
-            if sys.platform.startswith('linux') and self.config['container']['scratch-type'] == 'memory':
+            if (sys.platform.startswith('linux') and
+                self.config['container']['scratch-type'] == 'memory'):
                 await destroy_scratch_filesystem(scratch_dir)
                 await destroy_scratch_filesystem(tmp_dir)
                 shutil.rmtree(tmp_dir)
@@ -1741,7 +1750,8 @@ print(json.dumps(files))''' % {'path': path}
             scratch_dir = self.config['container']['scratch-root'] / kernel_id
             tmp_dir = self.config['container']['scratch-root'] / f'{kernel_id}_tmp'
             try:
-                if sys.platform.startswith('linux') and self.config['container']['scratch-type'] == 'memory':
+                if (sys.platform.startswith('linux') and
+                    self.config['container']['scratch-type'] == 'memory'):
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
                     shutil.rmtree(tmp_dir)
@@ -1804,12 +1814,21 @@ async def server_main(loop, pidx, _args):
     config = _args[0]
 
     log.info('Preparing kernel runner environments...')
-    await asyncio.gather(
-        prepare_krunner_env('alpine3.8'),
-        prepare_krunner_env('ubuntu16.04'),
-        prepare_krunner_env('centos7.6'),
-        return_exceptions=True,
-    )
+    supported_distros = ['alpine3.8', 'ubuntu16.04', 'centos7.6']
+    krunner_volumes = {
+        k: v for k, v in zip(supported_distros, await asyncio.gather(
+            *[
+                prepare_krunner_env(distro)
+                for distro in supported_distros
+            ],
+            return_exceptions=True,
+        ))
+    }
+    for distro, result in krunner_volumes.items():
+        if isinstance(result, Exception):
+            log.error('Loading krunner for {} failed: {}', distro, result)
+            raise click.Abort()
+    config['container']['krunner-volumes'] = krunner_volumes
 
     if not config['agent']['id']:
         config['agent']['id'] = await identity.get_instance_id()
@@ -1893,7 +1912,8 @@ def main(cli_ctx, config_path, debug):
 
     agent_config_iv = t.Dict({
         t.Key('agent'): t.Dict({
-            t.Key('rpc-listen-addr', default=('', 6001)): tx.HostPortPair(allow_blank_host=True),
+            t.Key('rpc-listen-addr', default=('', 6001)):
+                tx.HostPortPair(allow_blank_host=True),
             t.Key('id', default=None): t.Null | t.String,
             t.Key('region', default=None): t.Null | t.String,
             t.Key('instance-type', default=None): t.Null | t.String,
@@ -1908,11 +1928,13 @@ def main(cli_ctx, config_path, debug):
             t.Key('kernel-gid', default=-1): tx.GroupID,
             t.Key('kernel-host', default=''): t.String(allow_blank=True),
             t.Key('port-range', default=(30000, 31000)): tx.PortRange,
-            t.Key('stats-type', default='docker'): t.Null | t.Enum(*[e.value for e in StatModes]),
+            t.Key('stats-type', default='docker'):
+                t.Null | t.Enum(*[e.value for e in StatModes]),
             t.Key('sandbox-type', default='docker'): t.Enum('docker', 'jail'),
             t.Key('jail-args', default=[]): t.List(t.String),
             t.Key('scratch-type'): t.Enum('hostdir', 'memory'),
-            t.Key('scratch-root', default='./scratches'): tx.Path(type='dir', auto_create=True),
+            t.Key('scratch-root', default='./scratches'):
+                tx.Path(type='dir', auto_create=True),
             t.Key('scratch-size', default='0'): tx.BinarySize,
         }).allow_extra('*'),
         t.Key('logging'): t.Any,  # checked in ai.backend.common.logging
@@ -1926,9 +1948,12 @@ def main(cli_ctx, config_path, debug):
             t.Key('skip-container-deletion', default=False): t.Bool,
             t.Key('coredump', default=coredump_defaults): t.Dict({
                 t.Key('enabled', default=coredump_defaults['enabled']): t.Bool,
-                t.Key('path', default=coredump_defaults['path']): tx.Path(type='dir', auto_create=True),
-                t.Key('backup-count', default=coredump_defaults['backup-count']): t.Int[1:],
-                t.Key('size-limit', default=coredump_defaults['size-limit']): tx.BinarySize,
+                t.Key('path', default=coredump_defaults['path']):
+                    tx.Path(type='dir', auto_create=True),
+                t.Key('backup-count', default=coredump_defaults['backup-count']):
+                    t.Int[1:],
+                t.Key('size-limit', default=coredump_defaults['size-limit']):
+                    tx.BinarySize,
             }).allow_extra('*'),
         }).allow_extra('*'),
     }).merge(config.etcd_config_iv).allow_extra('*')
@@ -1946,8 +1971,10 @@ def main(cli_ctx, config_path, debug):
     config.override_with_env(raw_cfg, ('agent', 'rpc-listen-addr', 'port'),
                              'BACKEND_AGENT_PORT')
     config.override_with_env(raw_cfg, ('agent', 'pid-file'), 'BACKEND_PID_FILE')
-    config.override_with_env(raw_cfg, ('container', 'port-range'), 'BACKEND_CONTAINER_PORT_RANGE')
-    config.override_with_env(raw_cfg, ('container', 'kernel-host'), 'BACKEND_KERNEL_HOST_OVERRIDE')
+    config.override_with_env(raw_cfg, ('container', 'port-range'),
+                             'BACKEND_CONTAINER_PORT_RANGE')
+    config.override_with_env(raw_cfg, ('container', 'kernel-host'),
+                             'BACKEND_KERNEL_HOST_OVERRIDE')
     config.override_with_env(raw_cfg, ('container', 'sandbox-type'), 'BACKEND_SANDBOX_TYPE')
     config.override_with_env(raw_cfg, ('container', 'scratch-root'), 'BACKEND_SCRATCH_ROOT')
     if debug:
@@ -1985,7 +2012,8 @@ def main(cli_ctx, config_path, debug):
 
         if cfg['debug']['coredump']['enabled']:
             if not sys.platform.startswith('linux'):
-                print('ConfigurationError: Storing container coredumps is only supported in Linux.',
+                print('ConfigurationError: '
+                      'Storing container coredumps is only supported in Linux.',
                       file=sys.stderr)
                 raise click.Abort()
             core_pattern = Path('/proc/sys/kernel/core_pattern').read_text().strip()
