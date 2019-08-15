@@ -93,14 +93,30 @@ async def handle_shutdown(request: web.Request) -> web.Response:
     })
 
 
-async def handle_start(request: web.Request) -> web.Response:
-    global shutdown_enabled
+async def handle_agent_start(request: web.Request) -> web.Response:
     svc = request.app['config']['watcher']['target-service']
     proc = await asyncio.create_subprocess_exec(
         *['systemctl', 'start', svc])
     await proc.wait()
-    shutdown_enabled = False
-    signal.alarm(1)
+    return web.json_response({
+        'result': 'ok',
+    })
+
+
+async def handle_agent_stop(request: web.Request) -> web.Response:
+    svc = request.app['config']['watcher']['target-service']
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'stop', svc])
+    await proc.wait()
+    return web.json_response({
+        'result': 'ok',
+    })
+
+async def handle_agent_restart(request: web.Request) -> web.Response:
+    svc = request.app['config']['watcher']['target-service']
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'restart', svc])
+    await proc.wait()
     return web.json_response({
         'result': 'ok',
     })
@@ -113,7 +129,9 @@ async def init_app(app):
         r('POST', '/soft-reset', handle_soft_reset)
     r('POST', '/hard-reset', handle_hard_reset)
     r('POST', '/shutdown', handle_shutdown)
-    r('POST', '/start', handle_start)
+    r('POST', '/agent/start', handle_agent_start)
+    r('POST', '/agent/stop', handle_agent_stop)
+    r('POST', '/agent/restart', handle_agent_restart)
 
 
 async def shutdown_app(app):
