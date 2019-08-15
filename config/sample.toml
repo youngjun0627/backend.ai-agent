@@ -179,8 +179,32 @@ reserved-disk = "8G"
 
 
 [debug]
+# Enable or disable the debug-level logging.
+enabled = false
+
 # If set true, it does not actually delete the containers after they terminate or are terminated
-# so that developers can inspect the contaienr logs.
+# so that developers can inspect the container logs.
 # This is useful for debugging errors that make containers to terminate immediately after kernel
-# launches, such as jail bugs.
+# launches, due to bugs in initialization steps such as jail.
 skip-container-deletion = false
+
+[debug.coredump]
+# If set true, enable coredumps in containers. Only supported in Linux.
+# (This option is not related to the agent itself.)
+# IMPORTANT: You must set /proc/sys/kernel/core_pattern to an absolute path which is available
+#            inside both the host and containers.
+#            If the system's core_pattern is set to a pipe (e.g., appport) or a relative path,
+#            the agent will report a configuration error upon startup.
+enabled = false
+
+# Set a host directory to store coredumps, which will be auto-created.
+# Inside the directory, coredumps are saved at container-ID-prefixed directories.
+# It will be mounted as the parent directory of /proc/sys/kernel/core_pattern
+path = "/var/crash/backend.ai"
+
+# Set the maximum number of recent container coredumps in the coredump directory.
+# Oldest coredumps are deleted if there is more than this number of coredumps.
+backup-count = 10
+
+# Set the maximum size of coredumps from containers.
+size-limit = "64M"

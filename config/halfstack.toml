@@ -68,3 +68,9 @@ reserved-disk = "8G"
 [debug]
 enabled = true
 skip-container-deletion = false
+
+[debug.coredump]
+enabled = true
+path = "./coredumps"
+backup-count = 10
+szie-limit = "64M"

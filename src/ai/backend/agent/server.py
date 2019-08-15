@@ -1078,6 +1078,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         _mount(MountTypes.BIND, font_italic_path.resolve(),
                                 '/home/work/.jupyter/custom/roboto-italic.ttf')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
+        if self.config['debug']['coredump']['enabled']:
+            _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
+                                    self.config['debug']['coredump']['core_path'],
+                                    perm='rw')
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args = {}
@@ -1108,7 +1112,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             pass
         else:
             os.makedirs(scratch_dir, exist_ok=True)
-            if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
+            if sys.platform.startswith('linux') and self.config['container']['scratch-type'] == 'memory':
                 os.makedirs(tmp_dir, exist_ok=True)
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
@@ -1260,7 +1264,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             raise
         except Exception:
             # Oops, we have to restore the allocated resources!
-            if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
+            if sys.platform.startswith('linux') and self.config['container']['scratch-type'] == 'memory':
                 await destroy_scratch_filesystem(scratch_dir)
                 await destroy_scratch_filesystem(tmp_dir)
                 shutil.rmtree(tmp_dir)
@@ -1737,7 +1741,7 @@ print(json.dumps(files))''' % {'path': path}
             scratch_dir = self.config['container']['scratch-root'] / kernel_id
             tmp_dir = self.config['container']['scratch-root'] / f'{kernel_id}_tmp'
             try:
-                if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
+                if sys.platform.startswith('linux') and self.config['container']['scratch-type'] == 'memory':
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
                     shutil.rmtree(tmp_dir)
@@ -1880,6 +1884,13 @@ async def server_main(loop, pidx, _args):
 @click.pass_context
 def main(cli_ctx, config_path, debug):
 
+    coredump_defaults = {
+        'enabled': False,
+        'path': './coredumps',
+        'backup-count': 10,
+        'size-limit': '64M',
+    }
+
     agent_config_iv = t.Dict({
         t.Key('agent'): t.Dict({
             t.Key('rpc-listen-addr', default=('', 6001)): tx.HostPortPair(allow_blank_host=True),
@@ -1913,6 +1924,12 @@ def main(cli_ctx, config_path, debug):
         t.Key('debug'): t.Dict({
             t.Key('enabled', default=False): t.Bool,
             t.Key('skip-container-deletion', default=False): t.Bool,
+            t.Key('coredump', default=coredump_defaults): t.Dict({
+                t.Key('enabled', default=coredump_defaults['enabled']): t.Bool,
+                t.Key('path', default=coredump_defaults['path']): tx.Path(type='dir', auto_create=True),
+                t.Key('backup-count', default=coredump_defaults['backup-count']): t.Int[1:],
+                t.Key('size-limit', default=coredump_defaults['size-limit']): tx.BinarySize,
+            }).allow_extra('*'),
         }).allow_extra('*'),
     }).merge(config.etcd_config_iv).allow_extra('*')
 
@@ -1947,14 +1964,15 @@ def main(cli_ctx, config_path, debug):
             pprint(cfg)
         cfg['_src'] = cfg_src_path
     except config.ConfigurationError as e:
-        print('Validation of agent configuration has failed:', file=sys.stderr)
+        print('ConfigurationError: Validation of agent configuration has failed:', file=sys.stderr)
         print(pformat(e.invalid_data), file=sys.stderr)
         raise click.Abort()
 
     rpc_host = cfg['agent']['rpc-listen-addr'].host
     if (isinstance(rpc_host, BaseIPAddress) and
         (rpc_host.is_unspecified or rpc_host.is_link_local)):
-        print('Cannot use link-local or unspecified IP address as the RPC listening host.',
+        print('ConfigurationError: '
+              'Cannot use link-local or unspecified IP address as the RPC listening host.',
               file=sys.stderr)
         raise click.Abort()
 
@@ -1964,6 +1982,21 @@ def main(cli_ctx, config_path, debug):
         raise click.Abort()
 
     if cli_ctx.invoked_subcommand is None:
+
+        if cfg['debug']['coredump']['enabled']:
+            if not sys.platform.startswith('linux'):
+                print('ConfigurationError: Storing container coredumps is only supported in Linux.',
+                      file=sys.stderr)
+                raise click.Abort()
+            core_pattern = Path('/proc/sys/kernel/core_pattern').read_text().strip()
+            if core_pattern.startswith('|') or not core_pattern.startswith('/'):
+                print('ConfigurationError: '
+                      '/proc/sys/kernel/core_pattern must be an absolute path '
+                      'to enable container coredumps.',
+                      file=sys.stderr)
+                raise click.Abort()
+            cfg['debug']['coredump']['core_path'] = Path(core_pattern).parent
+
         cfg['agent']['pid-file'].write_text(str(os.getpid()))
         try:
             logger = Logger(cfg['logging'])
