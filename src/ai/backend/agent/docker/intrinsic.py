@@ -13,8 +13,9 @@ import psutil
 
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.utils import nmget
-from .resources import DiscretePropertyAllocMap, get_resource_spec_from_container
+from .resources import get_resource_spec_from_container
 from ..resources import (
+    DiscretePropertyAllocMap,
     AbstractComputeDevice,
     AbstractComputePlugin,
 )
