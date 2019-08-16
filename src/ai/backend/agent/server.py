@@ -1878,9 +1878,10 @@ async def server_main(loop, pidx, _args):
               help='Enable the debug mode and override the global log level to DEBUG.')
 @click.pass_context
 def main(cli_ctx, config_path, debug):
-
-    agent_config_iv = t.Dict({
+    
+    initial_config_iv = t.Dict({
         t.Key('agent'): t.Dict({
+            t.Key('mode'): t.Enum('docker', 'k8s'),
             t.Key('rpc-listen-addr', default=('', 6001)): tx.HostPortPair(allow_blank_host=True),
             t.Key('id', default=None): t.Null | t.String,
             t.Key('region', default=None): t.Null | t.String,
@@ -1915,8 +1916,39 @@ def main(cli_ctx, config_path, debug):
         }).allow_extra('*'),
     }).merge(config.etcd_config_iv).allow_extra('*')
 
+    k8s_extra_config_iv = t.Dict({
+        t.Key('registry'): t.Dict({
+            t.Key('type'): t.String
+        }).allow_extra('*'),
+        t.Key('baistatic'): t.Null | t.Dict({
+            t.Key('nfs-addr'): t.String,
+            t.Key('path'): t.String,
+            t.Key('capacity'): tx.BinarySize,
+            t.Key('options'): t.Null | t.String,
+            t.Key('mounted-at'): t.String
+        }),
+        t.Key('vfolder-pv'): t.Null | t.Dict({
+            t.Key('nfs-addr'): t.String,
+            t.Key('path'): t.String,
+            t.Key('capacity'): tx.BinarySize,
+            t.Key('options'): t.Null | t.String
+        }),
+    }).merge(initial_config_iv).allow_extra('*')
+
+    registry_local_config_iv = t.Dict({
+        t.Key('type'): t.String,
+        t.Key('addr'): tx.HostPortPair()
+    })
+
+    registry_ecr_config_iv = t.Dict({
+        t.Key('type'): t.String,
+        t.Key('profile'): t.String,
+        t.Key('registry-id'): t.String
+    })
+
     # Determine where to read configuration.
     raw_cfg, cfg_src_path = config.read_from_file(config_path, 'agent')
+
 
     # Override the read config with environment variables (for legacy).
     config.override_with_env(raw_cfg, ('etcd', 'namespace'), 'BACKEND_NAMESPACE')
@@ -1940,8 +1972,21 @@ def main(cli_ctx, config_path, debug):
     # Validate and fill configurations
     # (allow_extra will make configs to be forward-copmatible)
     try:
-        cfg = config.check(raw_cfg, agent_config_iv)
-        if 'debug'in cfg and cfg['debug']['enabled']:
+        cfg = config.check(raw_cfg, initial_config_iv)
+        if cfg['agent']['mode'] == 'k8s':
+            cfg = config.check(raw_cfg, k8s_extra_config_iv)
+            if cfg['registry']['type'] == 'local':
+                registry_target_config_iv = registry_local_config_iv
+            elif cfg['registry']['type'] == 'ecr':
+                registry_target_config_iv = registry_ecr_config_iv
+            else:
+                print('Validation of agent configuration has failed: registry type {} not supported'.format(cfg['registry']['type']), file=sys.stderr)
+                raise click.Abort()
+            
+            registry_cfg = config.check(cfg['registry'], registry_target_config_iv)
+            cfg['registry'] = registry_cfg
+    
+        if 'debug' in cfg and cfg['debug']['enabled']:
             print('== Agent configuration ==')
             pprint(cfg)
         cfg['_src'] = cfg_src_path
