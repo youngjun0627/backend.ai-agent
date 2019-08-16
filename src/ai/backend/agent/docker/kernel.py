@@ -16,6 +16,7 @@ from ..kernel import AbstractKernelRunner
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
+
 class KernelRunner(AbstractKernelRunner):
     def __init__(self, kernel_id,
                     kernel_host, repl_in_port, repl_out_port,
@@ -40,7 +41,6 @@ class KernelRunner(AbstractKernelRunner):
             self.watchdog_task = asyncio.ensure_future(self.watchdog())
         else:
             self.watchdog_task = None
-
 
 
 async def prepare_krunner_env(distro: str):

@@ -1,10 +1,8 @@
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from decimal import Decimal
-import json
 import logging
 from pathlib import Path
-import pkg_resources
 from typing import (
     Any, Container, Collection, Mapping, Sequence, Optional, Union,
 )
@@ -12,12 +10,11 @@ from typing import (
 import attr
 
 from ai.backend.common.types import (
-    BinarySize,
-    ResourceSlot, MountPermission, MountTypes,
+    MountPermission, MountTypes,
     DeviceId, SlotType, Allocation, ResourceAllocations,
 )
 from ai.backend.common.logging import BraceStyleAdapter
-from .exception import InsufficientResource, InitializationError
+from .exception import InsufficientResource
 from .stats import StatContext, NodeMeasurement, ContainerMeasurement
 
 
@@ -224,7 +221,7 @@ def bitmask2set(mask):
         mask = (mask >> 1)
         bpos += 1
     return frozenset(bset)
-    
+
 
 class DiscretePropertyAllocMap(AbstractAllocMap):
     '''
@@ -345,4 +342,3 @@ class FractionAllocMap(AbstractAllocMap):
         for slot_type, per_device_alloc in existing_alloc.items():
             for dev_id, alloc in per_device_alloc.items():
                 self.allocations[slot_type][dev_id] -= alloc
-

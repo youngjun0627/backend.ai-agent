@@ -17,6 +17,7 @@ import struct
 import subprocess
 import sys
 import time
+from typing import Mapping
 
 import aiohttp
 import aioredis
@@ -26,14 +27,12 @@ import attr
 import snappy
 import zmq
 
-from aiodocker.docker import Docker, DockerContainer
+from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
 
 from ai.backend.common import utils, msgpack
-from ai.backend.common import validators as tx
 from ai.backend.common.docker import ImageRef
-from ai.backend.common.etcd import ConfigScopes
-from ai.backend.common.logging import Logger, BraceStyleAdapter
+from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
 from ai.backend.common.plugin import install_plugins
 from ai.backend.common.types import (
@@ -61,8 +60,7 @@ from ..server import (
     max_upload_size,
     get_env_cid,
     get_extra_volumes,
-    parse_service_port,
-    redis_config_iv
+    parse_service_port
 )
 from ..stats import (
     StatContext, StatModes,
@@ -72,11 +70,11 @@ from ..utils import (
     current_loop, update_nested_dict,
     get_kernel_id_from_container,
     host_pid_to_container_pid,
-    container_pid_to_host_pid,
-    get_subnet_ip,
+    container_pid_to_host_pid
 )
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
+
 
 class AgentServer(AbstractAgentServer):
     def __init__(self, etcd, config, loop=None):
@@ -1441,4 +1439,3 @@ print(json.dumps(files))''' % {'path': path}
                         for kernel_id in kernel_ids]
             await asyncio.gather(*waiters)
             self.blocking_cleans.clear()
-        

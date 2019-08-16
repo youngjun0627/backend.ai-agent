@@ -6,12 +6,9 @@ import io
 import json
 import logging
 import time
-import pkg_resources
 import secrets
 
 from async_timeout import timeout
-from aiodocker.docker import Docker, DockerVolume
-from aiodocker.exceptions import DockerError
 import msgpack
 import zmq
 

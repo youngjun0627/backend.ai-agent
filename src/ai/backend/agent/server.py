@@ -4,63 +4,37 @@ from ipaddress import ip_network, _BaseAddress as BaseIPAddress
 import logging, logging.config
 import os, os.path
 from pathlib import Path
-import pkg_resources
 from pprint import pformat, pprint
 import signal
 import sys
 import time
 from typing import Collection
 
-from aiodocker.docker import Docker, DockerContainer
-from aiodocker.exceptions import DockerError
-import aiohttp
-import aioredis
+from aiodocker.docker import DockerContainer
 import aiotools
 import aiozmq, aiozmq.rpc
 from async_timeout import timeout
 import attr
 import click
 from setproctitle import setproctitle
-import snappy
 import trafaret as t
 import uvloop
 import zmq
 import zmq.asyncio
 
-from ai.backend.common import config, utils, identity, msgpack
+from ai.backend.common import config, utils, identity
 from ai.backend.common import validators as tx
-from ai.backend.common.docker import ImageRef
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
-from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
-from ai.backend.common.plugin import install_plugins
-from ai.backend.common.types import (
-    HostPortPair,
-    ResourceSlot,
-    MountPermission,
-    MountTypes,
-)
 from . import __version__ as VERSION
-from .exception import InitializationError, InsufficientResource
-from .stats import (
-    StatContext, StatModes,
-    spawn_stat_synchronizer, StatSyncState,
-)
+from .exception import InitializationError
+from .stats import StatModes
 from .resources import (
     AbstractComputeDevice,
     AbstractComputePlugin,
-    Mount,
     AbstractAllocMap,
 )
-from .kernel import KernelFeatures
-from .utils import (
-    current_loop, update_nested_dict,
-    get_kernel_id_from_container,
-    host_pid_to_container_pid,
-    container_pid_to_host_pid,
-    get_subnet_ip,
-)
-from .fs import create_scratch_filesystem, destroy_scratch_filesystem
+from .utils import get_subnet_ip
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
 
@@ -178,7 +152,7 @@ def update_last_used(meth):
 class AbstractAgentServer:
     async def init(self):
         pass
-    
+
     async def create_kernel(self, kernel_id: str, config: dict) -> dict:
         pass
 
@@ -193,9 +167,9 @@ class AbstractAgentServer:
 
     async def get_logs(self, kernel_id: str):
         pass
-    
+
     async def execute(self, api_version: int, kernel_id: str,
-                     run_id: t.String | t.Null, mode: str, code: str, 
+                     run_id: t.String | t.Null, mode: str, code: str,
                      opts: dict, flush_timeout: t.Float | t.Null) -> dict:
         pass
 
@@ -213,6 +187,7 @@ class AbstractAgentServer:
 
     async def shutdown(self, stop_signal):
         pass
+
 
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
@@ -232,7 +207,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     )
 
     def __init__(self, etcd, config, loop=None):
-        self.etcd = etcd 
+        self.etcd = etcd
         self.config = config
 
         self.agent = None
@@ -246,7 +221,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.detect_manager()
 
         await self.read_agent_config()
-        
+
         if self.config['agent']['mode'] == 'docker':
             from .docker.server import AgentServer
             self.agent = AgentServer(self.etcd, self.config, loop=None)
@@ -275,7 +250,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
                     manager_id = ev.value
                     break
         log.info('detecting the manager: OK ({0})', manager_id)
-    
+
     async def read_agent_config(self):
         # Fill up runtime configurations from etcd.
         redis_config = await self.etcd.get_prefix('config/redis')
@@ -298,7 +273,6 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         }
         log.info('configured vfolder mount base: {0}', self.config['vfolder']['mount'])
         log.info('configured vfolder fs prefix: {0}', self.config['vfolder']['fsprefix'])
-    
 
     async def shutdown(self, stop_signal):
         # Stop receiving further requests.
@@ -307,10 +281,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
             await self.rpc_server.wait_closed()
 
         await self.agent.shutdown(stop_signal)
-    
+
     async def update_status(self, status):
         await self.etcd.put('', status, scope=ConfigScopes.NODE)
-        
+
     @aiotools.actxmgr
     async def handle_rpc_exception(self):
         try:
@@ -464,6 +438,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         # TODO: implement
         log.debug('rpc::shutdown_agent()')
         pass
+
     @aiozmq.rpc.method
     async def reset_agent(self):
         log.debug('rpc::reset()')
@@ -530,7 +505,7 @@ async def server_main(loop, pidx, _args):
         if subnet_hint is not None:
             subnet_hint = ip_network(subnet_hint)
         log.debug('auto-detecting agent host')
-        config['agent']['rpc-listen-addr'] = HostPortPair(
+        config['agent']['rpc-listen-addr'] = tx.HostPortPair(
             await identity.get_instance_ip(subnet_hint),
             rpc_addr.port,
         )
@@ -575,7 +550,7 @@ async def server_main(loop, pidx, _args):
               help='Enable the debug mode and override the global log level to DEBUG.')
 @click.pass_context
 def main(cli_ctx, config_path, debug):
-    
+
     initial_config_iv = t.Dict({
         t.Key('agent'): t.Dict({
             t.Key('mode'): t.Enum('docker', 'k8s'),
@@ -646,7 +621,6 @@ def main(cli_ctx, config_path, debug):
     # Determine where to read configuration.
     raw_cfg, cfg_src_path = config.read_from_file(config_path, 'agent')
 
-
     # Override the read config with environment variables (for legacy).
     config.override_with_env(raw_cfg, ('etcd', 'namespace'), 'BACKEND_NAMESPACE')
     config.override_with_env(raw_cfg, ('etcd', 'addr'), 'BACKEND_ETCD_ADDR')
@@ -677,12 +651,13 @@ def main(cli_ctx, config_path, debug):
             elif cfg['registry']['type'] == 'ecr':
                 registry_target_config_iv = registry_ecr_config_iv
             else:
-                print('Validation of agent configuration has failed: registry type {} not supported'.format(cfg['registry']['type']), file=sys.stderr)
+                print('Validation of agent configuration has failed: registry type {} not supported'
+                    .format(cfg['registry']['type']), file=sys.stderr)
                 raise click.Abort()
-            
+
             registry_cfg = config.check(cfg['registry'], registry_target_config_iv)
             cfg['registry'] = registry_cfg
-    
+
         if 'debug' in cfg and cfg['debug']['enabled']:
             print('== Agent configuration ==')
             pprint(cfg)

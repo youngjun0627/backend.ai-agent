@@ -5,16 +5,14 @@ import json
 import logging
 from pathlib import Path
 import pkg_resources
-from typing import (
-    Any, Container, Collection, Mapping, Sequence, Optional, Union,
-)
+from typing import Sequence
 
 import attr
 
 from ai.backend.common.logging import BraceStyleAdapter
-from ai.backend.common.types import Allocation, BinarySize, ResourceAllocations, ResourceSlot, SlotType
-from ..exception import InsufficientResource, InitializationError
-from ..resources import AbstractAllocMap, Mount
+from ai.backend.common.types import BinarySize, ResourceAllocations, ResourceSlot
+from ..exception import InitializationError
+from ..resources import Mount
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
 
@@ -97,7 +95,7 @@ class KernelResourceSpec:
                         pieces.append(f'{dev_id}:{alloc}')
                 alloc_str = ','.join(pieces)
                 resource_str += f'{slot_type.upper()}_SHARES={alloc_str}\n'
-        
+
         return resource_str
 
     @classmethod
@@ -139,7 +137,7 @@ class KernelResourceSpec:
             mounts=mounts,
             idle_timeout=int(kvpairs.get('IDLE_TIMEOUT', '600')),
         )
-            
+
     @classmethod
     def read_from_file(cls, file: io.TextIOBase):
         '''
