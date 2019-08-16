@@ -6,6 +6,9 @@ password = ""				    # env: BACKEND_ETCD_PASSWORD
 
 
 [agent]
+# Agent mode; required
+mode = "docker"
+
 # Change the reported host/address of the agent.
 # The manager will use this value to connect to the agent.
 # If host is an empty string, the agent tries to auto-detect it with a fallback to "127.0.0.1".
