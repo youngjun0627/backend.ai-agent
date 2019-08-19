@@ -1,6 +1,20 @@
 Changes
 =======
 
+19.09.0b5 (2019-08-19)
+----------------------
+
+* NEW: Add support for watcher information reports (#107)
+
+* Improve versioning of krunner volumes not to interfere with running containers
+  when upgraded (#120)
+
+* Add support for getting core dumps inside container as configuration options (#114)
+
+* Fix missing instance ID for configuration scope maps (#127)
+
+* Pin the pyzmq version to 18.1.0 (lablup/backend.ai#47)
+
 19.09.0b4 (2019-08-14)
 ----------------------
 
