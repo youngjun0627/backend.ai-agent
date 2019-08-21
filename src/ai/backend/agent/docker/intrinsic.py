@@ -13,19 +13,19 @@ import psutil
 
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.utils import nmget
-from .resources import (
+from .resources import get_resource_spec_from_container
+from ..resources import (
+    DiscretePropertyAllocMap,
     AbstractComputeDevice,
     AbstractComputePlugin,
-    DiscretePropertyAllocMap,
-    get_resource_spec_from_container,
 )
-from . import __version__
-from .stats import (
+from .. import __version__
+from ..stats import (
     StatContext, NodeMeasurement, ContainerMeasurement,
     StatModes, MetricTypes, Measurement,
 )
-from .utils import read_sysfs, current_loop
-from .vendor.linux import libnuma
+from ..utils import read_sysfs, current_loop
+from ..vendor.linux import libnuma
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.intrinsic'))
 
