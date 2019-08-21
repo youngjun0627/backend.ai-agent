@@ -28,7 +28,16 @@ shutdown_enabled = False
 async def auth_middleware(request, handler):
     token = request.headers.get('X-BackendAI-Watcher-Token', None)
     if token == request.app['token']:
-        return (await handler(request))
+        try:
+            return (await handler(request))
+        except FileNotFoundError as e:
+            log.info(repr(e))
+            message = 'Agent is not loaded with systemctl.'
+            return web.json_response({'message': message}, status=200)
+        except Exception as e:
+            log.exception(repr(e))
+            raise
+    log.info('invalid requested token')
     return web.HTTPForbidden()
 
 
@@ -84,6 +93,35 @@ async def handle_shutdown(request: web.Request) -> web.Response:
     })
 
 
+async def handle_agent_start(request: web.Request) -> web.Response:
+    svc = request.app['config']['watcher']['target-service']
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'start', svc])
+    await proc.wait()
+    return web.json_response({
+        'result': 'ok',
+    })
+
+
+async def handle_agent_stop(request: web.Request) -> web.Response:
+    svc = request.app['config']['watcher']['target-service']
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'stop', svc])
+    await proc.wait()
+    return web.json_response({
+        'result': 'ok',
+    })
+
+async def handle_agent_restart(request: web.Request) -> web.Response:
+    svc = request.app['config']['watcher']['target-service']
+    proc = await asyncio.create_subprocess_exec(
+        *['systemctl', 'restart', svc])
+    await proc.wait()
+    return web.json_response({
+        'result': 'ok',
+    })
+
+
 async def init_app(app):
     r = app.router.add_route
     r('GET', '/', handle_status)
@@ -91,6 +129,9 @@ async def init_app(app):
         r('POST', '/soft-reset', handle_soft_reset)
     r('POST', '/hard-reset', handle_hard_reset)
     r('POST', '/shutdown', handle_shutdown)
+    r('POST', '/agent/start', handle_agent_start)
+    r('POST', '/agent/stop', handle_agent_stop)
+    r('POST', '/agent/restart', handle_agent_restart)
 
 
 async def shutdown_app(app):

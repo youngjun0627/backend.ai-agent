@@ -495,10 +495,6 @@ async def server_main(loop, pidx, _args):
                      scope_prefix_map,
                      credentials=etcd_credentials)
 
-    if not config['agent']['id']:
-        config['agent']['id'] = await identity.get_instance_id()
-    if not config['agent']['instance-type']:
-        config['agent']['instance-type'] = await identity.get_instance_type()
     rpc_addr = config['agent']['rpc-listen-addr']
     if not rpc_addr.host:
         subnet_hint = await etcd.get('config/network/subnet/agent')
@@ -569,11 +565,13 @@ def main(cli_ctx, config_path, debug):
             t.Key('kernel-gid', default=-1): tx.GroupID,
             t.Key('kernel-host', default=''): t.String(allow_blank=True),
             t.Key('port-range', default=(30000, 31000)): tx.PortRange,
-            t.Key('stats-type', default='docker'): t.Null | t.Enum(*[e.value for e in StatModes]),
+            t.Key('stats-type', default='docker'):
+                t.Null | t.Enum(*[e.value for e in StatModes]),
             t.Key('sandbox-type', default='docker'): t.Enum('docker', 'jail'),
             t.Key('jail-args', default=[]): t.List(t.String),
             t.Key('scratch-type'): t.Enum('hostdir', 'memory'),
-            t.Key('scratch-root', default='./scratches'): tx.Path(type='dir', auto_create=True),
+            t.Key('scratch-root', default='./scratches'):
+                tx.Path(type='dir', auto_create=True),
             t.Key('scratch-size', default='0'): tx.BinarySize,
         }).allow_extra('*'),
         t.Key('logging'): t.Any,  # checked in ai.backend.common.logging
@@ -585,6 +583,15 @@ def main(cli_ctx, config_path, debug):
         t.Key('debug'): t.Dict({
             t.Key('enabled', default=False): t.Bool,
             t.Key('skip-container-deletion', default=False): t.Bool,
+            t.Key('coredump', default=coredump_defaults): t.Dict({
+                t.Key('enabled', default=coredump_defaults['enabled']): t.Bool,
+                t.Key('path', default=coredump_defaults['path']):
+                    tx.Path(type='dir', auto_create=True),
+                t.Key('backup-count', default=coredump_defaults['backup-count']):
+                    t.Int[1:],
+                t.Key('size-limit', default=coredump_defaults['size-limit']):
+                    tx.BinarySize,
+            }).allow_extra('*'),
         }).allow_extra('*'),
     }).merge(config.etcd_config_iv).allow_extra('*')
 
@@ -631,8 +638,10 @@ def main(cli_ctx, config_path, debug):
     config.override_with_env(raw_cfg, ('agent', 'rpc-listen-addr', 'port'),
                              'BACKEND_AGENT_PORT')
     config.override_with_env(raw_cfg, ('agent', 'pid-file'), 'BACKEND_PID_FILE')
-    config.override_with_env(raw_cfg, ('container', 'port-range'), 'BACKEND_CONTAINER_PORT_RANGE')
-    config.override_with_env(raw_cfg, ('container', 'kernel-host'), 'BACKEND_KERNEL_HOST_OVERRIDE')
+    config.override_with_env(raw_cfg, ('container', 'port-range'),
+                             'BACKEND_CONTAINER_PORT_RANGE')
+    config.override_with_env(raw_cfg, ('container', 'kernel-host'),
+                             'BACKEND_KERNEL_HOST_OVERRIDE')
     config.override_with_env(raw_cfg, ('container', 'sandbox-type'), 'BACKEND_SANDBOX_TYPE')
     config.override_with_env(raw_cfg, ('container', 'scratch-root'), 'BACKEND_SCRATCH_ROOT')
     if debug:
@@ -663,14 +672,15 @@ def main(cli_ctx, config_path, debug):
             pprint(cfg)
         cfg['_src'] = cfg_src_path
     except config.ConfigurationError as e:
-        print('Validation of agent configuration has failed:', file=sys.stderr)
+        print('ConfigurationError: Validation of agent configuration has failed:', file=sys.stderr)
         print(pformat(e.invalid_data), file=sys.stderr)
         raise click.Abort()
 
     rpc_host = cfg['agent']['rpc-listen-addr'].host
     if (isinstance(rpc_host, BaseIPAddress) and
         (rpc_host.is_unspecified or rpc_host.is_link_local)):
-        print('Cannot use link-local or unspecified IP address as the RPC listening host.',
+        print('ConfigurationError: '
+              'Cannot use link-local or unspecified IP address as the RPC listening host.',
               file=sys.stderr)
         raise click.Abort()
 
@@ -680,6 +690,22 @@ def main(cli_ctx, config_path, debug):
         raise click.Abort()
 
     if cli_ctx.invoked_subcommand is None:
+
+        if cfg['debug']['coredump']['enabled']:
+            if not sys.platform.startswith('linux'):
+                print('ConfigurationError: '
+                      'Storing container coredumps is only supported in Linux.',
+                      file=sys.stderr)
+                raise click.Abort()
+            core_pattern = Path('/proc/sys/kernel/core_pattern').read_text().strip()
+            if core_pattern.startswith('|') or not core_pattern.startswith('/'):
+                print('ConfigurationError: '
+                      '/proc/sys/kernel/core_pattern must be an absolute path '
+                      'to enable container coredumps.',
+                      file=sys.stderr)
+                raise click.Abort()
+            cfg['debug']['coredump']['core_path'] = Path(core_pattern).parent
+
         cfg['agent']['pid-file'].write_text(str(os.getpid()))
         try:
             logger = Logger(cfg['logging'])
