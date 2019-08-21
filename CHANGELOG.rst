@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.09.0b7 (xxxx-xx-xx)
+----------------------
+
+* CHANGE: Internally restructured the codebase so that we can add different agent implementations
+  easily in the future.  Kubernetes support is coming soon! (#125)
+
+
 19.09.0b6 (2019-08-21)
 ----------------------
 
