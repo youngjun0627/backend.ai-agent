@@ -26,6 +26,7 @@ from ai.backend.common import config, utils, identity
 from ai.backend.common import validators as tx
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
+from ai.backend.common.types import HostPortPair
 from . import __version__ as VERSION
 from .exception import InitializationError
 from .stats import StatModes
@@ -501,7 +502,7 @@ async def server_main(loop, pidx, _args):
         if subnet_hint is not None:
             subnet_hint = ip_network(subnet_hint)
         log.debug('auto-detecting agent host')
-        config['agent']['rpc-listen-addr'] = tx.HostPortPair(
+        config['agent']['rpc-listen-addr'] = HostPortPair(
             await identity.get_instance_ip(subnet_hint),
             rpc_addr.port,
         )
