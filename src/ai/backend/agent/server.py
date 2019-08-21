@@ -547,6 +547,13 @@ async def server_main(loop, pidx, _args):
 @click.pass_context
 def main(cli_ctx, config_path, debug):
 
+    coredump_defaults = {
+        'enabled': False,
+        'path': './coredumps',
+        'backup-count': 10,
+        'size-limit': '64M',
+    }
+
     initial_config_iv = t.Dict({
         t.Key('agent'): t.Dict({
             t.Key('mode'): t.Enum('docker', 'k8s'),
