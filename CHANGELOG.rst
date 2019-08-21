@@ -1,6 +1,12 @@
 Changes
 =======
 
+19.09.0b6 (2019-08-21)
+----------------------
+
+* CHANGE: Reduce the default websocket ping interval of Jupyter notebooks to 10 seconds
+  to prevent intermittent connection losts in specific browser environments. (#131)
+
 19.09.0b5 (2019-08-19)
 ----------------------
 
