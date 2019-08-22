@@ -970,7 +970,7 @@ class AgentServer(AbstractAgentServer):
         try:
             cid = self.container_registry[kernel_id]['container_id']
         except KeyError:
-            log.warning('_destroy_kernel({0}) kernel missing (already dead?)',
+            log.warning('destroy_kernel({0}) kernel missing (already dead?)',
                         kernel_id)
 
             async def force_cleanup():
@@ -1003,10 +1003,10 @@ class AgentServer(AbstractAgentServer):
         except DockerError as e:
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
-                log.warning('_destroy_kernel({0}) already dead', kernel_id)
+                log.warning('destroy_kernel({0}) already dead', kernel_id)
                 pass
             elif e.status == 404:
-                log.warning('_destroy_kernel({0}) kernel missing, '
+                log.warning('destroy_kernel({0}) kernel missing, '
                             'forgetting this kernel', kernel_id)
                 resource_spec = self.container_registry[kernel_id]['resource_spec']
                 for accel_key, accel_alloc in resource_spec.allocations.items():
@@ -1014,13 +1014,13 @@ class AgentServer(AbstractAgentServer):
                 self.container_registry.pop(kernel_id, None)
                 pass
             else:
-                log.exception('_destroy_kernel({0}) kill error', kernel_id)
+                log.exception('destroy_kernel({0}) kill error', kernel_id)
                 self.error_monitor.capture_exception()
         except asyncio.CancelledError:
-            log.exception('_destroy_kernel({0}) operation cancelled', kernel_id)
+            log.exception('destroy_kernel({0}) operation cancelled', kernel_id)
             raise
         except Exception:
-            log.exception('_destroy_kernel({0}) unexpected error', kernel_id)
+            log.exception('destroy_kernel({0}) unexpected error', kernel_id)
             self.error_monitor.capture_exception()
 
     async def ensure_runner(self, kernel_id, *, api_version=3):
@@ -1120,7 +1120,7 @@ class AgentServer(AbstractAgentServer):
                 kernel_id in self.container_registry):
             # clean up the kernel (maybe cleaned already)
             asyncio.ensure_future(
-                self._destroy_kernel(kernel_id, 'exec-timeout'))
+                self.destroy_kernel(kernel_id, 'exec-timeout'))
 
         return {
             **result,
@@ -1413,7 +1413,7 @@ print(json.dumps(files))''' % {'path': path}
                 if idle_timeout > 0 and now - last_used > idle_timeout:
                     log.info('destroying kernel {0} as clean-up', kernel_id)
                     task = asyncio.ensure_future(
-                        self._destroy_kernel(kernel_id, 'idle-timeout'))
+                        self.destroy_kernel(kernel_id, 'idle-timeout'))
                     tasks.append(task)
             except KeyError:
                 # The kernel may be destroyed by other means?
@@ -1429,7 +1429,7 @@ print(json.dumps(files))''' % {'path': path}
                 self.blocking_cleans[kernel_id] = asyncio.Event()
         for kernel_id in kernel_ids:
             task = asyncio.ensure_future(
-                self._destroy_kernel(kernel_id, 'agent-termination'))
+                self.destroy_kernel(kernel_id, 'agent-termination'))
             tasks.append(task)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for kernel_id, result in zip(kernel_ids, results):
