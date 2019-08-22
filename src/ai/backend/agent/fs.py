@@ -2,13 +2,13 @@ from subprocess import CalledProcessError
 import asyncio
 
 
-async def create_scratch_filesystem(scratch_dir, size):
+async def create_tmp_filesystem(tmp_dir, size):
     '''
-    Create scratch folder size quota by using tmpfs filesystem.
+    Create temporary folder size quota by using tmpfs filesystem.
 
-    :param scratch_dir: The path of scratch directory.
+    :param tmp_dir: The path of temporary directory.
 
-    :param size: The quota size of scratch directory.
+    :param size: The quota size of temporary directory.
                  Size parameter is must be MiB(mebibyte).
     '''
 
@@ -16,7 +16,7 @@ async def create_scratch_filesystem(scratch_dir, size):
         'mount',
         '-t', 'tmpfs',
         '-o', f'size={size}M',
-        'tmpfs', f'{scratch_dir}'
+        'tmpfs', f'{tmp_dir}'
     ])
     exit_code = await proc.wait()
 
@@ -25,15 +25,15 @@ async def create_scratch_filesystem(scratch_dir, size):
                                  output=proc.stdout, stderr=proc.stderr)
 
 
-async def destroy_scratch_filesystem(scratch_dir):
+async def destroy_tmp_filesystem(tmp_dir):
     '''
-    Destroy scratch folder size quota by using tmpfs filesystem.
+    Destroy temporary folder size quota by using tmpfs filesystem.
 
-    :param scratch_dir: The path of scratch directory.
+    :param tmp_dir: The path of temporary directory.
     '''
     proc = await asyncio.create_subprocess_exec(*[
         'umount',
-        f'{scratch_dir}'
+        f'{tmp_dir}'
     ])
     exit_code = await proc.wait()
 

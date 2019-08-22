@@ -491,7 +491,7 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
                 t.Null | t.Enum(*[e.value for e in StatModes]),
             t.Key('sandbox-type', default='docker'): t.Enum('docker', 'jail'),
             t.Key('jail-args', default=[]): t.List(t.String),
-            t.Key('scratch-type'): t.Enum('hostdir', 'memory'),
+            t.Key('scratch-type'): t.Enum('hostdir', 'memory', 'storage-agent'),
             t.Key('scratch-root', default='./scratches'):
                 tx.Path(type='dir', auto_create=True),
             t.Key('scratch-size', default='0'): tx.BinarySize,

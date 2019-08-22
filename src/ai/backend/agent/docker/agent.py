@@ -46,7 +46,7 @@ from ai.backend.common.types import (
 from .kernel import DockerKernel
 from .resources import detect_resources
 from ..exception import InsufficientResource
-from ..fs import create_scratch_filesystem, destroy_scratch_filesystem
+from ..fs import create_tmp_filesystem, destroy_tmp_filesystem
 from ..kernel import match_krunner_volume, KernelFeatures
 from ..resources import (
     Mount,
@@ -88,7 +88,7 @@ class DockerAgent(AbstractAgent):
     def __init__(self, config) -> None:
         super().__init__(config)
 
-    async def __ainit__(self) -> None:
+    async def __ainit__(self, etcd) -> None:
         self.docker = Docker()
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}',
@@ -98,6 +98,16 @@ class DockerAgent(AbstractAgent):
         self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
         self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
         self.monitor_handle_task = self.loop.create_task(self.handle_docker_events())
+
+        # Connect to scratch storage agent RPC.
+        storage_agent_ip = await self.etcd.get('nodes/storage/ip')
+        self.storage_agent = await aiozmq.rpc.connect_rpc(
+            connect=f'tcp://{storage_agent_ip}:6020', error_table={
+                'concurrent.futures._base.TimeoutError': asyncio.TimeoutError,
+            })
+        self.storage_agent.transport.setsockopt(zmq.LINGER, 1000)
+        if await self.storage_agent.call.hello(self.config['agent']['id']) != 'OLLEH':
+            raise InitializationError('Storage Agent hello not fullfilled')
 
     async def shutdown(self, stop_signal: signal.Signals):
         try:
@@ -157,8 +167,12 @@ class DockerAgent(AbstractAgent):
                     await computer_set.klass.restore_from_container(
                         container, computer_set.alloc_map)
                 kernel_host = self.config['container']['kernel-host']
-                config_dir = (self.config['container']['scratch-root'] /
-                              kernel_id / 'config').resolve()
+                if self.config['container']['scratch-type'] == 'storage-agent':
+                    scratch_dir = Path(await self.storage_agent.call.get(kernel_id))
+                else:
+                    scratch_dir = (self.config['container']['scratch-root'] / kernel_id).resolve()
+                config_dir = (scratch_dir / 'config').resolve()
+
                 with open(config_dir / 'resource.txt', 'r') as f:
                     resource_spec = KernelResourceSpec.read_from_file(f)
                     # legacy handling
@@ -343,7 +357,11 @@ class DockerAgent(AbstractAgent):
         envs_corecount = label_envs_corecount.split(',') if label_envs_corecount else []
         kernel_features = set(image_labels.get('ai.backend.features', '').split())
 
-        scratch_dir = (self.config['container']['scratch-root'] / kernel_id).resolve()
+        if self.config['container']['scratch-type'] == 'storage-agent':
+            scratch_size = self.config['container']['scratch-size']
+            scratch_dir = Path(await self.storage_agent.call.create(kernel_id, f'{scratch_size:g}'))
+        else:
+            scratch_dir = (self.config['container']['scratch-root'] / kernel_id).resolve()
         tmp_dir = (self.config['container']['scratch-root'] / f'{kernel_id}_tmp').resolve()
         config_dir = scratch_dir / 'config'
         work_dir = scratch_dir / 'work'
@@ -565,8 +583,8 @@ class DockerAgent(AbstractAgent):
             if (sys.platform.startswith('linux') and
                 self.config['container']['scratch-type'] == 'memory'):
                 os.makedirs(tmp_dir, exist_ok=True)
-                await create_scratch_filesystem(scratch_dir, 64)
-                await create_scratch_filesystem(tmp_dir, 64)
+                await create_tmp_filesystem(tmp_dir, 64)
+                await create_tmp_filesystem(scratch_dir, 64)
             os.makedirs(work_dir, exist_ok=True)
             os.makedirs(work_dir / '.jupyter', exist_ok=True)
             if KernelFeatures.UID_MATCH in kernel_features:
@@ -722,10 +740,14 @@ class DockerAgent(AbstractAgent):
             # Oops, we have to restore the allocated resources!
             if (sys.platform.startswith('linux') and
                 self.config['container']['scratch-type'] == 'memory'):
-                await destroy_scratch_filesystem(scratch_dir)
-                await destroy_scratch_filesystem(tmp_dir)
+                await destroy_tmp_filesystem(tmp_dir)
+                await destroy_tmp_filesystem(scratch_dir)
                 shutil.rmtree(tmp_dir)
-            shutil.rmtree(scratch_dir)
+
+            if self.config['container']['scratch-type'] == 'storage-agent':
+                await self.storage_agent.call.remove(kernel_id)
+            else:
+                shutil.rmtree(scratch_dir)
             self.port_pool.update(host_ports)
             for dev_name, device_alloc in resource_spec.allocations.items():
                 self.computers[dev_name].alloc_map.free(device_alloc)
@@ -820,6 +842,10 @@ class DockerAgent(AbstractAgent):
                 }
                 last_stat['version'] = 2  # type: ignore
                 return last_stat
+            # The container will be deleted in the docker monitoring coroutine.
+            if self.config['agent']['scratch-type'] == 'storage-agent':
+                await self.storage_agent.call.remove(kernel_id)
+            return None
         except DockerError as e:
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
@@ -974,4 +1000,3 @@ class DockerAgent(AbstractAgent):
                     self.loop.create_task(self.clean_kernel(kernel_id))
                 )
 
-        await asyncio.sleep(0.5)
