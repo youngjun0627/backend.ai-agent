@@ -122,4 +122,6 @@ class Runner(BaseRunner):
             return [
                 self.runtime_path, '-m', 'tensorboard.main',
                 '--logdir', '/home/work/logs',
+                '--host', '0.0.0.0',
+                '--port', str(service_info['port']),
             ], {}
