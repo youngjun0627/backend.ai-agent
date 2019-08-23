@@ -237,6 +237,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
         log.info('started handling RPC requests at {}', rpc_addr)
 
         await self.etcd.put('ip', rpc_addr.host, scope=ConfigScopes.NODE)
+        watcher_port = utils.nmget(self.config, 'watcher.service-addr.port', None)
+        if watcher_port is not None:
+            await self.etcd.put('watcher_port', watcher_port, scope=ConfigScopes.NODE)
 
         await self.agent.init()
         await self.update_status('running')

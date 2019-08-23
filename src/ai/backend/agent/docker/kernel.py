@@ -44,7 +44,6 @@ class KernelRunner(AbstractKernelRunner):
 
 
 async def prepare_krunner_env(distro: str):
-    # TODO: make all subprocess calls asynchronous and run this function in parallel for all distro.
     '''
     Check if the volume "backendai-krunner.{distro}.{arch}" exists and is up-to-date.
     If not, automatically create it and update its content from the packaged pre-built krunner tar
@@ -53,7 +52,12 @@ async def prepare_krunner_env(distro: str):
     distro_name = re.search(r'^([a-z]+)\d+\.\d+$', distro).group(1)
     docker = Docker()
     arch = platform.machine()
-    name = f'backendai-krunner.{distro}'
+    current_version = int(Path(
+        pkg_resources.resource_filename(
+            f'ai.backend.krunner.{distro_name}',
+            f'./krunner-version.{distro}.txt'))
+        .read_text().strip())
+    volume_name = f'backendai-krunner.v{current_version}.{distro}'
     extractor_image = 'backendai-krunner-extractor:latest'
 
     try:
@@ -67,39 +71,26 @@ async def prepare_krunner_env(distro: str):
             extractor_archive = pkg_resources.resource_filename(
                 'ai.backend.agent', '../runner/krunner-extractor.img.tar.xz')
             with lzma.open(extractor_archive, 'rb') as extractor_img:
-                proc = await asyncio.create_subprocess_exec(*['docker', 'load'], stdin=extractor_img)
+                proc = await asyncio.create_subprocess_exec(
+                    *['docker', 'load'], stdin=extractor_img)
                 if (await proc.wait() != 0):
                     raise RuntimeError('loading krunner extractor image has failed!')
 
         log.info('checking krunner-env for {}...', distro)
+        do_create = False
         try:
-            vol = DockerVolume(docker, name)
+            vol = DockerVolume(docker, volume_name)
             await vol.show()
         except DockerError as e:
             if e.status == 404:
-                # create volume
-                await docker.volumes.create({
-                    'Name': name,
-                    'Driver': 'local',
-                })
-        proc = await asyncio.create_subprocess_exec(*[
-            'docker', 'run', '--rm', '-i',
-            '-v', f'{name}:/root/volume',
-            extractor_image,
-            'sh', '-c', 'cat /root/volume/VERSION 2>/dev/null || echo 0',
-        ], stdout=asyncio.subprocess.PIPE)
-        stdout, _ = await proc.communicate()
-        if (await proc.wait() != 0):
-            raise RuntimeError('checking krunner environment version has failed!')
-        existing_version = int(stdout.decode().strip())
-        current_version = int(Path(
-            pkg_resources.resource_filename(
-                f'ai.backend.krunner.{distro_name}',
-                f'./krunner-version.{distro}.txt'))
-            .read_text().strip())
-        if existing_version < current_version:
-            log.info('updating {} volume from version {} to {}',
-                     name, existing_version, current_version)
+                do_create = True
+        if do_create:
+            log.info('populating {} volume version {}',
+                     volume_name, current_version)
+            await docker.volumes.create({
+                'Name': volume_name,
+                'Driver': 'local',
+            })
             archive_path = Path(pkg_resources.resource_filename(
                 f'ai.backend.krunner.{distro_name}',
                 f'./krunner-env.{distro}.{arch}.tar.xz')).resolve()
@@ -110,7 +101,7 @@ async def prepare_krunner_env(distro: str):
                 'docker', 'run', '--rm', '-i',
                 '-v', f'{archive_path}:/root/archive.tar.xz',
                 '-v', f'{extractor_path}:/root/krunner-extractor.sh',
-                '-v', f'{name}:/root/volume',
+                '-v', f'{volume_name}:/root/volume',
                 '-e', f'KRUNNER_VERSION={current_version}',
                 extractor_image,
                 '/root/krunner-extractor.sh',
@@ -121,4 +112,4 @@ async def prepare_krunner_env(distro: str):
         log.exception('unexpected error')
     finally:
         await docker.close()
-    return name
+    return volume_name

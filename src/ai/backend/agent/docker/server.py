@@ -524,7 +524,7 @@ class AgentServer(AbstractAgentServer):
         except DockerError as e:
             if e.status == 404:
                 await self.send_event('kernel_pulling',
-                                        kernel_id, image_ref.canonical)
+                                      kernel_id, image_ref.canonical)
                 auth_config = None
                 dreg_user = kernel_config['image']['registry'].get('username')
                 dreg_passwd = kernel_config['image']['registry'].get('password')
@@ -590,13 +590,17 @@ class AgentServer(AbstractAgentServer):
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
         mounts = [
-            Mount(MountTypes.BIND, config_dir, '/home/config', MountPermission.READ_ONLY),
-            Mount(MountTypes.BIND, work_dir, '/home/work/', MountPermission.READ_WRITE),
+            Mount(MountTypes.BIND, config_dir, '/home/config',
+                  MountPermission.READ_ONLY),
+            Mount(MountTypes.BIND, work_dir, '/home/work/',
+                  MountPermission.READ_WRITE),
         ]
-        if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
-            mounts.append(Mount(MountTypes.BIND, tmp_dir, '/tmp', MountPermission.READ_WRITE))
+        if (sys.platform.startswith('linux') and
+            self.config['container']['scratch-type'] == 'memory'):
+            mounts.append(Mount(MountTypes.BIND, tmp_dir, '/tmp',
+                                MountPermission.READ_WRITE))
         mounts.extend(Mount(MountTypes.VOLUME, v.name, v.container_path, v.mode)
-                        for v in extra_mount_list)
+                      for v in extra_mount_list)
 
         if restarting:
             # Reuse previous CPU share.
@@ -634,9 +638,9 @@ class AgentServer(AbstractAgentServer):
                                                         context_tag=dev_type)
                 except InsufficientResource:
                     log.info('insufficient resource: {} of {}\n'
-                                '(alloc map: {})',
-                                device_specific_slots, dev_type,
-                                computer_set.alloc_map.allocations)
+                             '(alloc map: {})',
+                             device_specific_slots, dev_type,
+                             computer_set.alloc_map.allocations)
                     raise
 
             # Realize vfolder mounts.
@@ -650,7 +654,7 @@ class AgentServer(AbstractAgentServer):
                     raise RuntimeError(
                         'Unexpected number of vfolder mount detail tuple size')
                 host_path = (self.config['vfolder']['mount'] / folder_host /
-                                self.config['vfolder']['fsprefix'] / folder_id)
+                             self.config['vfolder']['fsprefix'] / folder_id)
                 kernel_path = Path(f'/home/work/{folder_name}')
                 folder_perm = MountPermission(folder_perm)
                 if folder_perm == MountPermission.RW_DELETE:
@@ -702,7 +706,10 @@ class AgentServer(AbstractAgentServer):
         _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
 
-        _mount(MountTypes.VOLUME, f'backendai-krunner.{distro}', '/opt/backend.ai')
+        krunner_volume = self.config['container']['krunner-volumes'].get(distro)
+        if krunner_volume is None:
+            raise RuntimeError(f'Cannot run container based on {distro}')
+        _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
                                 '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
         _mount(MountTypes.BIND, helpers_pkg_path.resolve(),
@@ -724,14 +731,18 @@ class AgentServer(AbstractAgentServer):
         _mount(MountTypes.BIND, font_italic_path.resolve(),
                                 '/home/work/.jupyter/custom/roboto-italic.ttf')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
+        if self.config['debug']['coredump']['enabled']:
+            _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
+                                    self.config['debug']['coredump']['core_path'],
+                                    perm='rw')
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args = {}
         for dev_type, device_alloc in resource_spec.allocations.items():
             computer_set = self.computers[dev_type]
             update_nested_dict(computer_docker_args,
-                                await computer_set.klass.generate_docker_args(
-                                    self.docker, device_alloc))
+                               await computer_set.klass.generate_docker_args(
+                                   self.docker, device_alloc))
             alloc_sum = Decimal(0)
             for dev_id, per_dev_alloc in device_alloc.items():
                 alloc_sum += sum(per_dev_alloc.values())
@@ -739,8 +750,8 @@ class AgentServer(AbstractAgentServer):
                 hook_paths = await computer_set.klass.get_hooks(distro, arch)
                 if hook_paths:
                     log.debug('accelerator {} provides hooks: {}',
-                                computer_set.klass.__name__,
-                                ', '.join(map(str, hook_paths)))
+                              computer_set.klass.__name__,
+                              ', '.join(map(str, hook_paths)))
                 for hook_path in hook_paths:
                     container_hook_path = '/opt/kernel/lib{}{}.so'.format(
                         computer_set.klass.key, secrets.token_hex(6),
@@ -754,7 +765,8 @@ class AgentServer(AbstractAgentServer):
             pass
         else:
             os.makedirs(scratch_dir, exist_ok=True)
-            if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
+            if (sys.platform.startswith('linux') and
+                self.config['container']['scratch-type'] == 'memory'):
                 os.makedirs(tmp_dir, exist_ok=True)
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
@@ -785,7 +797,7 @@ class AgentServer(AbstractAgentServer):
 
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
-                    pformat(attr.asdict(resource_spec)))
+                 pformat(attr.asdict(resource_spec)))
 
         # TODO: Refactor out as separate "Docker execution driver plugin" (#68)
         #   - Refactor volumes/mounts lists to a plugin "mount" API
@@ -858,7 +870,7 @@ class AgentServer(AbstractAgentServer):
                 ],
                 'PortBindings': {
                     f'{eport}/tcp': [{'HostPort': str(hport),
-                                        'HostIp': kernel_host}]
+                                      'HostIp': kernel_host}]
                     for eport, hport in zip(exposed_ports, host_ports)
                 },
                 'PublishAllPorts': False,  # we manage port mapping manually!
@@ -892,8 +904,8 @@ class AgentServer(AbstractAgentServer):
 
             self.stat_sync_states[cid] = StatSyncState(kernel_id)
             async with spawn_stat_synchronizer(self.config['_src'],
-                                                self.stat_sync_sockpath,
-                                                self.stat_ctx.mode, cid):
+                                               self.stat_sync_sockpath,
+                                               self.stat_ctx.mode, cid):
                 await container.start()
 
             # Get attached devices information (including model_name).
@@ -906,7 +918,8 @@ class AgentServer(AbstractAgentServer):
             raise
         except Exception:
             # Oops, we have to restore the allocated resources!
-            if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
+            if (sys.platform.startswith('linux') and
+                self.config['container']['scratch-type'] == 'memory'):
                 await destroy_scratch_filesystem(scratch_dir)
                 await destroy_scratch_filesystem(tmp_dir)
                 shutil.rmtree(tmp_dir)
@@ -976,8 +989,8 @@ class AgentServer(AbstractAgentServer):
             async def force_cleanup():
                 await self.clean_kernel(kernel_id)
                 await self.send_event('kernel_terminated',
-                                        kernel_id, 'self-terminated',
-                                        None)
+                                      kernel_id, 'self-terminated',
+                                      None)
 
             await asyncio.shield(force_cleanup())
             return None
@@ -1383,7 +1396,7 @@ print(json.dumps(files))''' % {'path': path}
             scratch_dir = self.config['container']['scratch-root'] / kernel_id
             tmp_dir = self.config['container']['scratch-root'] / f'{kernel_id}_tmp'
             try:
-                if sys.platform == 'linux' and self.config['container']['scratch-type'] == 'memory':
+                if sys.platform.startswith('linux') and self.config['container']['scratch-type'] == 'memory':
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
                     shutil.rmtree(tmp_dir)
