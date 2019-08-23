@@ -1394,7 +1394,8 @@ print(json.dumps(files))''' % {'path': path}
             scratch_dir = self.config['container']['scratch-root'] / kernel_id
             tmp_dir = self.config['container']['scratch-root'] / f'{kernel_id}_tmp'
             try:
-                if sys.platform.startswith('linux') and self.config['container']['scratch-type'] == 'memory':
+                if (sys.platform.startswith('linux') and
+                    self.config['container']['scratch-type'] == 'memory'):
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
                     shutil.rmtree(tmp_dir)
