@@ -49,7 +49,7 @@ from .resources import (
 from .. import __version__ as VERSION
 from ..exception import InsufficientResource
 from ..fs import create_scratch_filesystem, destroy_scratch_filesystem
-from ..kernel import KernelFeatures
+from ..kernel import match_krunner_volume, KernelFeatures
 from ..resources import (
     Mount
 )
@@ -706,9 +706,7 @@ class AgentServer(AbstractAgentServer):
         _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
 
-        krunner_volume = self.config['container']['krunner-volumes'].get(distro)
-        if krunner_volume is None:
-            raise RuntimeError(f'Cannot run container based on {distro}')
+        krunner_volume = match_krunner_volume(self.config['container']['krunner-volumes'], distro)
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
                                 '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')

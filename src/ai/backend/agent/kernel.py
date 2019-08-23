@@ -5,8 +5,10 @@ from dataclasses import dataclass
 import io
 import json
 import logging
-import time
+import re
 import secrets
+import time
+from typing import Any, Mapping, Tuple
 
 from async_timeout import timeout
 import msgpack
@@ -460,3 +462,39 @@ class AbstractKernelRunner:
             except Exception:
                 log.exception('unexpected error')
                 break
+
+
+def match_krunner_volume(krunner_volumes: Mapping[str, Any], distro: str) -> Tuple[str, Any]:
+    '''
+    Find the latest or exactly matching entry from krunner_volumes mapping using the given distro
+    string expression.
+
+    It assumes that the keys of krunner_volumes mapping is a string concatenated with a distro
+    prefix (e.g., "centos", "ubuntu") and a distro version composed of multiple integer components
+    joined by single dots (e.g., "1.2.3", "18.04").
+    '''
+    rx_ver_suffix = re.compile(r'(\d+(\.\d+)*)$')
+    m = rx_ver_suffix.search(distro)
+    if m is None:
+        # Assume latest
+        distro_prefix = distro
+        distro_ver = None
+    else:
+        distro_prefix = distro[:-len(m.group(1))]
+        distro_ver = m.group(1)
+    krunner_volumes = [
+        (distro_key, volume)
+        for distro_key, volume in krunner_volumes.items()
+        if distro_key.startswith(distro_prefix)
+    ]
+    krunner_volumes = sorted(
+        krunner_volumes,
+        key=lambda item: tuple(map(int, rx_ver_suffix.search(item[0]).group(1).split('.'))),
+        reverse=True)
+    if krunner_volumes:
+        if distro_ver is None:
+            return krunner_volumes[0]
+        for distro_key, volume in krunner_volumes:
+            if distro_key == distro:
+                return (distro_key, volume)
+    raise RuntimeError('krunner volume not found', distro)

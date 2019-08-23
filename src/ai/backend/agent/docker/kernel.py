@@ -70,9 +70,9 @@ async def prepare_krunner_env(distro: str):
             log.info('preparing the Docker image for krunner extractor...')
             extractor_archive = pkg_resources.resource_filename(
                 'ai.backend.agent', '../runner/krunner-extractor.img.tar.xz')
-            with lzma.open(extractor_archive, 'rb') as extractor_img:
+            with lzma.open(extractor_archive, 'rb') as reader:
                 proc = await asyncio.create_subprocess_exec(
-                    *['docker', 'load'], stdin=extractor_img)
+                    *['docker', 'load'], stdin=reader)
                 if (await proc.wait() != 0):
                     raise RuntimeError('loading krunner extractor image has failed!')
 
