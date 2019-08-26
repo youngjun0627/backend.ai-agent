@@ -1,12 +1,16 @@
 Changes
 =======
 
-19.09.0b7 (xxxx-xx-xx)
+19.09.0b7 (2019-08-27)
 ----------------------
+
+* FIX: TensorBoard startup error due to favoring IPv6 address
 
 * CHANGE: Internally restructured the codebase so that we can add different agent implementations
   easily in the future.  Kubernetes support is coming soon! (#125)
 
+* Accept a wider range of ``ai.backend.base-distro`` image label values which do not
+  include explicit version numbers.
 
 19.09.0b6 (2019-08-21)
 ----------------------
