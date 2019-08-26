@@ -706,7 +706,8 @@ class AgentServer(AbstractAgentServer):
         _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
 
-        krunner_volume = match_krunner_volume(self.config['container']['krunner-volumes'], distro)
+        matched_distro, krunner_volume = match_krunner_volume(
+            self.config['container']['krunner-volumes'], distro)
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
                                 '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
