@@ -683,8 +683,9 @@ class AgentServer(AbstractAgentServer):
             'ai.backend.agent', '../runner/entrypoint.sh'))
         suexec_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', f'../runner/su-exec.{distro}.bin'))
-        jail_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/jail.{distro}.bin'))
+        if self.config['container']['sandbox-type'] == 'jail':
+            jail_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', f'../runner/jail.{distro}.bin'))
         hook_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', f'../runner/libbaihook.{distro}.{arch}.so'))
         kernel_pkg_path = Path(pkg_resources.resource_filename(
@@ -703,7 +704,8 @@ class AgentServer(AbstractAgentServer):
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
         _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
-        _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
+        if self.config['container']['sandbox-type'] == 'jail':
+            _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
 
         matched_distro, krunner_volume = match_krunner_volume(
