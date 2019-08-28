@@ -112,6 +112,7 @@ async def handle_agent_stop(request: web.Request) -> web.Response:
         'result': 'ok',
     })
 
+
 async def handle_agent_restart(request: web.Request) -> web.Response:
     svc = request.app['config']['watcher']['target-service']
     proc = await asyncio.create_subprocess_exec(

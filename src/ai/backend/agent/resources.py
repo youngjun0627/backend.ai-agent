@@ -1,7 +1,9 @@
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from decimal import Decimal
+import io
 import logging
+import json
 from pathlib import Path
 from typing import (
     Any, Container, Collection, Mapping, Sequence, Optional, Union,
@@ -10,8 +12,11 @@ from typing import (
 import attr
 
 from ai.backend.common.types import (
+    ResourceSlot,
     MountPermission, MountTypes,
-    DeviceId, SlotType, Allocation, ResourceAllocations,
+    DeviceId, SlotType,
+    Allocation, ResourceAllocations,
+    BinarySize,
 )
 from ai.backend.common.logging import BraceStyleAdapter
 from .exception import InsufficientResource
@@ -21,6 +26,128 @@ from .stats import StatContext, NodeMeasurement, ContainerMeasurement
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
 
 known_slot_types = {}
+
+
+@attr.s(auto_attribs=True, slots=True)
+class KernelResourceSpec(metaclass=ABCMeta):
+    '''
+    This struct-like object stores the kernel resource allocation information
+    with serialization and deserialization.
+
+    It allows seamless reconstruction of allocations even when the agent restarts
+    while kernel containers are running.
+    '''
+
+    '''The container ID to refer inside containers.'''
+    container_id: str
+
+    '''Stores the original user-requested resource slots.'''
+    slots: ResourceSlot
+
+    '''
+    Represents the resource allocations for each slot (device) type and devices.
+    '''
+    allocations: ResourceAllocations
+
+    '''The mounted vfolder list.'''
+    mounts: Sequence[str] = attr.Factory(list)
+
+    '''The size of scratch disk. (not implemented yet)'''
+    scratch_disk_size: int = None
+
+    '''The idle timeout in seconds.'''
+    idle_timeout: int = None
+
+    def write_to_string(self) -> str:
+        mounts_str = ','.join(map(str, self.mounts))
+        slots_str = json.dumps({
+            k: str(v) for k, v in self.slots.items()
+        })
+
+        resource_str = f'CID={self.container_id}\n'
+        resource_str += f'SCRATCH_SIZE={BinarySize(self.scratch_disk_size):m}\n'
+        resource_str += f'MOUNTS={mounts_str}\n'
+        resource_str += f'SLOTS={slots_str}\n'
+        resource_str += f'IDLE_TIMEOUT={self.idle_timeout}\n'
+
+        for device_type, slots in self.allocations.items():
+            for slot_type, per_device_alloc in slots.items():
+                pieces = []
+                for dev_id, alloc in per_device_alloc.items():
+                    if known_slot_types[slot_type] == 'bytes':
+                        pieces.append(f'{dev_id}:{BinarySize(alloc):s}')
+                    else:
+                        pieces.append(f'{dev_id}:{alloc}')
+                alloc_str = ','.join(pieces)
+                resource_str += f'{slot_type.upper()}_SHARES={alloc_str}\n'
+
+        return resource_str
+
+    def write_to_file(self, file: io.TextIOBase) -> None:
+        file.write(self.write_to_string())
+
+    @classmethod
+    def read_from_string(cls, text: str) -> 'KernelResourceSpec':
+        kvpairs = {}
+        for line in text.split('\n'):
+            if '=' not in line:
+                continue
+            key, val = line.strip().split('=', maxsplit=1)
+            kvpairs[key] = val
+        allocations = defaultdict(dict)
+        for key, val in kvpairs.items():
+            if key.endswith('_SHARES'):
+                slot_type = key[:-7].lower()
+                device_type = slot_type.split('.')[0]
+                per_device_alloc = {}
+                for entry in val.split(','):
+                    dev_id, _, alloc = entry.partition(':')
+                    if not dev_id or not alloc:
+                        continue
+                    try:
+                        if known_slot_types[slot_type] == 'bytes':
+                            value = BinarySize.from_str(alloc)
+                        else:
+                            value = Decimal(alloc)
+                    except KeyError as e:
+                        log.warning('A previously launched container has '
+                                    'unknown slot type: {}. Ignoring it.',
+                                    e.args[0])
+                        continue
+                    per_device_alloc[dev_id] = value
+                allocations[device_type][slot_type] = per_device_alloc
+        mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',') if m]
+        return cls(
+            container_id=kvpairs.get('CID'),
+            scratch_disk_size=BinarySize.from_str(kvpairs['SCRATCH_SIZE']),
+            allocations=dict(allocations),
+            slots=ResourceSlot(json.loads(kvpairs['SLOTS'])),
+            mounts=mounts,
+            idle_timeout=int(kvpairs.get('IDLE_TIMEOUT', '600')),
+        )
+
+    @classmethod
+    def read_from_file(cls, file: io.TextIOBase) -> 'KernelResourceSpec':
+        text = '\n'.join(file.readlines())
+        return cls.read_from_string(text)
+
+    def to_json(self) -> str:
+        o = attr.asdict(self)
+        for slot_type, alloc in o['slots'].items():
+            if known_slot_types[slot_type] == 'bytes':
+                o['slots'] = f'{BinarySize(alloc):s}'
+            else:
+                o['slots'] = str(alloc)
+        for dev_type, dev_alloc in o['allocations'].items():
+            for slot_type, per_device_alloc in dev_alloc.items():
+                for dev_id, alloc in per_device_alloc.items():
+                    if known_slot_types[slot_type] == 'bytes':
+                        alloc = f'{BinarySize(alloc):s}'
+                    else:
+                        alloc = str(alloc)
+                    o['allocations'][dev_type][slot_type][dev_id] = alloc
+        o['mounts'] = list(map(str, self.mounts))
+        return json.dumps(o)
 
 
 @attr.s(auto_attribs=True)

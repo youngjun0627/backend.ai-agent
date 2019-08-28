@@ -2,7 +2,6 @@ import asyncio
 import base64
 from decimal import Decimal
 import functools
-import hashlib
 import logging, logging.config
 import os
 from pathlib import Path
@@ -10,55 +9,49 @@ import pkg_resources
 import platform
 from pprint import pformat
 import secrets
-import shlex
 import shutil
 import signal
 import struct
-import subprocess
 import sys
 import time
-from typing import Mapping
+from typing import Mapping, MutableMapping, Set
 
 import aiohttp
 import aioredis
 import aiotools
 import aiozmq, aiozmq.rpc
 import attr
+from async_timeout import timeout
 import snappy
 import zmq
 
 from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
 
-from ai.backend.common import utils, msgpack
+from ai.backend.common import msgpack
 from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
-from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
-from ai.backend.common.plugin import install_plugins
 from ai.backend.common.types import (
     MountPermission,
     MountTypes,
     ResourceSlot
 )
-from .files import scandir, upload_output_files_to_s3
-from .kernel import KernelRunner
+from .kernel import DockerKernel
 from .resources import (
     detect_resources,
-    KernelResourceSpec,
 )
 from .. import __version__ as VERSION
 from ..exception import InsufficientResource
 from ..fs import create_scratch_filesystem, destroy_scratch_filesystem
 from ..kernel import match_krunner_volume, KernelFeatures
 from ..resources import (
-    Mount
+    Mount,
+    KernelResourceSpec,
 )
 from ..server import (
     AbstractAgentServer,
     ComputerContext,
     ipc_base_path,
-    max_upload_size,
-    get_env_cid,
     get_extra_volumes,
     parse_service_port
 )
@@ -67,7 +60,7 @@ from ..stats import (
     spawn_stat_synchronizer, StatSyncState
 )
 from ..utils import (
-    current_loop, update_nested_dict,
+    update_nested_dict,
     get_kernel_id_from_container,
     host_pid_to_container_pid,
     container_pid_to_host_pid
@@ -77,14 +70,12 @@ log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
 
 
 class AgentServer(AbstractAgentServer):
-    def __init__(self, etcd, config, loop=None):
-        self.loop = loop if loop else current_loop()
-        self.config = config
-        self.etcd = etcd
-        self.agent_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()[:12]
+
+    def __init__(self, config, loop=None):
+        super().__init__(config, loop=loop)
 
         self.docker = Docker()
-        self.container_registry = {}
+        self.container_registry: MutableMapping[str, DockerKernel] = {}
         self.redis_stat_pool = None
 
         self.restarting_kernels = {}
@@ -93,7 +84,6 @@ class AgentServer(AbstractAgentServer):
         self.computers: Mapping[str, ComputerContext] = {}
         self.images: Mapping[str, str] = {}  # repoTag -> digest
 
-        self.rpc_server = None
         self.event_sock = None
         self.scan_images_timer = None
         self.monitor_fetch_task = None
@@ -111,25 +101,10 @@ class AgentServer(AbstractAgentServer):
             config['container']['port-range'][1] + 1,
         ))
 
-        self.stat_sync_states_monitor = DummyStatsMonitor()
-        self.error_monitor = DummyErrorMonitor()
-
-        self.runner_lock = asyncio.Lock()
-
-        plugins = [
-            'stats_monitor',
-            'error_monitor'
-        ]
-        install_plugins(plugins, self, 'attr', self.config)
+        self._orphan_tasks: Set[asyncio.Task] = set()
+        self.runner_lock: asyncio.Lock = asyncio.Lock()
 
     async def scan_running_containers(self):
-        env_containers = {}
-
-        for container in (await self.docker.containers.list()):
-            kernel_id, env_container_id = await get_env_cid(container)
-            if env_container_id is not None:
-                env_containers[kernel_id] = env_container_id
-
         for container in (await self.docker.containers.list()):
             kernel_id = await get_kernel_id_from_container(container)
             if kernel_id is None:
@@ -174,23 +149,21 @@ class AgentServer(AbstractAgentServer):
                     service_port['host_port'] = \
                         port_map.get(service_port['container_port'], None)
                     service_ports.append(service_port)
-                self.container_registry[kernel_id] = {
-                    'lang': ImageRef(image),
-                    'version': int(labels.get('ai.backend.kernelspec', '1')),
-                    'container_id': container._id,
-                    'env_container_id': env_containers.get(kernel_id),
-                    'kernel_host': kernel_host,
-                    'repl_in_port': port_map[2000],
-                    'repl_out_port': port_map[2001],
-                    'stdin_port': port_map.get(2002, 0),
-                    'stdout_port': port_map.get(2003, 0),
-                    'last_used': time.monotonic(),
-                    'runner_tasks': set(),
-                    'host_ports': [*port_map.values()],
-                    'resource_spec': resource_spec,
-                    'service_ports': service_ports,
-                    'agent_tasks': [],
-                }
+                self.container_registry[kernel_id] = DockerKernel(
+                    kernel_id,
+                    ImageRef(image),
+                    int(labels.get('ai.backend.kernelspec', '1')),
+                    resource_spec=resource_spec,
+                    service_ports=service_ports,
+                    data={
+                        'container_id': container._id,
+                        'kernel_host': kernel_host,
+                        'repl_in_port': port_map[2000],
+                        'repl_out_port': port_map[2001],
+                        'stdin_port': port_map.get(2002, 0),
+                        'stdout_port': port_map.get(2003, 0),
+                        'host_ports': [*port_map.values()],
+                    })
             elif status in {'exited', 'dead', 'removing'}:
                 log.info('detected terminated kernel: {0}', kernel_id)
                 await self.send_event('kernel_terminated', kernel_id,
@@ -233,20 +206,6 @@ class AgentServer(AbstractAgentServer):
             self.config['agent']['id'].encode('utf8'),
             msgpack.packb(args),
         ))
-
-    async def clean_runner(self, kernel_id):
-        if kernel_id not in self.container_registry:
-            return
-        log.debug('interrupting & cleaning up runner for {0}', kernel_id)
-        item = self.container_registry[kernel_id]
-        tasks = item['runner_tasks'].copy()
-        for t in tasks:  # noqa: F402
-            if not t.done():
-                t.cancel()
-                await t
-        runner = item.pop('runner', None)
-        if runner is not None:
-            await runner.close()
 
     async def sync_container_stats(self):
         my_uid = os.getuid()
@@ -310,14 +269,14 @@ class AgentServer(AbstractAgentServer):
         # Show Docker version info.
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}',
-                    docker_version['Version'], docker_version['ApiVersion'])
+                 docker_version['Version'], docker_version['ApiVersion'])
 
         reserved_slots = {
             'cpu': self.config['resource']['reserved-cpu'],
             'mem': self.config['resource']['reserved-mem'],
             'disk': self.config['resource']['reserved-disk'],
         }
-        computers, self.slots = await detect_resources(self.etcd, reserved_slots)
+        computers, self.slots = await detect_resources(self.config['plugins'], reserved_slots)
         for name, klass in computers.items():
             devices = await klass.list_devices()
             alloc_map = await klass.create_alloc_map()
@@ -353,8 +312,8 @@ class AgentServer(AbstractAgentServer):
         self.stat_sync_task = self.loop.create_task(self.sync_container_stats())
 
         # Start container stats collector for existing containers.
-        for kernel_id, info in self.container_registry.items():
-            cid = info['container_id']
+        for kernel_id, kernel_obj in self.container_registry.items():
+            cid = kernel_obj['container_id']
             self.stat_sync_states[cid] = StatSyncState(kernel_id)
             async with spawn_stat_synchronizer(self.config['_src'],
                                                 self.stat_sync_sockpath,
@@ -379,11 +338,15 @@ class AgentServer(AbstractAgentServer):
         await self.deregister_myself()
 
         # Close all pending kernel runners.
-        for kernel_id in self.container_registry.keys():
-            await self.clean_runner(kernel_id)
+        for kernel_obj in self.container_registry.values():
+            if kernel_obj.runner is not None:
+                await kernel_obj.runner.close()
 
         if stop_signal == signal.SIGTERM:
             await self.clean_all_kernels(blocking=True)
+
+        # Await for any orphan tasks such as cleaning/destroying kernels
+        await asyncio.gather(*self._orphan_tasks, return_exceptions=True)
 
         # Stop timers.
         if self.scan_images_timer is not None:
@@ -559,7 +522,6 @@ class AgentServer(AbstractAgentServer):
         tmp_dir = (self.config['container']['scratch-root'] / f'{kernel_id}_tmp').resolve()
         config_dir = scratch_dir / 'config'
         work_dir = scratch_dir / 'work'
-        agent_tasks = []
 
         # PHASE 1: Read existing resource spec or devise a new resource spec.
 
@@ -790,9 +752,9 @@ class AgentServer(AbstractAgentServer):
             with open(config_dir / 'resource.txt', 'w') as f:
                 resource_spec.write_to_file(f)
                 for dev_type, device_alloc in resource_spec.allocations.items():
-                    computer_set = self.computers[dev_type]
+                    computer_ctx = self.computers[dev_type]
                     kvpairs = \
-                        await computer_set.klass.generate_resource_data(device_alloc)
+                        await computer_ctx.klass.generate_resource_data(device_alloc)
                     for k, v in kvpairs.items():
                         f.write(f'{k}={v}\n')
 
@@ -946,22 +908,21 @@ class AgentServer(AbstractAgentServer):
             elif port == 2003:  # legacy
                 stdout_port = host_port
 
-        self.container_registry[kernel_id] = {
-            'lang': image_ref,
-            'version': version,
-            'container_id': container._id,
-            'kernel_host': kernel_host,
-            'repl_in_port': repl_in_port,
-            'repl_out_port': repl_out_port,
-            'stdin_port': stdin_port,    # legacy
-            'stdout_port': stdout_port,  # legacy
-            'service_ports': list(service_ports.values()),
-            'host_ports': host_ports,
-            'last_used': time.monotonic(),
-            'runner_tasks': set(),
-            'resource_spec': resource_spec,
-            'agent_tasks': agent_tasks,
-        }
+        self.container_registry[kernel_id] = DockerKernel(
+            kernel_id,
+            image_ref,
+            version,
+            service_ports=list(service_ports.values()),
+            resource_spec=resource_spec,
+            data={
+                'container_id': container._id,
+                'kernel_host': kernel_host,
+                'repl_in_port': repl_in_port,
+                'repl_out_port': repl_out_port,
+                'stdin_port': stdin_port,    # legacy
+                'stdout_port': stdout_port,  # legacy
+                'host_ports': host_ports,
+            })
         log.debug('kernel repl-in address: {0}:{1}', kernel_host, repl_in_port)
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
         for service_port in service_ports.values():
@@ -982,8 +943,10 @@ class AgentServer(AbstractAgentServer):
 
     async def destroy_kernel(self, kernel_id, reason):
         try:
-            cid = self.container_registry[kernel_id]['container_id']
+            kernel_obj = self.container_registry[kernel_id]
+            cid = kernel_obj['container_id']
         except KeyError:
+            kernel_obj = None
             log.warning('destroy_kernel({0}) kernel missing (already dead?)',
                         kernel_id)
 
@@ -993,10 +956,12 @@ class AgentServer(AbstractAgentServer):
                                       kernel_id, 'self-terminated',
                                       None)
 
+            self._orphan_tasks.discard(asyncio.Task.current_task())
             await asyncio.shield(force_cleanup())
             return None
         container = self.docker.containers.container(cid)
-        await self.clean_runner(kernel_id)
+        if kernel_obj.runner is not None:
+            await kernel_obj.runner.close()
         try:
             await container.kill()
             # Collect the last-moment statistics.
@@ -1022,11 +987,10 @@ class AgentServer(AbstractAgentServer):
             elif e.status == 404:
                 log.warning('destroy_kernel({0}) kernel missing, '
                             'forgetting this kernel', kernel_id)
-                resource_spec = self.container_registry[kernel_id]['resource_spec']
+                resource_spec = kernel_obj.resource_spec
                 for accel_key, accel_alloc in resource_spec.allocations.items():
                     self.computers[accel_key].alloc_map.free(accel_alloc)
                 self.container_registry.pop(kernel_id, None)
-                pass
             else:
                 log.exception('destroy_kernel({0}) kill error', kernel_id)
                 self.error_monitor.capture_exception()
@@ -1036,229 +1000,62 @@ class AgentServer(AbstractAgentServer):
         except Exception:
             log.exception('destroy_kernel({0}) unexpected error', kernel_id)
             self.error_monitor.capture_exception()
-
-    async def ensure_runner(self, kernel_id, *, api_version=3):
-        # TODO: clean up
-        async with self.runner_lock:
-            runner = self.container_registry[kernel_id].get('runner')
-            if runner is not None:
-                log.debug('_execute_code:v{0}({1}) use '
-                            'existing runner', api_version, kernel_id)
-            else:
-                client_features = {'input', 'continuation'}
-                runner = KernelRunner(
-                    kernel_id,
-                    self.container_registry[kernel_id]['kernel_host'],
-                    self.container_registry[kernel_id]['repl_in_port'],
-                    self.container_registry[kernel_id]['repl_out_port'],
-                    0,
-                    client_features)
-                log.debug('_execute:v{0}({1}) start new runner',
-                            api_version, kernel_id)
-                self.container_registry[kernel_id]['runner'] = runner
-                # TODO: restoration of runners after agent restarts
-                await runner.start()
-            return runner
+        finally:
+            self._orphan_tasks.discard(asyncio.Task.current_task())
 
     async def execute(self, api_version, kernel_id,
-                        run_id, mode, text, opts,
-                        flush_timeout):
-        # Save kernel-generated output files in a separate sub-directory
-        # (to distinguish from user-uploaded files)
-        output_dir = self.config['container']['scratch-root'] / kernel_id / 'work' / '.output'
-
+                      run_id, mode, text, opts,
+                      flush_timeout):
+        # Wait for the kernel restarting if it's ongoing...
         restart_tracker = self.restarting_kernels.get(kernel_id)
         if restart_tracker:
             await restart_tracker.done_event.wait()
 
         try:
-            kernel_info = self.container_registry[kernel_id]
+            kernel_obj = self.container_registry[kernel_id]
+            result = await kernel_obj.execute(
+                run_id, mode, text,
+                opts=opts,
+                flush_timeout=flush_timeout,
+                api_version=api_version)
         except KeyError:
             await self.send_event('kernel_terminated',
-                                    kernel_id, 'self-terminated',
-                                    None)
+                                  kernel_id, 'self-terminated',
+                                  None)
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
                                 '(might be terminated--try it again)') from None
 
-        kernel_info['last_used'] = time.monotonic()
-        runner = await self.ensure_runner(kernel_id, api_version=api_version)
-
-        try:
-            myself = asyncio.Task.current_task()
-            kernel_info['runner_tasks'].add(myself)
-
-            await runner.attach_output_queue(run_id)
-
-            if mode == 'batch' or mode == 'query':
-                kernel_info['initial_file_stats'] \
-                    = scandir(output_dir, max_upload_size)
-            if mode == 'batch':
-                await runner.feed_batch(opts)
-            elif mode == 'query':
-                await runner.feed_code(text)
-            elif mode == 'input':
-                await runner.feed_input(text)
-            elif mode == 'continue':
-                pass
-            result = await runner.get_next_result(
-                api_ver=api_version,
-                flush_timeout=flush_timeout)
-
-        except asyncio.CancelledError:
-            await runner.close()
-            kernel_info.pop('runner', None)
-            return
-        finally:
-            runner_tasks = utils.nmget(self.container_registry,
-                                        f'{kernel_id}/runner_tasks', None, '/')
-            if runner_tasks is not None:
-                runner_tasks.remove(myself)
-
-        output_files = []
-
         if result['status'] in ('finished', 'exec-timeout'):
-
             log.debug('_execute({0}) {1}', kernel_id, result['status'])
-
-            final_file_stats = scandir(output_dir, max_upload_size)
-            if utils.nmget(result, 'options.upload_output_files', True):
-                # TODO: separate as a new task
-                initial_file_stats = \
-                    kernel_info['initial_file_stats']
-                output_files = await upload_output_files_to_s3(
-                    initial_file_stats, final_file_stats, output_dir, kernel_id)
-
-            kernel_info.pop('initial_file_stats', None)
-
-        if (result['status'] == 'exec-timeout' and
-                kernel_id in self.container_registry):
-            # clean up the kernel (maybe cleaned already)
-            asyncio.ensure_future(
-                self.destroy_kernel(kernel_id, 'exec-timeout'))
-
+        if result['status'] == 'exec-timeout':
+            self._orphan_tasks.add(
+                self.loop.create_task(self.destroy_kernel(kernel_id, 'exec-timeout'))
+            )
         return {
             **result,
-            'files': output_files,
+            'files': [],  # kept for API backward-compatibility
         }
 
     async def get_completions(self, kernel_id, text, opts):
-        runner = await self.ensure_runner(kernel_id)
-        result = await runner.feed_and_get_completion(text, opts)
-        return {'status': 'finished', 'completions': result}
+        return await self.container_registry[kernel_id].get_completions(text, opts)
 
     async def get_logs(self, kernel_id):
-        container_id = self.container_registry[kernel_id]['container_id']
-        container = await self.docker.containers.get(container_id)
-        logs = await container.log(stdout=True, stderr=True)
-        return {'logs': ''.join(logs)}
+        return await self.container_registry[kernel_id].get_logs()
 
     async def interrupt_kernel(self, kernel_id):
-        runner = await self.ensure_runner(kernel_id)
-        await runner.feed_interrupt()
-        return {'status': 'finished'}
+        return await self.container_registry[kernel_id].interrupt_kernel()
 
     async def start_service(self, kernel_id, service, opts):
-        runner = await self.ensure_runner(kernel_id)
-        service_ports = self.container_registry[kernel_id]['service_ports']
-        for sport in service_ports:
-            if sport['name'] == service:
-                break
-        else:
-            return {'status': 'failed', 'error': 'invalid service name'}
-        result = await runner.feed_start_service({
-            'name': service,
-            'port': sport['container_port'],
-            'protocol': sport['protocol'],
-            'options': opts,
-        })
-        return result
+        return await self.container_registry[kernel_id].start_service(service, opts)
 
     async def accept_file(self, kernel_id, filename, filedata):
-        loop = current_loop()
-        work_dir = self.config['container']['scratch-root'] / kernel_id / 'work'
-        try:
-            # create intermediate directories in the path
-            dest_path = (work_dir / filename).resolve(strict=False)
-            parent_path = dest_path.parent
-        except ValueError:  # parent_path does not start with work_dir!
-            raise AssertionError('malformed upload filename and path.')
-
-        def _write_to_disk():
-            parent_path.mkdir(parents=True, exist_ok=True)
-            dest_path.write_bytes(filedata)
-
-        try:
-            await loop.run_in_executor(None, _write_to_disk)
-        except FileNotFoundError:
-            log.error('{0}: writing uploaded file failed: {1} -> {2}',
-                        kernel_id, filename, dest_path)
+        return await self.container_registry[kernel_id].accept_file(filename, filedata)
 
     async def download_file(self, kernel_id, filepath):
-        container_id = self.container_registry[kernel_id]['container_id']
-        container = self.docker.containers.container(container_id)
-        # Limit file path to /home/work inside a container.
-        # TODO: extend path search in virtual folders.
-        abspath = os.path.abspath(os.path.join('/home/work', filepath))
-        try:
-            with await container.get_archive(abspath) as tarobj:
-                tarobj.fileobj.seek(0, 2)
-                fsize = tarobj.fileobj.tell()
-                assert fsize < 1 * 1048576, 'too large file.'
-                tarbytes = tarobj.fileobj.getvalue()
-        except DockerError:
-            log.warning('Could not found the file: {0}', abspath)
-            raise FileNotFoundError(f'Could not found the file: {abspath}')
-        return tarbytes
+        return await self.container_registry[kernel_id].download_file(filepath)
 
     async def list_files(self, kernel_id: str, path: str):
-        container_id = self.container_registry[kernel_id]['container_id']
-
-        # Ensure target directory is under /home/work/ folder.
-        # Append abspath with '/' if it is a directory since pathlib does not provide
-        # a nicer way to add a trailing slash. If this is not appended, directories
-        # like '/home/workfake' will pass the check.
-        code = '''from pathlib import Path
-abspath = Path('%(path)s').resolve(strict=True)
-suffix = '/' if abspath.is_dir() else ''
-print(str(abspath) + suffix)
-''' % {'path': path}
-        command = f'docker exec {container_id} python -c "{code}"'
-        p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        outs, errs = p.communicate()
-        abspath = outs.decode('utf-8')
-        errs = errs.decode('utf-8')
-        if errs or (not abspath.startswith('/home/work/')):
-            return {'files': '', 'errors': 'No such file or directory'}
-
-        # Gather individual file information in the target path.
-        code = '''import json
-import os
-import stat
-
-files = []
-for f in os.scandir('%(path)s'):
-    fstat = f.stat()
-    ctime = fstat.st_ctime  # TODO: way to get concrete create time?
-    mtime = fstat.st_mtime
-    atime = fstat.st_atime
-    files.append({
-        'mode': stat.filemode(fstat.st_mode),
-        'size': fstat.st_size,
-        'ctime': ctime,
-        'mtime': mtime,
-        'atime': atime,
-        'filename': f.name,
-    })
-print(json.dumps(files))''' % {'path': path}
-        command = f'docker exec {container_id} python -c "{code}"'
-        p = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        outs, errs = p.communicate()
-        outs = outs.decode('utf-8')
-        errs = errs.decode('utf-8')
-
-        return {'files': outs, 'errors': errs, 'abspath': abspath}
+        return await self.container_registry[kernel_id].list_files(path)
 
     async def heartbeat(self, interval):
         '''
@@ -1356,62 +1153,74 @@ print(json.dumps(files))''' % {'path': path}
                 await self.send_event('kernel_terminated',
                                         kernel_id, 'self-terminated',
                                         None)
-                asyncio.ensure_future(self.clean_kernel(kernel_id))
+                self._orphan_tasks.add(
+                    self.loop.create_task(self.clean_kernel(kernel_id))
+                )
 
     async def clean_kernel(self, kernel_id):
         try:
-            kernel_info = self.container_registry[kernel_id]
+            kernel_obj = self.container_registry[kernel_id]
+            found = True
         except KeyError:
-            pass
-        else:
-            container_id = kernel_info['container_id']
-            container = self.docker.containers.container(container_id)
-            try:
-                for task in kernel_info['agent_tasks']:
-                    task.cancel()
-                await asyncio.gather(*kernel_info['agent_tasks'])
-                await self.clean_runner(kernel_id)
-            finally:
+            kernel_obj = None
+            found = False
+        try:
+            if found:
+                container_id = kernel_obj['container_id']
+                container = self.docker.containers.container(container_id)
+                if kernel_obj.runner is not None:
+                    await kernel_obj.runner.close()
+
                 # When the agent restarts with a different port range, existing
                 # containers' host ports may not belong to the new port range.
-                try:
-                    if not self.config['debug']['skip-container-deletion']:
-                        await container.delete()
-                except DockerError as e:
-                    if e.status == 409 and 'already in progress' in e.message:
-                        pass
-                    elif e.status == 404:
-                        pass
-                    else:
-                        log.warning('container deletion: {0!r}', e)
-                finally:
-                    port_range = self.config['container']['port-range']
-                    restored_ports = [*filter(
-                        lambda p: port_range[0] <= p <= port_range[1],
-                        kernel_info['host_ports'])]
-                    self.port_pool.update(restored_ports)
+                if not self.config['debug']['skip-container-deletion']:
+                    try:
+                        with timeout(20):
+                            await container.delete()
+                    except DockerError as e:
+                        if e.status == 409 and 'already in progress' in e.message:
+                            pass
+                        elif e.status == 404:
+                            pass
+                        else:
+                            log.exception(
+                                'unexpected docker error while deleting container (k:{}, c:{})',
+                                kernel_id, container_id)
+                    except asyncio.TimeoutError:
+                        log.warning('container deletion timeout (k:{}, c:{})',
+                                    kernel_id, container_id)
+                    finally:
+                        port_range = self.config['container']['port-range']
+                        restored_ports = [*filter(
+                            lambda p: port_range[0] <= p <= port_range[1],
+                            kernel_obj['host_ports'])]
+                        self.port_pool.update(restored_ports)
 
-        if kernel_id in self.restarting_kernels:
-            self.restarting_kernels[kernel_id].destroy_event.set()
-        else:
-            scratch_dir = self.config['container']['scratch-root'] / kernel_id
-            tmp_dir = self.config['container']['scratch-root'] / f'{kernel_id}_tmp'
-            try:
-                if (sys.platform.startswith('linux') and
-                    self.config['container']['scratch-type'] == 'memory'):
-                    await destroy_scratch_filesystem(scratch_dir)
-                    await destroy_scratch_filesystem(tmp_dir)
-                    shutil.rmtree(tmp_dir)
-                shutil.rmtree(scratch_dir)
-            except FileNotFoundError:
-                pass
-            try:
-                resource_spec = self.container_registry[kernel_id]['resource_spec']
+            if kernel_id in self.restarting_kernels:
+                self.restarting_kernels[kernel_id].destroy_event.set()
+
+            if found:
+                scratch_root = self.config['container']['scratch-root']
+                scratch_dir = scratch_root / kernel_id
+                tmp_dir = scratch_root / f'{kernel_id}_tmp'
+                try:
+                    if (sys.platform.startswith('linux') and
+                        self.config['container']['scratch-type'] == 'memory'):
+                        await destroy_scratch_filesystem(scratch_dir)
+                        await destroy_scratch_filesystem(tmp_dir)
+                        shutil.rmtree(tmp_dir)
+                    shutil.rmtree(scratch_dir)
+                except FileNotFoundError:
+                    pass
+                resource_spec = kernel_obj.resource_spec
                 for accel_key, accel_alloc in resource_spec.allocations.items():
                     self.computers[accel_key].alloc_map.free(accel_alloc)
+                await kernel_obj.close()
                 self.container_registry.pop(kernel_id, None)
-            except KeyError:
-                pass
+        except Exception:
+            log.exception('unexpected error while cleaning up kernel (k:{})', kernel_id)
+        finally:
+            self._orphan_tasks.discard(asyncio.Task.current_task())
             if kernel_id in self.blocking_cleans:
                 self.blocking_cleans[kernel_id].set()
 
@@ -1423,7 +1232,7 @@ print(json.dumps(files))''' % {'path': path}
             try:
                 last_used = self.container_registry[kernel_id]['last_used']
                 idle_timeout = \
-                    self.container_registry[kernel_id]['resource_spec'] \
+                    self.container_registry[kernel_id].resource_spec \
                     .idle_timeout
                 if idle_timeout > 0 and now - last_used > idle_timeout:
                     log.info('destroying kernel {0} as clean-up', kernel_id)

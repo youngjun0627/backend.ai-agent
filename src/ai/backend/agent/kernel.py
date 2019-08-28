@@ -1,6 +1,7 @@
+from abc import abstractmethod, ABCMeta
 import asyncio
 import codecs
-from collections import OrderedDict
+from collections import OrderedDict, UserDict
 from dataclasses import dataclass
 import io
 import json
@@ -8,14 +9,16 @@ import logging
 import re
 import secrets
 import time
-from typing import Any, Mapping, Tuple
+from typing import Any, Mapping, Set, Tuple
 
 from async_timeout import timeout
 import msgpack
 import zmq
 
+from ai.backend.common.docker import ImageRef
 from ai.backend.common.utils import StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
+from .resources import KernelResourceSpec
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
@@ -36,6 +39,11 @@ class KernelFeatures(StringSetFlag):
 class ClientFeatures(StringSetFlag):
     INPUT = 'input'
     CONTINUATION = 'continuation'
+
+
+# TODO: use Python 3.7 contextvars for per-client feature selection
+default_client_features = {ClientFeatures.INPUT, ClientFeatures.CONTINUATION}
+default_api_version = 3
 
 
 class RunEvent(Exception):
@@ -71,7 +79,97 @@ class ResultRecord:
     data: str = None
 
 
-class AbstractKernelRunner:
+class AbstractKernel(UserDict, metaclass=ABCMeta):
+
+    def __init__(self, kernel_id: str, image: ImageRef, version: str, *,
+                 resource_spec: KernelResourceSpec,
+                 service_ports: Any,  # TODO: type-annotation
+                 data: Mapping[str, Any]):
+        self.kernel_id = kernel_id
+        self.image = image
+        self.version = version
+        self.last_used = time.monotonic()
+        self.resource_spec = resource_spec
+        self.service_ports = service_ports
+        self.runner = None
+        self.data = data
+        self._runner_lock = asyncio.Lock()
+        self._tasks: Set[asyncio.Task] = set()
+
+    @abstractmethod
+    async def create_code_runner(self, *, client_features: Set[str], api_version: int):
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_completions(self, text, opts):
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_logs(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    async def interrupt_kernel(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    async def start_service(self, service, opts):
+        raise NotImplementedError
+
+    @abstractmethod
+    async def accept_file(self, filename, filedata):
+        raise NotImplementedError
+
+    @abstractmethod
+    async def download_file(self, filepath):
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_files(self, path: str):
+        raise NotImplementedError
+
+    async def execute(self, run_id, mode, text, *,
+                      opts, flush_timeout, api_version):
+        await self.ensure_runner()
+        self.last_used = time.monotonic()
+        try:
+            myself = asyncio.Task.current_task()
+            self._tasks.add(myself)
+            await self.runner.attach_output_queue(run_id)
+            if mode == 'batch':
+                await self.runner.feed_batch(opts)
+            elif mode == 'query':
+                await self.runner.feed_code(text)
+            elif mode == 'input':
+                await self.runner.feed_input(text)
+            elif mode == 'continue':
+                pass
+            return await self.runner.get_next_result(
+                api_ver=api_version,
+                flush_timeout=flush_timeout)
+        except asyncio.CancelledError:
+            await self.runner.close()
+            raise
+        finally:
+            self._tasks.remove(myself)
+
+    async def ensure_runner(self):
+        async with self._runner_lock:
+            if self.runner is not None:
+                log.debug('_execute_code:v{0}({1}) use '
+                          'existing runner', default_api_version, self.kernel_id)
+            else:
+                runner = self.create_code_runner(
+                    client_features=default_client_features,
+                    api_version=default_api_version)
+                log.debug('_execute:v{0}({1}) start new runner',
+                          default_api_version, self.kernel_id)
+                self.runner = runner
+                await runner.start()
+            return self.runner
+
+
+class AbstractCodeRunner:
 
     def __init__(self, repl_in_port, repl_out_port,
                  exec_timeout, client_features=None):
@@ -134,10 +232,10 @@ class AbstractKernelRunner:
             exec_cmd.encode('utf8'),
         ])
 
-    async def feed_code(self, text):
+    async def feed_code(self, text: str):
         await self.input_sock.send_multipart([b'code', text.encode('utf8')])
 
-    async def feed_input(self, text):
+    async def feed_input(self, text: str):
         await self.input_sock.send_multipart([b'input', text.encode('utf8')])
 
     async def feed_interrupt(self):
@@ -273,6 +371,9 @@ class AbstractKernelRunner:
                         raise InputRequestPending(opts)
                     elif rec.msg_type == 'exec-timeout':
                         raise ExecTimeout
+        except asyncio.CancelledError:
+            self.resume_output_queue()
+            raise
         except asyncio.TimeoutError:
             result = {
                 'runId': self.current_run_id,
@@ -335,9 +436,6 @@ class AbstractKernelRunner:
             type(self).aggregate_console(result, records, api_ver)
             self.resume_output_queue()
             return result
-        except asyncio.CancelledError:
-            self.resume_output_queue()
-            raise
         except Exception:
             log.exception('unexpected error')
             raise

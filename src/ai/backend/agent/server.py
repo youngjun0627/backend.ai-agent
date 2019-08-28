@@ -1,5 +1,7 @@
+from abc import ABCMeta, abstractmethod
 import asyncio
 import functools
+import hashlib
 from ipaddress import ip_network, _BaseAddress as BaseIPAddress
 import logging, logging.config
 import os, os.path
@@ -8,9 +10,8 @@ from pprint import pformat, pprint
 import signal
 import sys
 import time
-from typing import Collection
+from typing import Collection, Optional
 
-from aiodocker.docker import DockerContainer
 import aiotools
 import aiozmq, aiozmq.rpc
 from async_timeout import timeout
@@ -26,6 +27,8 @@ from ai.backend.common import config, utils, identity
 from ai.backend.common import validators as tx
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
+from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
+from ai.backend.common.plugin import install_plugins
 from ai.backend.common.types import HostPortPair
 from . import __version__ as VERSION
 from .exception import InitializationError
@@ -35,11 +38,10 @@ from .resources import (
     AbstractComputePlugin,
     AbstractAllocMap,
 )
-from .utils import get_subnet_ip
+from .utils import current_loop, get_subnet_ip
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
 
-max_upload_size = 100 * 1024 * 1024  # 100 MB
 ipc_base_path = Path('/tmp/backend.ai/ipc')
 
 redis_config_iv = t.Dict({
@@ -106,15 +108,6 @@ async def get_extra_volumes(docker, lang):
     return mount_list
 
 
-async def get_env_cid(container: DockerContainer):
-    if 'Name' not in container._container:
-        await container.show()
-    name = container['Name']
-    if name.startswith('kernel-env.'):
-        return name[11:], container._id
-    return None, None
-
-
 def parse_service_port(s: str) -> dict:
     try:
         name, protocol, port = s.split(':')
@@ -150,69 +143,89 @@ def update_last_used(meth):
     return _inner
 
 
-class AbstractAgentServer:
+class AbstractAgentServer(metaclass=ABCMeta):
+
+    def __init__(self, config, loop=None):
+        self.loop = loop if loop else current_loop()
+        self.config = config
+        self.agent_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()[:12]
+
+        self.stats_monitor = DummyStatsMonitor()
+        self.error_monitor = DummyErrorMonitor()
+        plugins = [
+            'stats_monitor',
+            'error_monitor'
+        ]
+        install_plugins(plugins, self, 'attr', self.config)
+
+    @abstractmethod
     async def init(self):
         pass
 
+    @abstractmethod
     async def create_kernel(self, kernel_id: str, config: dict) -> dict:
         pass
 
+    @abstractmethod
     async def destroy_kernel(self, kernel_id: str):
         pass
 
+    @abstractmethod
     async def interrupt_kernel(self, kernel_id: str):
         pass
 
-    async def get_completeions(self, kernel_id: str, text: dict, opts: dict):
+    @abstractmethod
+    async def get_completions(self, kernel_id: str, text: dict, opts: dict):
         pass
 
+    @abstractmethod
     async def get_logs(self, kernel_id: str):
         pass
 
+    @abstractmethod
     async def execute(self, api_version: int, kernel_id: str,
-                     run_id: t.String | t.Null, mode: str, code: str,
-                     opts: dict, flush_timeout: t.Float | t.Null) -> dict:
+                      run_id: Optional[str], mode: str, code: str,
+                      opts: dict, flush_timeout: Optional[float]) -> dict:
         pass
 
+    @abstractmethod
     async def start_service(slef, kernel_id: str, service: str, opts: dict):
         pass
 
+    @abstractmethod
     async def accept_file(self, kernel_id: str, filename: str, filedata: bytes):
         pass
 
+    @abstractmethod
     async def download_file(self, kernel_id: str, filepath: str):
         pass
 
+    @abstractmethod
     async def list_files(self, kernel_id: str, path: str):
         pass
 
-    async def shutdown(self, stop_signal):
+    @abstractmethod
+    async def shutdown(self, stop_signal: signal.Signals):
         pass
 
 
 class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
-    __slots__ = (
-        'loop',
-        'docker', 'container_registry', 'container_cpu_map',
-        'agent_sockpath', 'agent_sock_task',
-        'redis_stat_pool',
-        'etcd', 'config', 'slots', 'images',
-        'rpc_server', 'event_sock',
-        'monitor_fetch_task', 'monitor_handle_task',
-        'stat_ctx', 'live_stat_timer',
-        'stat_sync_states', 'stat_sync_task',
-        'hb_timer', 'clean_timer',
-        'stats_monitor', 'error_monitor',
-        'restarting_kernels', 'blocking_cleans',
-    )
-
     def __init__(self, etcd, config, loop=None):
+        self.loop = loop if loop else current_loop()
         self.etcd = etcd
         self.config = config
 
         self.agent = None
         self.rpc_server = None
+
+        self.stats_monitor = DummyStatsMonitor()
+        self.error_monitor = DummyErrorMonitor()
+        plugins = [
+            'stats_monitor',
+            'error_monitor'
+        ]
+        install_plugins(plugins, self, 'attr', self.config)
 
     async def init(self, *, skip_detect_manager=False):
         # Start serving requests.
@@ -225,7 +238,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
 
         if self.config['agent']['mode'] == 'docker':
             from .docker.server import AgentServer
-            self.agent = AgentServer(self.etcd, self.config, loop=None)
+            self.agent = AgentServer(self.config, loop=None)
         else:
             from .k8s.server import AgentServer
             self.agent = AgentServer(self.config, loop=None)
@@ -293,6 +306,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler):
     async def handle_rpc_exception(self):
         try:
             yield
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            raise
         except AssertionError:
             log.exception('assertion failure')
             raise
@@ -539,6 +554,9 @@ async def server_main(loop, pidx, _args):
              config['agent']['id'],
              config['agent']['instance-type'],
              rpc_addr.host)
+
+    # Pre-load compute plugin configurations.
+    config['plugins'] = await etcd.get_prefix_dict('config/plugins')
 
     # Start RPC server.
     try:
