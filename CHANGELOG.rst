@@ -1,6 +1,19 @@
 Changes
 =======
 
+19.09.0b8 (2019-xx-xx)
+----------------------
+
+* NEW: Add support for running CentOS-based kernel images by adding CentOS 7.6-based builds for
+  libbaihook and su-exec binaries.
+
+* Improve stability of cancellation during shutdown via refactoring and let uvloop work more consistently
+  with vanilla asyncio.  (#133)
+
+  - Upgrade aiotools to v0.8.2+
+
+  - Rewrite kernel's ``list_files`` RPC call to work safer and faster (#124).
+
 19.09.0b7 (2019-08-27)
 ----------------------
 

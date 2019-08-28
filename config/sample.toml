@@ -36,7 +36,7 @@ scaling-group = "default"
 # This changes the event loop backend.
 # uvloop is a fast libuv-based implementation but sometimes has
 # compatibility issues.
-# event-loop = "asyncio"
+# event-loop = "uvloop"
 
 
 [container]

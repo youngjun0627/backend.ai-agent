@@ -11,6 +11,7 @@ rpc-listen-addr = { host = "127.0.0.1", port = 6001 }
 # id = "i-something-special"
 scaling-group = "default"
 pid-file = "./agent.pid"
+event-loop = "uvloop"
 
 
 [container]
