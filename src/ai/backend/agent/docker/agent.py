@@ -22,6 +22,7 @@ from typing import (
 from typing_extensions import Literal
 
 import aiohttp
+import aiozmq
 import attr
 from async_timeout import timeout
 import zmq
@@ -45,7 +46,7 @@ from ai.backend.common.types import (
 )
 from .kernel import DockerKernel
 from .resources import detect_resources
-from ..exception import InsufficientResource
+from ..exception import InsufficientResource, InitializationError
 from ..fs import create_tmp_filesystem, destroy_tmp_filesystem
 from ..kernel import match_krunner_volume, KernelFeatures
 from ..resources import (
@@ -84,6 +85,7 @@ class DockerAgent(AbstractAgent):
     agent_sockpath: Path
     agent_sock_task: asyncio.Task
     scan_images_timer: asyncio.Task
+    storage_agent: aiozmq.rpc.RPCClient
 
     def __init__(self, config) -> None:
         super().__init__(config)
@@ -201,6 +203,7 @@ class DockerAgent(AbstractAgent):
                         'kernel_host': kernel_host,
                         'repl_in_port': port_map[2000],
                         'repl_out_port': port_map[2001],
+                        'scratch_dir': scratch_dir,
                         'stdin_port': port_map.get(2002, 0),
                         'stdout_port': port_map.get(2003, 0),
                         'host_ports': [*port_map.values()],
@@ -359,7 +362,9 @@ class DockerAgent(AbstractAgent):
 
         if self.config['container']['scratch-type'] == 'storage-agent':
             scratch_size = self.config['container']['scratch-size']
-            scratch_dir = Path(await self.storage_agent.call.create(kernel_id, f'{scratch_size:g}'))
+            scratch_dir = Path(await self.storage_agent.call.create(
+                kernel_id, str(round(int(scratch_size) / 1024)) + 'k'
+            ))
         else:
             scratch_dir = (self.config['container']['scratch-root'] / kernel_id).resolve()
         tmp_dir = (self.config['container']['scratch-root'] / f'{kernel_id}_tmp').resolve()
@@ -579,7 +584,9 @@ class DockerAgent(AbstractAgent):
         if restarting:
             pass
         else:
-            os.makedirs(scratch_dir, exist_ok=True)
+            if self.config['container']['scratch-type'] != 'storage-agent':
+                os.makedirs(scratch_dir, exist_ok=True)
+
             if (sys.platform.startswith('linux') and
                 self.config['container']['scratch-type'] == 'memory'):
                 os.makedirs(tmp_dir, exist_ok=True)
@@ -781,6 +788,7 @@ class DockerAgent(AbstractAgent):
                 'kernel_host': kernel_host,
                 'repl_in_port': repl_in_port,
                 'repl_out_port': repl_out_port,
+                'scratch_dir': scratch_dir,
                 'stdin_port': stdin_port,    # legacy
                 'stdout_port': stdout_port,  # legacy
                 'host_ports': host_ports,
@@ -922,8 +930,8 @@ class DockerAgent(AbstractAgent):
                 try:
                     if (sys.platform.startswith('linux') and
                         self.config['container']['scratch-type'] == 'memory'):
-                        await destroy_scratch_filesystem(scratch_dir)
-                        await destroy_scratch_filesystem(tmp_dir)
+                        await destroy_tmp_filesystem(scratch_dir)
+                        await destroy_tmp_filesystem(tmp_dir)
                         shutil.rmtree(tmp_dir)
                     shutil.rmtree(scratch_dir)
                 except FileNotFoundError:
@@ -999,4 +1007,3 @@ class DockerAgent(AbstractAgent):
                 self.orphan_tasks.add(
                     self.loop.create_task(self.clean_kernel(kernel_id))
                 )
-
