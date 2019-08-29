@@ -58,7 +58,7 @@ class DockerKernel(AbstractKernel):
 
     async def get_logs(self):
         container_id = self.data['container_id']
-        container = await self.docker.containers.get(container_id)
+        container = await self._docker.containers.get(container_id)
         logs = await container.log(stdout=True, stderr=True)
         return {'logs': ''.join(logs)}
 
@@ -104,7 +104,7 @@ class DockerKernel(AbstractKernel):
 
     async def download_file(self, filepath):
         container_id = self.data['container_id']
-        container = self.docker.containers.container(container_id)
+        container = self._docker.containers.container(container_id)
         # Limit file path to /home/work inside a container.
         # TODO: extend path search in virtual folders.
         abspath = (Path('/home/work') / filepath).resolve()
