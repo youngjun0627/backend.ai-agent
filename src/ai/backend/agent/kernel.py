@@ -97,7 +97,32 @@ class AbstractKernel(UserDict, metaclass=ABCMeta):
         self._tasks: Set[asyncio.Task] = set()
 
     @abstractmethod
-    async def create_code_runner(self, *, client_features: Set[str], api_version: int):
+    async def close(self):
+        '''
+        Release internal resources used for interacting with the kernel.
+        Note that this does NOT terminate the container.
+        '''
+        pass
+
+    # We don't have "allocate_slots()" method here because:
+    # - resource_spec is initialized by allocating slots at computer's alloc_map
+    #   when creating new kernels.
+    # - restoration from running containers is done by computer's classmethod
+    #   "restore_from_container"
+
+    def release_slots(self, computer_ctxs):
+        '''
+        Release the resource slots occupied by the kernel
+        to the allocation maps.
+        '''
+        for accel_key, accel_alloc in self.resource_spec.allocations.items():
+            computer_ctxs[accel_key].alloc_map.free(accel_alloc)
+
+    @abstractmethod
+    def create_code_runner(self, *,
+                           client_features: Set[str],
+                           api_version: int) \
+                           -> 'AbstractCodeRunner':
         raise NotImplementedError
 
     @abstractmethod

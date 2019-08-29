@@ -167,7 +167,7 @@ class AgentServer(AbstractAgentServer):
             elif status in {'exited', 'dead', 'removing'}:
                 log.info('detected terminated kernel: {0}', kernel_id)
                 await self.send_event('kernel_terminated', kernel_id,
-                                        'self-terminated', None)
+                                      'self-terminated', None)
 
         log.info('starting with resource allocations')
         for computer_name, computer_ctx in self.computers.items():
@@ -593,22 +593,22 @@ class AgentServer(AbstractAgentServer):
                 dev_type = slot_type.split('.', maxsplit=1)[0]
                 dev_types.add(dev_type)
 
-            for dev_type in dev_types:
-                computer_set = self.computers[dev_type]
-                device_specific_slots = {
-                    slot_type: amount for slot_type, amount in slots.items()
-                    if slot_type.startswith(dev_type)
-                }
-                try:
+            try:
+                for dev_type in dev_types:
+                    computer_set = self.computers[dev_type]
+                    device_specific_slots = {
+                        slot_type: amount for slot_type, amount in slots.items()
+                        if slot_type.startswith(dev_type)
+                    }
                     resource_spec.allocations[dev_type] = \
                         computer_set.alloc_map.allocate(device_specific_slots,
                                                         context_tag=dev_type)
-                except InsufficientResource:
-                    log.info('insufficient resource: {} of {}\n'
-                             '(alloc map: {})',
-                             device_specific_slots, dev_type,
-                             computer_set.alloc_map.allocations)
-                    raise
+            except InsufficientResource:
+                log.info('insufficient resource: {} of {}\n'
+                         '(alloc map: {})',
+                         device_specific_slots, dev_type,
+                         computer_set.alloc_map.allocations)
+                raise
 
             # Realize vfolder mounts.
             for vfolder in vfolders:
@@ -988,13 +988,15 @@ class AgentServer(AbstractAgentServer):
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
                 log.warning('destroy_kernel({0}) already dead', kernel_id)
-                pass
+                kernel_obj.release_slots(self.computers)
+                await kernel_obj.close()
+                self.container_registry.pop(kernel_id, None)
             elif e.status == 404:
+                # missing
                 log.warning('destroy_kernel({0}) kernel missing, '
                             'forgetting this kernel', kernel_id)
-                resource_spec = kernel_obj.resource_spec
-                for accel_key, accel_alloc in resource_spec.allocations.items():
-                    self.computers[accel_key].alloc_map.free(accel_alloc)
+                kernel_obj.release_slots(self.computers)
+                await kernel_obj.close()
                 self.container_registry.pop(kernel_id, None)
             else:
                 log.exception('destroy_kernel({0}) kill error', kernel_id)
@@ -1156,8 +1158,8 @@ class AgentServer(AbstractAgentServer):
                             '{0} with exit code {1} ({2})',
                             container_id[:7], exit_code, kernel_id)
                 await self.send_event('kernel_terminated',
-                                        kernel_id, 'self-terminated',
-                                        None)
+                                      kernel_id, 'self-terminated',
+                                      None)
                 self._orphan_tasks.add(
                     self.loop.create_task(self.clean_kernel(kernel_id))
                 )
@@ -1217,9 +1219,7 @@ class AgentServer(AbstractAgentServer):
                     shutil.rmtree(scratch_dir)
                 except FileNotFoundError:
                     pass
-                resource_spec = kernel_obj.resource_spec
-                for accel_key, accel_alloc in resource_spec.allocations.items():
-                    self.computers[accel_key].alloc_map.free(accel_alloc)
+                kernel_obj.release_slots(self.computers)
                 await kernel_obj.close()
                 self.container_registry.pop(kernel_id, None)
         except Exception:

@@ -38,10 +38,6 @@ class DockerKernel(AbstractKernel):
         self._docker = Docker()
 
     async def close(self):
-        '''
-        Release resources used for interacting with the container.
-        Note that this does NOT terminate the container.
-        '''
         await self._docker.close()
 
     def create_code_runner(self, *,
