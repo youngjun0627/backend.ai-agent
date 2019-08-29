@@ -1,14 +1,18 @@
 Changes
 =======
 
-19.09.0b8 (2019-xx-xx)
+19.09.0b8 (2019-08-30)
 ----------------------
 
 * NEW: Add support for running CentOS-based kernel images by adding CentOS 7.6-based builds for
   libbaihook and su-exec binaries.
 
+* NEW: watcher: Add support for fstab/mount/unmount management APIs for superadmins (#134)
+
 * Improve stability of cancellation during shutdown via refactoring and let uvloop work more consistently
   with vanilla asyncio.  (#133)
+
+  - Now the agent daemon handles SIGINT and SIGTERM much more gracefully.
 
   - Upgrade aiotools to v0.8.2+
 
