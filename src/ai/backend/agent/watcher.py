@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from pathlib import Path
 from pprint import pprint, pformat
 import signal
@@ -7,6 +8,7 @@ import ssl
 import subprocess
 import sys
 
+import aiofiles
 import aiojobs.aiohttp
 from aiohttp import web
 import aiotools
@@ -17,6 +19,7 @@ import trafaret as t
 from ai.backend.common import config, utils, validators as tx
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
+from ai.backend.common.utils import Fstab
 from . import __version__ as VERSION
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.watcher'))
@@ -123,16 +126,104 @@ async def handle_agent_restart(request: web.Request) -> web.Response:
     })
 
 
+async def handle_fstab_detail(request: web.Request) -> web.Response:
+    log.info('HANDLE_FSTAB_DETAIL')
+    params = request.query
+    fstab_path = params.get('fstab_path', '/etc/fstab')
+    async with aiofiles.open(fstab_path, mode='r') as fp:
+        content = await fp.read()
+        return web.Response(text=content)
+
+
+async def handle_list_mounts(request: web.Request) -> web.Response:
+    log.info('HANDLE_LIST_MOUNT')
+    config = request.app['config_server']
+    mount_prefix = await config.get('volumes/_mount')
+    if mount_prefix is None:
+        mount_prefix = '/mnt'
+    mounts = set()
+    for p in Path(mount_prefix).iterdir():
+        # TODO: Change os.path.ismount to p.is_mount if Python 3.7 is supported.
+        if p.is_dir() and os.path.ismount(str(p)):
+            mounts.add(str(p))
+    return web.json_response(sorted(mounts))
+
+
+async def handle_mount(request: web.Request) -> web.Response:
+    log.info('HANDLE_MOUNT')
+    params = await request.json()
+    config = request.app['config_server']
+    mount_prefix = await config.get('volumes/_mount')
+    if mount_prefix is None:
+        mount_prefix = '/mnt'
+    mountpoint = Path(mount_prefix) / params['name']
+    mountpoint.mkdir(exist_ok=True)
+    proc = await asyncio.create_subprocess_exec(*[
+        'mount', '-t', params['fs_type'],
+        params['fs_location'], str(mountpoint),
+    ], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, err = await proc.communicate()
+    out = out.decode('utf8')
+    err = err.decode('utf8')
+    await proc.wait()
+    if err:
+        log.error('Mount error: ' + err)
+        resp = web.Response(text=err, status=500)
+    else:
+        log.info('Mounted ' + params['name'] + ' on ' + mount_prefix)
+        resp = web.Response(text=out)
+    if params['edit_fstab']:
+        fstab_path = params['fstab_path'] if params['fstab_path'] else '/etc/fstab'
+        async with aiofiles.open(fstab_path, mode='r+') as fp:
+            fstab = Fstab(fp)
+            await fstab.add(params['fs_location'], str(mountpoint),
+                            params['fs_type'], params['options'])
+    return resp
+
+
+async def handle_umount(request: web.Request) -> web.Response:
+    log.info('HANDLE_UMOUNT')
+    params = await request.json()
+    config = request.app['config_server']
+    mount_prefix = await config.get('volumes/_mount')
+    if mount_prefix is None:
+        mount_prefix = '/mnt'
+    mountpoint = Path(mount_prefix) / params['name']
+    proc = await asyncio.create_subprocess_exec(*[
+        'umount', str(mountpoint),
+    ], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, err = await proc.communicate()
+    out = out.decode('utf8')
+    err = err.decode('utf8')
+    await proc.wait()
+    if err:
+        log.error('Unmount error: ' + err)
+        resp = web.Response(text=err, status=500)
+    else:
+        log.info('Unmounted ' + params['name'] + ' from ' + mount_prefix)
+        resp = web.Response(text=out)
+    if params['edit_fstab']:
+        fstab_path = params['fstab_path'] if params['fstab_path'] else '/etc/fstab'
+        async with aiofiles.open(fstab_path, mode='r+') as fp:
+            fstab = Fstab(fp)
+            await fstab.remove_by_mountpoint(str(mountpoint))
+    return resp
+
+
 async def init_app(app):
     r = app.router.add_route
     r('GET', '/', handle_status)
     if app['config']['watcher']['soft-reset-available']:
         r('POST', '/soft-reset', handle_soft_reset)
-    r('POST', '/hard-reset', handle_hard_reset)
-    r('POST', '/shutdown', handle_shutdown)
-    r('POST', '/agent/start', handle_agent_start)
-    r('POST', '/agent/stop', handle_agent_stop)
-    r('POST', '/agent/restart', handle_agent_restart)
+    r('POST',   '/hard-reset', handle_hard_reset)
+    r('POST',   '/shutdown', handle_shutdown)
+    r('POST',   '/agent/start', handle_agent_start)
+    r('POST',   '/agent/stop', handle_agent_stop)
+    r('POST',   '/agent/restart', handle_agent_restart)
+    r('GET',    '/fstab', handle_fstab_detail)
+    r('GET',    '/mounts', handle_list_mounts)
+    r('POST',   '/mounts', handle_mount)
+    r('DELETE', '/mounts', handle_umount)
 
 
 async def shutdown_app(app):
@@ -164,6 +255,7 @@ async def watcher_server(loop, pidx, args):
                      app['config']['etcd']['namespace'],
                      scope_prefix_map=scope_prefix_map,
                      credentials=etcd_credentials)
+    app['config_server'] = etcd
 
     token = await etcd.get('config/watcher/token')
     if token is None:
