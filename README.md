@@ -204,24 +204,50 @@ python -m ai.backend.agent.watcher
 
 For more arguments and options, run the command with `--help` option.
 
-### Example config for agent server/instances
+### Example config for systemd
 
-`/etc/supervisor/conf.d/agent.conf`:
+`/etc/systemd/system/backendai-agent.service`:
 
 ```dosini
-[program:backend.ai-agent]
-user = user
-stopsignal = TERM
-stopasgroup = true
-command = /home/user/run-agent.sh
+[Unit]
+Description=Backend.AI Agent
+Requires=docker.service
+After=network.target remote-fs.target docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=HOME=/home/user
+ExecStart=/home/user/backend.ai/agent/run-agent.sh
+WorkingDirectory=/home/user/backend.ai/agent
+KillMode=process
+KillSignal=SIGTERM
+PrivateTmp=false
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-`/home/user/run-agent.sh`:
+`/home/user/agent/run-agent.sh`:
 
 ```sh
-#!/bin/sh
-source /home/user/venv-agent/bin/activate
-exec python -m ai.backend.agent.server
+#! /bin/sh
+if [ -z "$PYENV_ROOT" ]; then
+  export PYENV_ROOT="$HOME/.pyenv"
+  export PATH="$PYENV_ROOT/bin:$PATH"
+fi
+eval "$(pyenv init -)"
+eval "$(pyenv virtualenv-init -)"
+
+cd /home/user/backend.ai/agent
+if [ "$#" -eq 0 ]; then
+  exec python -m ai.backend.agent.server
+else
+  exec "$@"
+fi
 ```
 
 ### Networking
