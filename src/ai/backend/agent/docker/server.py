@@ -221,24 +221,19 @@ class AgentServer(AbstractAgentServer):
             else:
                 if my_uid != kernel_uid:
                     log.error('The UID of agent ({}) must be same to the container UID ({}).',
-                                my_uid, kernel_uid)
+                              my_uid, kernel_uid)
                 if my_gid != kernel_gid:
                     log.error('The GID of agent ({}) must be same to the container GID ({}).',
-                                my_gid, kernel_gid)
+                              my_gid, kernel_gid)
             log.info('opened stat-sync socket at {}', self.stat_sync_sockpath)
             recv = functools.partial(stat_sync_sock.recv_serialized,
-                                        lambda frames: [*map(msgpack.unpackb, frames)])
+                                     lambda frames: [*map(msgpack.unpackb, frames)])
             send = functools.partial(stat_sync_sock.send_serialized,
-                                        serialize=lambda msgs: [*map(msgpack.packb, msgs)])
+                                     serialize=lambda msgs: [*map(msgpack.packb, msgs)])
             async for msg in aiotools.aiter(lambda: recv(), None):
                 cid = msg[0]['cid']
                 status = msg[0]['status']
                 try:
-                    if cid not in self.stat_sync_states:
-                        # If the agent has restarted, the state-tracking dict may be empty.
-                        container = self.docker.containers.container(cid)
-                        kernel_id = await get_kernel_id_from_container(container)
-                        self.stat_sync_states[cid] = StatSyncState(kernel_id)
                     if status == 'terminated':
                         self.stat_sync_states[cid].terminated.set()
                     elif status == 'collect-stat':
@@ -972,7 +967,12 @@ class AgentServer(AbstractAgentServer):
             # Collect the last-moment statistics.
             if cid in self.stat_sync_states:
                 s = self.stat_sync_states[cid]
-                await s.terminated.wait()
+                try:
+                    with timeout(5):
+                        await s.terminated.wait()
+                except asyncio.TimeoutError:
+                    log.warning('stat-collector shutdown sync timeout.')
+                    return None
                 last_stat = s.last_stat
                 self.stat_sync_states.pop(cid, None)
                 last_stat = {
