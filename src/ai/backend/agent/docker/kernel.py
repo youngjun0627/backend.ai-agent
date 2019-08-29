@@ -69,8 +69,7 @@ class DockerKernel(AbstractKernel):
 
     async def start_service(self, service, opts):
         await self.ensure_runner()
-        service_ports = self.data['service_ports']
-        for sport in service_ports:
+        for sport in self.service_ports:
             if sport['name'] == service:
                 break
         else:
