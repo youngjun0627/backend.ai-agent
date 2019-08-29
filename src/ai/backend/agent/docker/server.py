@@ -260,7 +260,10 @@ class AgentServer(AbstractAgentServer):
                 pass
 
     async def collect_node_stat(self, interval):
-        await asyncio.shield(self.stat_ctx.collect_node_stat())
+        try:
+            await self.stat_ctx.collect_node_stat()
+        except asyncio.CancelledError:
+            pass
 
     async def init(self):
         ipc_base_path.mkdir(parents=True, exist_ok=True)
@@ -341,6 +344,7 @@ class AgentServer(AbstractAgentServer):
         for kernel_obj in self.container_registry.values():
             if kernel_obj.runner is not None:
                 await kernel_obj.runner.close()
+            await kernel_obj.close()
 
         if stop_signal == signal.SIGTERM:
             await self.clean_all_kernels(blocking=True)
@@ -372,6 +376,7 @@ class AgentServer(AbstractAgentServer):
             await self.docker.events.stop()
         except Exception:
             pass
+
         await self.docker.close()
 
         # Stop stat collector task.

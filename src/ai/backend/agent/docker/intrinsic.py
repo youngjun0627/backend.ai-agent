@@ -119,6 +119,11 @@ class CPUPlugin(AbstractComputePlugin):
             try:
                 container = DockerContainer(ctx.agent.docker, id=container_id)
                 ret = await container.stats(stream=False)  # TODO: cache
+            except RuntimeError as e:
+                msg = str(e.args[0]).lower()
+                if 'event loop is closed' in msg or 'session is closed' in msg:
+                    return None
+                raise
             except (DockerError, aiohttp.ClientError):
                 short_cid = container._id[:7]
                 log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')
@@ -371,6 +376,11 @@ class MemoryPlugin(AbstractComputePlugin):
             try:
                 container = DockerContainer(ctx.agent.docker, id=container_id)
                 ret = await container.stats(stream=False)  # TODO: cache
+            except RuntimeError as e:
+                msg = str(e.args[0]).lower()
+                if 'event loop is closed' in msg or 'session is closed' in msg:
+                    return None
+                raise
             except (DockerError, aiohttp.ClientError):
                 short_cid = container._id[:7]
                 log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')

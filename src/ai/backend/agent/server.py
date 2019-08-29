@@ -575,7 +575,10 @@ async def server_main(loop, pidx, _args):
     finally:
         # Shutdown.
         log.info('shutting down...')
-        await agent.shutdown(stop_signal)
+        try:
+            await agent.shutdown(stop_signal)
+        except Exception:
+            log.exception('unexpected error during agent shutdown')
 
 
 @click.group(invoke_without_command=True)
