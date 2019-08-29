@@ -972,7 +972,6 @@ class AgentServer(AbstractAgentServer):
                         await s.terminated.wait()
                 except asyncio.TimeoutError:
                     log.warning('stat-collector shutdown sync timeout.')
-                    return None
                 last_stat = s.last_stat
                 self.stat_sync_states.pop(cid, None)
                 last_stat = {
