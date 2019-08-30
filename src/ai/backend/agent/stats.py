@@ -377,8 +377,6 @@ class StatContext:
                 for metric_key, per_device in self.device_metrics.items()
             },
         }
-        log.debug('stats: node_updates: {0}: {1}',
-                  self.agent.config['agent']['id'], redis_agent_updates['node'])
         pipe.set(self.agent.config['agent']['id'], msgpack.packb(redis_agent_updates))
         pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
         for kernel_id, metrics in self.kernel_metrics.items():
@@ -386,8 +384,6 @@ class StatContext:
                 key: obj.to_serializable_dict()
                 for key, obj in metrics.items()
             }
-            log.debug('stats: kernel_updates: {0}: {1}',
-                      kernel_id, serialized_metrics)
             pipe.set(kernel_id, msgpack.packb(serialized_metrics))
             pipe.expire(kernel_id, self.cache_lifespan)
         await pipe.execute()
@@ -445,8 +441,6 @@ class StatContext:
                 key: obj.to_serializable_dict()
                 for key, obj in metrics.items()
             }
-            log.debug('kernel_updates: {0}: {1}',
-                      kernel_id, serialized_metrics)
             pipe.set(kernel_id, msgpack.packb(serialized_metrics))
             pipe.expire(kernel_id, self.cache_lifespan)
             await pipe.execute()
