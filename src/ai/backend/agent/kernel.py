@@ -12,13 +12,14 @@ import time
 from typing import Any, Mapping, Set, Tuple
 
 from async_timeout import timeout
-import msgpack
 import zmq
 
+from ai.backend.common import msgpack
 from ai.backend.common.docker import ImageRef
 from ai.backend.common.utils import StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
 from .resources import KernelResourceSpec
+from .utils import current_loop
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
@@ -126,6 +127,10 @@ class AbstractKernel(UserDict, metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
+    async def check_status(self):
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_completions(self, text, opts):
         raise NotImplementedError
 
@@ -196,8 +201,8 @@ class AbstractKernel(UserDict, metaclass=ABCMeta):
 
 class AbstractCodeRunner:
 
-    def __init__(self, repl_in_port, repl_out_port,
-                 exec_timeout, client_features=None):
+    def __init__(self, repl_in_port, repl_out_port, *,
+                 exec_timeout=0, client_features=None):
         self.started_at = None
         self.finished_at = None
         self.repl_in_port = repl_in_port
@@ -210,12 +215,16 @@ class AbstractCodeRunner:
         self.max_record_size = 10485760  # 10 MBytes
         self.completion_queue = asyncio.Queue(maxsize=128)
         self.service_queue = asyncio.Queue(maxsize=128)
+        self.status_queue = asyncio.Queue(maxsize=128)
         self.read_task = None
         self.client_features = client_features or set()
 
         self.output_queue = None
         self.pending_queues = OrderedDict()
         self.current_run_id = None
+
+        loop = current_loop()
+        self.status_task = loop.create_task(self.ping_status())
 
     async def start(self):
         pass
@@ -224,6 +233,9 @@ class AbstractCodeRunner:
         if self.watchdog_task and not self.watchdog_task.done():
             self.watchdog_task.cancel()
             await self.watchdog_task
+        if self.status_task and not self.status_task.done():
+            self.status_task.cancel()
+            await self.status_task
         if self.input_sock:
             self.input_sock.close()
         if self.output_sock:
@@ -231,8 +243,21 @@ class AbstractCodeRunner:
         if self.read_task and not self.read_task.done():
             self.read_task.cancel()
             await self.read_task
-            self.read_task = None
         self.zctx.term()
+
+    async def ping_status(self):
+        '''
+        This is to keep the REPL in/out port mapping in the Linux
+        kernel's NAT table alive.
+        '''
+        log.warning('ping_status: started')
+        try:
+            while True:
+                await self.feed_and_get_status()
+                await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            log.warning('ping_status: stopped')
+            pass
 
     async def feed_batch(self, opts):
         clean_cmd = opts.get('clean', '')
@@ -265,6 +290,15 @@ class AbstractCodeRunner:
 
     async def feed_interrupt(self):
         await self.input_sock.send_multipart([b'interrupt', b''])
+
+    async def feed_and_get_status(self):
+        await self.input_sock.send_multipart([b'status', b''])
+        try:
+            result = await self.status_queue.get()
+            self.status_queue.task_done()
+            return msgpack.unpackb(result)
+        except asyncio.CancelledError:
+            return None
 
     async def feed_and_get_completion(self, code_text, opts):
         payload = {
@@ -528,24 +562,18 @@ class AbstractCodeRunner:
         while True:
             try:
                 msg_type, msg_data = await self.output_sock.recv_multipart()
-                # TODO: test if save-load runner states is working
-                #       by printing received messages here
-                if len(msg_data) > self.max_record_size:
-                    msg_data = msg_data[:self.max_record_size]
                 try:
                     if msg_type == b'status':
-                        msgpack.unpackb(msg_data, encoding='utf8')
-                        # TODO: not implemented yet
+                        await self.status_queue.put(msg_data)
                     elif msg_type == b'completion':
-                        # As completion is processed asynchronously
-                        # to the main code execution, we directly
-                        # put the result into a separate queue.
                         await self.completion_queue.put(msg_data)
                     elif msg_type == b'service-result':
                         await self.service_queue.put(msg_data)
                     elif msg_type == b'stdout':
                         if self.output_queue is None:
                             continue
+                        if len(msg_data) > self.max_record_size:
+                            msg_data = msg_data[:self.max_record_size]
                         await self.output_queue.put(
                             ResultRecord(
                                 'stdout',
@@ -554,6 +582,8 @@ class AbstractCodeRunner:
                     elif msg_type == b'stderr':
                         if self.output_queue is None:
                             continue
+                        if len(msg_data) > self.max_record_size:
+                            msg_data = msg_data[:self.max_record_size]
                         await self.output_queue.put(
                             ResultRecord(
                                 'stderr',

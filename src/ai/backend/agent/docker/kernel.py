@@ -48,13 +48,18 @@ class DockerKernel(AbstractKernel):
             self.data['kernel_host'],
             self.data['repl_in_port'],
             self.data['repl_out_port'],
-            0,
-            client_features)
+            exec_timeout=0,
+            client_features=client_features)
 
     async def get_completions(self, text, opts):
         await self.ensure_runner()
         result = await self.runner.feed_and_get_completion(text, opts)
         return {'status': 'finished', 'completions': result}
+
+    async def check_status(self):
+        await self.ensure_runner()
+        result = await self.runner.feed_and_get_status()
+        return result
 
     async def get_logs(self):
         container_id = self.data['container_id']
@@ -105,9 +110,12 @@ class DockerKernel(AbstractKernel):
     async def download_file(self, filepath):
         container_id = self.data['container_id']
         container = self._docker.containers.container(container_id)
-        # Limit file path to /home/work inside a container.
-        # TODO: extend path search in virtual folders.
-        abspath = (Path('/home/work') / filepath).resolve()
+        home_path = Path('/home/work')
+        try:
+            abspath = (home_path / filepath).resolve()
+            abspath.relative_to(home_path)
+        except ValueError:
+            raise PermissionError('You cannot download files outside /home/work')
         try:
             with await container.get_archive(abspath) as tarobj:
                 tarobj.fileobj.seek(0, 2)
@@ -168,11 +176,13 @@ class DockerKernel(AbstractKernel):
 
 
 class DockerCodeRunner(AbstractCodeRunner):
-    def __init__(self, kernel_id,
-                    kernel_host, repl_in_port, repl_out_port,
-                    exec_timeout, client_features=None):
+
+    def __init__(self, kernel_id, kernel_host,
+                 repl_in_port, repl_out_port, *,
+                 exec_timeout=0, client_features=None):
         super().__init__(
-            repl_in_port, repl_out_port, exec_timeout,
+            repl_in_port, repl_out_port,
+            exec_timeout=exec_timeout,
             client_features=client_features)
         self.kernel_id = kernel_id
         self.kernel_host = kernel_host
