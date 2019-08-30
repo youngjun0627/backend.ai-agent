@@ -168,17 +168,15 @@ async def handle_mount(request: web.Request) -> web.Response:
     await proc.wait()
     if err:
         log.error('Mount error: ' + err)
-        resp = web.Response(text=err, status=500)
-    else:
-        log.info('Mounted ' + params['name'] + ' on ' + mount_prefix)
-        resp = web.Response(text=out)
+        return web.Response(text=err, status=500)
+    log.info('Mounted ' + params['name'] + ' on ' + mount_prefix)
     if params['edit_fstab']:
         fstab_path = params['fstab_path'] if params['fstab_path'] else '/etc/fstab'
         async with aiofiles.open(fstab_path, mode='r+') as fp:
             fstab = Fstab(fp)
             await fstab.add(params['fs_location'], str(mountpoint),
                             params['fs_type'], params['options'])
-    return resp
+    return web.Response(text=out)
 
 
 async def handle_umount(request: web.Request) -> web.Response:
@@ -189,6 +187,7 @@ async def handle_umount(request: web.Request) -> web.Response:
     if mount_prefix is None:
         mount_prefix = '/mnt'
     mountpoint = Path(mount_prefix) / params['name']
+    assert Path(mount_prefix) != mountpoint
     proc = await asyncio.create_subprocess_exec(*[
         'umount', str(mountpoint),
     ], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -198,16 +197,18 @@ async def handle_umount(request: web.Request) -> web.Response:
     await proc.wait()
     if err:
         log.error('Unmount error: ' + err)
-        resp = web.Response(text=err, status=500)
-    else:
-        log.info('Unmounted ' + params['name'] + ' from ' + mount_prefix)
-        resp = web.Response(text=out)
+        return web.Response(text=err, status=500)
+    log.info('Unmounted ' + params['name'] + ' from ' + mount_prefix)
+    try:
+        mountpoint.rmdir()  # delete directory if empty
+    except OSError:
+        pass
     if params['edit_fstab']:
         fstab_path = params['fstab_path'] if params['fstab_path'] else '/etc/fstab'
         async with aiofiles.open(fstab_path, mode='r+') as fp:
             fstab = Fstab(fp)
             await fstab.remove_by_mountpoint(str(mountpoint))
-    return resp
+    return web.Response(text=out)
 
 
 async def init_app(app):
