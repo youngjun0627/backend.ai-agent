@@ -1,6 +1,11 @@
 Changes
 =======
 
+19.09.0b10 (2019-08-31)
+-----------------------
+
+* FIX: regression of batch-mode execution (file uploads to kernels) due to refactoring
+
 19.09.0b9 (2019-08-31)
 ----------------------
 
