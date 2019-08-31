@@ -10,6 +10,8 @@ Changes
   This allow execution of very long computation (more than 5 days) without interruption as long as
   the idle timeout configuration allows.
 
+* FIX: When reading plugin configurations, merge scaling-group and global configurations correctly.
+
 * FIX: No longer change the fstab if mount operations fail. Also delete the unmounted folder
   if it is empty after unmount was successful.
 
