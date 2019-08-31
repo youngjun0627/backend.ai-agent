@@ -18,7 +18,7 @@ import msgpack
 import zmq
 
 from . import __version__ as VERSION
-from .utils import get_krunner_image_ref
+from .utils import get_krunner_image_ref, current_loop
 from ai.backend.common.utils import StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
 
@@ -94,6 +94,7 @@ class KernelRunner:
         self.max_record_size = 10485760  # 10 MBytes
         self.completion_queue = asyncio.Queue(maxsize=128)
         self.service_queue = asyncio.Queue(maxsize=128)
+        self.status_queue = asyncio.Queue(maxsize=128)
         self.read_task = None
         self.client_features = client_features or set()
 
@@ -112,9 +113,11 @@ class KernelRunner:
             zmq.PULL, connect=f'tcp://{self.kernel_host}:{self.repl_out_port}')
         self.output_stream.transport.setsockopt(zmq.LINGER, 50)
 
-        self.read_task = asyncio.ensure_future(self.read_output())
+        loop = current_loop()
+        self.status_task = loop.create_task(self.ping_status())
+        self.read_task = loop.create_task(self.read_output())
         if self.exec_timeout > 0:
-            self.watchdog_task = asyncio.ensure_future(self.watchdog())
+            self.watchdog_task = loop.create_task(self.watchdog())
         else:
             self.watchdog_task = None
 
@@ -122,6 +125,9 @@ class KernelRunner:
         if self.watchdog_task and not self.watchdog_task.done():
             self.watchdog_task.cancel()
             await self.watchdog_task
+        if self.status_task and not self.status_task.done():
+            self.status_task.cancel()
+            await self.status_task
         if (self.input_stream and not self.input_stream.at_closing() and
             self.input_stream.transport):
             # only when really closable...
@@ -134,6 +140,22 @@ class KernelRunner:
             self.read_task.cancel()
             await self.read_task
             self.read_task = None
+
+    async def ping_status(self):
+        '''
+        This is to keep the REPL in/out port mapping in the Linux
+        kernel's NAT table alive.
+        '''
+        try:
+            while True:
+                ret = await self.feed_and_get_status()
+                if ret is None:
+                    break
+                await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception('unexpected error')
 
     async def feed_batch(self, opts):
         clean_cmd = opts.get('clean', '')
@@ -166,6 +188,15 @@ class KernelRunner:
 
     async def feed_interrupt(self):
         self.input_stream.write([b'interrupt', b''])
+
+    async def feed_and_get_status(self):
+        self.input_stream.write([b'status', b''])
+        try:
+            result = await self.status_queue.get()
+            self.status_queue.task_done()
+            return msgpack.unpackb(result)
+        except asyncio.CancelledError:
+            return None
 
     async def feed_and_get_completion(self, code_text, opts):
         payload = {
@@ -426,14 +457,9 @@ class KernelRunner:
         while True:
             try:
                 msg_type, msg_data = await self.output_stream.read()
-                # TODO: test if save-load runner states is working
-                #       by printing received messages here
-                if len(msg_data) > self.max_record_size:
-                    msg_data = msg_data[:self.max_record_size]
                 try:
                     if msg_type == b'status':
-                        msgpack.unpackb(msg_data, encoding='utf8')
-                        # TODO: not implemented yet
+                        await self.status_queue.put(msg_data)
                     elif msg_type == b'completion':
                         # As completion is processed asynchronously
                         # to the main code execution, we directly
@@ -442,6 +468,8 @@ class KernelRunner:
                     elif msg_type == b'service-result':
                         await self.service_queue.put(msg_data)
                     elif msg_type == b'stdout':
+                        if len(msg_data) > self.max_record_size:
+                            msg_data = msg_data[:self.max_record_size]
                         if self.output_queue is None:
                             continue
                         await self.output_queue.put(
@@ -450,6 +478,8 @@ class KernelRunner:
                                 decoders[0].decode(msg_data),
                             ))
                     elif msg_type == b'stderr':
+                        if len(msg_data) > self.max_record_size:
+                            msg_data = msg_data[:self.max_record_size]
                         if self.output_queue is None:
                             continue
                         await self.output_queue.put(
