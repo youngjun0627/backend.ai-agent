@@ -252,10 +252,14 @@ class AbstractCodeRunner:
         '''
         try:
             while True:
-                await self.feed_and_get_status()
+                ret = await self.feed_and_get_status()
+                if ret is None:
+                    break
                 await asyncio.sleep(10)
         except asyncio.CancelledError:
             pass
+        except Exception:
+            log.exception('unexpected error')
 
     async def feed_batch(self, opts):
         clean_cmd = opts.get('clean', '')
