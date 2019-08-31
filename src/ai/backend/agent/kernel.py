@@ -9,7 +9,7 @@ import logging
 import re
 import secrets
 import time
-from typing import Any, Mapping, Set, Tuple
+from typing import Any, Dict, Mapping, Set, Tuple
 
 from async_timeout import timeout
 import zmq
@@ -83,9 +83,11 @@ class ResultRecord:
 class AbstractKernel(UserDict, metaclass=ABCMeta):
 
     def __init__(self, kernel_id: str, image: ImageRef, version: str, *,
+                 config: Mapping[str, Any],
                  resource_spec: KernelResourceSpec,
                  service_ports: Any,  # TODO: type-annotation
-                 data: Mapping[str, Any]):
+                 data: Dict[str, Any]):
+        self.config = config
         self.kernel_id = kernel_id
         self.image = image
         self.version = version

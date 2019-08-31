@@ -153,6 +153,7 @@ class AgentServer(AbstractAgentServer):
                     kernel_id,
                     ImageRef(image),
                     int(labels.get('ai.backend.kernelspec', '1')),
+                    config=self.config,
                     resource_spec=resource_spec,
                     service_ports=service_ports,
                     data={
@@ -912,6 +913,7 @@ class AgentServer(AbstractAgentServer):
             kernel_id,
             image_ref,
             version,
+            config=self.config,
             service_ports=list(service_ports.values()),
             resource_spec=resource_spec,
             data={

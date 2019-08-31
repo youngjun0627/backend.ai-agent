@@ -9,7 +9,7 @@ import re
 import subprocess
 import textwrap
 import time
-from typing import Any, Mapping, Set
+from typing import Any, Dict, Mapping, Set
 
 from aiodocker.docker import Docker, DockerVolume
 from aiodocker.exceptions import DockerError
@@ -27,11 +27,13 @@ log = BraceStyleAdapter(logging.getLogger(__name__))
 class DockerKernel(AbstractKernel):
 
     def __init__(self, kernel_id: str, image: ImageRef, version: str, *,
+                 config: Mapping[str, Any],
                  resource_spec: KernelResourceSpec,
                  service_ports: Any,  # TODO: type-annotation
-                 data: Mapping[str, Any]):
+                 data: Dict[str, Any]):
         super().__init__(
             kernel_id, image, version,
+            config=config,
             resource_spec=resource_spec,
             service_ports=service_ports,
             data=data)
