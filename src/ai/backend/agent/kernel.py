@@ -250,13 +250,11 @@ class AbstractCodeRunner:
         This is to keep the REPL in/out port mapping in the Linux
         kernel's NAT table alive.
         '''
-        log.warning('ping_status: started')
         try:
             while True:
                 await self.feed_and_get_status()
                 await asyncio.sleep(10)
         except asyncio.CancelledError:
-            log.warning('ping_status: stopped')
             pass
 
     async def feed_batch(self, opts):
