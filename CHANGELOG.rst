@@ -1,6 +1,18 @@
 Changes
 =======
 
+19.09.0b9 (2019-08-31)
+----------------------
+
+* FIX: Apply a keepalive messaging at the 10-sec interval for agent-container RPC connection to avoid
+  kernel-enforced NAT connection tracker timeout (#126, lablup/backend.ai#46)
+
+  This allow execution of very long computation (more than 5 days) without interruption as long as
+  the idle timeout configuration allows.
+
+* FIX: No longer change the fstab if mount operations fail. Also delete the unmounted folder
+  if it is empty after unmount was successful.
+
 19.09.0b8 (2019-08-30)
 ----------------------
 
