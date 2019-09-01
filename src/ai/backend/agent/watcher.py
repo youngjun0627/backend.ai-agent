@@ -47,7 +47,7 @@ async def auth_middleware(request, handler):
 async def handle_status(request: web.Request) -> web.Response:
     svc = request.app['config']['watcher']['target-service']
     proc = await asyncio.create_subprocess_exec(
-        *['systemctl', 'is-active', svc],
+        *['sudo', 'systemctl', 'is-active', svc],
         stdout=subprocess.PIPE)
     status = (await proc.stdout.read()).strip().decode()
     await proc.wait()
@@ -60,7 +60,7 @@ async def handle_status(request: web.Request) -> web.Response:
 async def handle_soft_reset(request: web.Request) -> web.Response:
     svc = request.app['config']['watcher']['target-service']
     proc = await asyncio.create_subprocess_exec(
-        *['systemctl', 'reload', svc])
+        *['sudo', 'systemctl', 'reload', svc])
     await proc.wait()
     return web.json_response({
         'result': 'ok',
@@ -70,13 +70,13 @@ async def handle_soft_reset(request: web.Request) -> web.Response:
 async def handle_hard_reset(request: web.Request) -> web.Response:
     svc = request.app['config']['watcher']['target-service']
     proc = await asyncio.create_subprocess_exec(
-        *['systemctl', 'stop', svc])
+        *['sudo', 'systemctl', 'stop', svc])
     await proc.wait()
     proc = await asyncio.create_subprocess_exec(
-        *['systemctl', 'restart', 'docker.service'])
+        *['sudo', 'systemctl', 'restart', 'docker.service'])
     await proc.wait()
     proc = await asyncio.create_subprocess_exec(
-        *['systemctl', 'start', svc])
+        *['sudo', 'systemctl', 'start', svc])
     await proc.wait()
     return web.json_response({
         'result': 'ok',
@@ -87,7 +87,7 @@ async def handle_shutdown(request: web.Request) -> web.Response:
     global shutdown_enabled
     svc = request.app['config']['watcher']['target-service']
     proc = await asyncio.create_subprocess_exec(
-        *['systemctl', 'stop', svc])
+        *['sudo', 'systemctl', 'stop', svc])
     await proc.wait()
     shutdown_enabled = True
     signal.alarm(1)
@@ -99,7 +99,7 @@ async def handle_shutdown(request: web.Request) -> web.Response:
 async def handle_agent_start(request: web.Request) -> web.Response:
     svc = request.app['config']['watcher']['target-service']
     proc = await asyncio.create_subprocess_exec(
-        *['systemctl', 'start', svc])
+        *['sudo', 'systemctl', 'start', svc])
     await proc.wait()
     return web.json_response({
         'result': 'ok',
@@ -109,7 +109,7 @@ async def handle_agent_start(request: web.Request) -> web.Response:
 async def handle_agent_stop(request: web.Request) -> web.Response:
     svc = request.app['config']['watcher']['target-service']
     proc = await asyncio.create_subprocess_exec(
-        *['systemctl', 'stop', svc])
+        *['sudo', 'systemctl', 'stop', svc])
     await proc.wait()
     return web.json_response({
         'result': 'ok',
@@ -119,7 +119,7 @@ async def handle_agent_stop(request: web.Request) -> web.Response:
 async def handle_agent_restart(request: web.Request) -> web.Response:
     svc = request.app['config']['watcher']['target-service']
     proc = await asyncio.create_subprocess_exec(
-        *['systemctl', 'restart', svc])
+        *['sudo', 'systemctl', 'restart', svc])
     await proc.wait()
     return web.json_response({
         'result': 'ok',
@@ -159,10 +159,10 @@ async def handle_mount(request: web.Request) -> web.Response:
     mountpoint = Path(mount_prefix) / params['name']
     mountpoint.mkdir(exist_ok=True)
     if params.get('options', None):
-        cmd = ['mount', '-t', params['fs_type'], '-o', params['options'],
+        cmd = ['sudo', 'mount', '-t', params['fs_type'], '-o', params['options'],
                params['fs_location'], str(mountpoint)]
     else:
-        cmd = ['mount', '-t', params['fs_type'],
+        cmd = ['sudo', 'mount', '-t', params['fs_type'],
                params['fs_location'], str(mountpoint)]
     proc = await asyncio.create_subprocess_exec(*cmd,
                                                 stdout=asyncio.subprocess.PIPE,
@@ -194,7 +194,7 @@ async def handle_umount(request: web.Request) -> web.Response:
     mountpoint = Path(mount_prefix) / params['name']
     assert Path(mount_prefix) != mountpoint
     proc = await asyncio.create_subprocess_exec(*[
-        'umount', str(mountpoint),
+        'sudo', 'umount', str(mountpoint),
     ], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     out, err = await proc.communicate()
     out = out.decode('utf8')
