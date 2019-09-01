@@ -379,7 +379,7 @@ class MemoryPlugin(AbstractComputePlugin):
             loop = current_loop()
             scratch_sz = await loop.run_in_executor(
                 None, get_scratch_size, container_id)
-            return mem_cur_bytes, io_read_bytes, io_write_bytes, scratch_sz
+            return mem_cur_bytes, io_read_bytes, io_write_bytes, scratch_sz, shared_mem_cur_bytes
 
         async def api_impl(container_id):
             try:
