@@ -345,6 +345,15 @@ class MemoryPlugin(AbstractComputePlugin):
             io_prefix = f'/sys/fs/cgroup/blkio/docker/{container_id}/'
             try:
                 mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes')
+                active_anon = read_sysfs(mem_prefix + 'memory_stats.stats.active_anon')
+                inactive_anon = read_sysfs(mem_prefix + 'memory_stats.stats.inactive_anon')
+                active_file = read_sysfs(mem_prefix + 'memory_stats.stats.active_file')
+                inactive_file = read_sysfs(mem_prefix + 'memory_stats.stats.inactive_file')
+                cache = read_sysfs(mem_prefix + 'memory_stats.stats.cache')
+                rss = read_sysfs(mem_prefix + 'memory_stats.stats.rss')
+                shared_mem_cur_bytes = (
+                    (active_anon + inactive_anon - active_file - inactive_file - rss + cache) / 2.0
+                )
                 io_stats = Path(io_prefix + 'blkio.throttle.io_service_bytes').read_text()
                 # example data:
                 #   8:0 Read 13918208
@@ -392,6 +401,15 @@ class MemoryPlugin(AbstractComputePlugin):
                 if ret['preread'].startswith('0001-01-01'):
                     return None
             mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
+            active_anon = nmget(ret, 'memory_stats.stats.active_anon', 0)
+            inactive_anon = nmget(ret, 'memory_stats.stats.inactive_anon', 0)
+            active_file = nmget(ret, 'memory_stats.stats.active_file', 0)
+            inactive_file = nmget(ret, 'memory_stats.stats.inactive_file', 0)
+            cache = nmget(ret, 'memory_stats.stats.cache', 0)
+            rss = nmget(ret, 'memory_stats.stats.rss', 0)
+            shared_mem_cur_bytes = (
+                (active_anon + inactive_anon - active_file - inactive_file - rss + cache) / 2.0
+            )
             io_read_bytes = 0
             io_write_bytes = 0
             for item in nmget(ret, 'blkio_stats.io_service_bytes_recursive', []):
@@ -402,7 +420,7 @@ class MemoryPlugin(AbstractComputePlugin):
             loop = current_loop()
             scratch_sz = await loop.run_in_executor(
                 None, get_scratch_size, container_id)
-            return mem_cur_bytes, io_read_bytes, io_write_bytes, scratch_sz
+            return mem_cur_bytes, io_read_bytes, io_write_bytes, scratch_sz, shared_mem_cur_bytes
 
         if ctx.mode == StatModes.CGROUP:
             impl = sysfs_impl
@@ -413,6 +431,7 @@ class MemoryPlugin(AbstractComputePlugin):
         per_container_io_read_bytes = {}
         per_container_io_write_bytes = {}
         per_container_io_scratch_size = {}
+        per_container_shared_mem_bytes = {}
         tasks = []
         for cid in container_ids:
             tasks.append(asyncio.ensure_future(impl(cid)))
@@ -428,6 +447,8 @@ class MemoryPlugin(AbstractComputePlugin):
                 Decimal(result[2]))
             per_container_io_scratch_size[cid] = Measurement(
                 Decimal(result[3]))
+            per_container_shared_mem_bytes[cid] = Measurement(
+                Decimal(result[4]))
         return [
             ContainerMeasurement(
                 'mem', MetricTypes.USAGE,
@@ -452,6 +473,12 @@ class MemoryPlugin(AbstractComputePlugin):
                 unit_hint='bytes',
                 stats_filter={'max'},
                 per_container=per_container_io_scratch_size,
+            ),
+            ContainerMeasurement(
+                'shared_mem', MetricTypes.USAGE,
+                unit_hint='bytes',
+                stats_filter={'max'},
+                per_container=per_container_shared_mem_bytes,
             ),
         ]
 
