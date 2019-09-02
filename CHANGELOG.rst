@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.09.0b11 (2019-09-03)
+-----------------------
+
+* NEW: Add shared-memory stats
+
+* CHANGE: watcher commands are now executed with "sudo".
+
 19.09.0b10 (2019-08-31)
 -----------------------
 
