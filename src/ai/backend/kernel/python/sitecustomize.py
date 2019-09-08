@@ -20,7 +20,7 @@ if sys.version_info.major > 2:
             except ConnectionRefusedError:
                 userdata = b'<user-input-unavailable>'
         return userdata.decode()
-    builtins._input = input
+    builtins._input = input  # type: ignore
     builtins.input = _input
 else:
     # __builtins__ is an alias dict for __builtin__ in modules other than __main__.
@@ -40,5 +40,5 @@ else:
         finally:
             sock.close()
         return userdata.decode()
-    builtins._raw_input = raw_input  # noqa
-    builtins.raw_input = _raw_input
+    builtins._raw_input = builtins.raw_input  # type: ignore
+    builtins.raw_input = _raw_input           # type: ignore

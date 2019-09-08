@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import lzma
 from pathlib import Path
@@ -8,17 +7,19 @@ import platform
 import re
 import subprocess
 import textwrap
-import time
-from typing import Any, Dict, Mapping, Set
+from typing import (
+    Any,
+    Dict, Mapping,
+    FrozenSet,
+)
 
 from aiodocker.docker import Docker, DockerVolume
 from aiodocker.exceptions import DockerError
-import zmq
 
 from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
 from ..resources import KernelResourceSpec
-from ..kernel import AbstractKernel, AbstractCodeRunner, ClientFeatures
+from ..kernel import AbstractKernel, AbstractCodeRunner
 from ..utils import current_loop
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
@@ -26,40 +27,43 @@ log = BraceStyleAdapter(logging.getLogger(__name__))
 
 class DockerKernel(AbstractKernel):
 
-    def __init__(self, kernel_id: str, image: ImageRef, version: str, *,
+    # FIXME: apply TypedDict to data in Python 3.8
+
+    def __init__(self, kernel_id: str, image: ImageRef, version: int, *,
                  config: Mapping[str, Any],
                  resource_spec: KernelResourceSpec,
                  service_ports: Any,  # TODO: type-annotation
-                 data: Dict[str, Any]):
+                 data: Dict[str, Any]) -> None:
         super().__init__(
             kernel_id, image, version,
             config=config,
             resource_spec=resource_spec,
             service_ports=service_ports,
             data=data)
+
+    async def __ainit__(self) -> None:
+        await super().__ainit__()
         self._docker = Docker()
 
-    async def close(self):
+    async def close(self) -> None:
         await self._docker.close()
 
-    def create_code_runner(self, *,
-                           client_features: Set[ClientFeatures],
-                           api_version: int):
-        return DockerCodeRunner(
+    async def create_code_runner(self, *,
+                           client_features: FrozenSet[str],
+                           api_version: int) -> AbstractCodeRunner:
+        return await DockerCodeRunner.new(
             self.kernel_id,
-            self.data['kernel_host'],
-            self.data['repl_in_port'],
-            self.data['repl_out_port'],
+            kernel_host=self.data['kernel_host'],
+            repl_in_port=self.data['repl_in_port'],
+            repl_out_port=self.data['repl_out_port'],
             exec_timeout=0,
             client_features=client_features)
 
-    async def get_completions(self, text, opts):
-        await self.ensure_runner()
+    async def get_completions(self, text: str, opts: Mapping[str, Any]):
         result = await self.runner.feed_and_get_completion(text, opts)
         return {'status': 'finished', 'completions': result}
 
     async def check_status(self):
-        await self.ensure_runner()
         result = await self.runner.feed_and_get_status()
         return result
 
@@ -70,12 +74,10 @@ class DockerKernel(AbstractKernel):
         return {'logs': ''.join(logs)}
 
     async def interrupt_kernel(self):
-        await self.ensure_runner()
         await self.runner.feed_interrupt()
         return {'status': 'finished'}
 
-    async def start_service(self, service, opts):
-        await self.ensure_runner()
+    async def start_service(self, service: str, opts: Mapping[str, Any]):
         for sport in self.service_ports:
             if sport['name'] == service:
                 break
@@ -89,7 +91,7 @@ class DockerKernel(AbstractKernel):
         })
         return result
 
-    async def accept_file(self, filename, filedata):
+    async def accept_file(self, filename: str, filedata: bytes):
         loop = current_loop()
         work_dir = self.config['container']['scratch-root'] / self.kernel_id / 'work'
         try:
@@ -109,7 +111,7 @@ class DockerKernel(AbstractKernel):
             log.error('{0}: writing uploaded file failed: {1} -> {2}',
                       self.kernel_id, filename, dest_path)
 
-    async def download_file(self, filepath):
+    async def download_file(self, filepath: str):
         container_id = self.data['container_id']
         container = self._docker.containers.container(container_id)
         home_path = Path('/home/work')
@@ -135,8 +137,8 @@ class DockerKernel(AbstractKernel):
         # Confine the lookable paths in the home directory
         home_path = Path('/home/work')
         try:
-            container_path = (home_path / container_path).resolve()
-            container_path.relative_to(home_path)
+            resolved_path = (home_path / container_path).resolve()
+            resolved_path.relative_to(home_path)
         except ValueError:
             raise PermissionError('You cannot list files outside /home/work')
 
@@ -171,40 +173,34 @@ class DockerKernel(AbstractKernel):
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE)
-        outs, errs = await proc.communicate()
-        outs = outs.decode('utf-8')
-        errs = errs.decode('utf-8')
-        return {'files': outs, 'errors': errs, 'abspath': str(container_path)}
+        raw_out, raw_err = await proc.communicate()
+        out = raw_out.decode('utf-8')
+        err = raw_err.decode('utf-8')
+        return {'files': out, 'errors': err, 'abspath': str(container_path)}
 
 
 class DockerCodeRunner(AbstractCodeRunner):
 
-    def __init__(self, kernel_id, kernel_host,
-                 repl_in_port, repl_out_port, *,
-                 exec_timeout=0, client_features=None):
+    kernel_host: str
+    repl_in_port: int
+    repl_out_port: int
+
+    def __init__(self, kernel_id, *,
+                 kernel_host, repl_in_port, repl_out_port,
+                 exec_timeout=0, client_features=None) -> None:
         super().__init__(
-            repl_in_port, repl_out_port,
+            kernel_id,
             exec_timeout=exec_timeout,
             client_features=client_features)
-        self.kernel_id = kernel_id
         self.kernel_host = kernel_host
+        self.repl_in_port = repl_in_port
+        self.repl_out_port = repl_out_port
 
-    async def start(self):
-        self.started_at = time.monotonic()
+    async def get_repl_in_addr(self) -> str:
+        return f'tcp://{self.kernel_host}:{self.repl_in_port}'
 
-        self.input_sock = self.zctx.socket(zmq.PUSH)
-        self.input_sock.connect(f'tcp://{self.kernel_host}:{self.repl_in_port}')
-        self.input_sock.setsockopt(zmq.LINGER, 50)
-
-        self.output_sock = self.zctx.socket(zmq.PULL)
-        self.output_sock.connect(f'tcp://{self.kernel_host}:{self.repl_out_port}')
-        self.output_sock.setsockopt(zmq.LINGER, 50)
-
-        self.read_task = asyncio.ensure_future(self.read_output())
-        if self.exec_timeout > 0:
-            self.watchdog_task = asyncio.ensure_future(self.watchdog())
-        else:
-            self.watchdog_task = None
+    async def get_repl_out_addr(self) -> str:
+        return f'tcp://{self.kernel_host}:{self.repl_out_port}'
 
 
 async def prepare_krunner_env(distro: str):
@@ -213,7 +209,10 @@ async def prepare_krunner_env(distro: str):
     If not, automatically create it and update its content from the packaged pre-built krunner tar
     archives.
     '''
-    distro_name = re.search(r'^([a-z]+)\d+\.\d+$', distro).group(1)
+    m = re.search(r'^([a-z]+)\d+\.\d+$', distro)
+    if m is None:
+        raise ValueError('Unrecognized "distro[version]" format string.')
+    distro_name = m.group(1)
     docker = Docker()
     arch = platform.machine()
     current_version = int(Path(

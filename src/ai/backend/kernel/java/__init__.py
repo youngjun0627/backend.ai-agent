@@ -57,14 +57,14 @@ class Runner(BaseRunner):
 
     async def build_heuristic(self) -> int:
         if Path('Main.java').is_file():
-            javafiles = Path('.').glob('**/*.java')
-            javafiles = ' '.join(map(lambda p: shlex.quote(str(p)), javafiles))
-            cmd = [JCC, *DEFAULT_JFLAGS, javafiles]
+            java_sources = Path('.').glob('**/*.java')
+            java_source_list = ' '.join(map(lambda p: shlex.quote(str(p)), java_sources))
+            cmd = [JCC, *DEFAULT_JFLAGS, java_source_list]
             return await self.run_subproc(cmd)
         else:
-            javafiles = Path('.').glob('**/*.java')
-            javafiles = ' '.join(map(lambda p: shlex.quote(str(p)), javafiles))
-            cmd = [JCC, *DEFAULT_JFLAGS, javafiles]
+            java_sources = Path('.').glob('**/*.java')
+            java_source_list = ' '.join(map(lambda p: shlex.quote(str(p)), java_sources))
+            cmd = [JCC, *DEFAULT_JFLAGS, java_source_list]
             return await self.run_subproc(cmd)
 
     async def execute_heuristic(self) -> int:

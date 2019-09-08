@@ -1,5 +1,3 @@
-import argparse
-
 from .base import BaseRunner
 from .terminal import Terminal
 
@@ -8,8 +6,6 @@ __all__ = (
     'BaseRunner',
     'Terminal',
 )
-
-__version__ = '1.5.0'
 
 lang_map = {
     'python': 'ai.backend.kernel.python.Runner',
@@ -30,11 +26,3 @@ lang_map = {
     'vendor.aws_polly': 'ai.backend.kernel.vendor.aws_polly.Runner',
     'vendor.ngc_digits': 'ai.backend.kernel.vendor.ngc_digits.Runner',
 }
-
-
-def parse_args(args=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--debug', action='store_true', default=False)
-    parser.add_argument('lang', type=str, choices=lang_map.keys())
-    parser.add_argument('runtime_path', type=str, nargs='?', default=None)
-    return parser.parse_args(args)

@@ -6,10 +6,13 @@ from pathlib import Path
 
 import pytest
 
+from ai.backend.common.types import (
+    MountPermission,
+)
 from ai.backend.agent.vendor import linux
 from ai.backend.agent.resources import (
     KernelResourceSpec,
-    Mount, MountPermission,
+    Mount,
 )
 
 

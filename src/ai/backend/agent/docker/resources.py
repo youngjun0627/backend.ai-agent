@@ -1,28 +1,44 @@
+from decimal import Decimal
 import logging
 from pathlib import Path
 import pkg_resources
-from typing import Any, Mapping
+from typing import (
+    Any, Optional,
+    Mapping, MutableMapping,
+    Tuple,
+    Type,
+)
 
 from ai.backend.common.logging import BraceStyleAdapter
+from ai.backend.common.types import (
+    DeviceName, SlotName,
+)
 from ..exception import InitializationError
-from ..resources import KernelResourceSpec, known_slot_types
+from ..resources import AbstractComputePlugin, KernelResourceSpec, known_slot_types
 
-log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
+log = BraceStyleAdapter(logging.getLogger(__name__))
 
 
-async def detect_resources(plugin_configs: Mapping[str, Any], reserved_slots):
+async def detect_resources(resource_configs: Mapping[str, Any],
+                           plugin_configs: Mapping[str, Any]) \
+                           -> Tuple[Mapping[DeviceName, Type[AbstractComputePlugin]],
+                                    Mapping[SlotName, Decimal]]:
     '''
     Detect available computing resource of the system.
     It also loads the accelerator plugins.
 
     limit_cpus, limit_gpus are deprecated.
     '''
-
-    slots = {}
+    reserved_slots = {
+        'cpu':  resource_configs['reserved-cpu'],
+        'mem':  resource_configs['reserved-mem'],
+        'disk': resource_configs['reserved-disk'],
+    }
+    slots: MutableMapping[SlotName, Decimal] = {}
 
     from .intrinsic import CPUPlugin, MemoryPlugin
 
-    compute_device_types = {}
+    compute_device_types: MutableMapping[DeviceName, Type[AbstractComputePlugin]] = {}
     compute_device_types[CPUPlugin.key] = CPUPlugin
     compute_device_types[MemoryPlugin.key] = MemoryPlugin
 
@@ -36,7 +52,7 @@ async def detect_resources(plugin_configs: Mapping[str, Any], reserved_slots):
         if accel_klass is None:
             # plugin init failed. skip!
             continue
-        if not all(skey.startswith(f'{accel_klass.key}.') for skey, _ in accel_klass.slot_types):
+        if not all(sname.startswith(f'{accel_klass.key}.') for sname, _ in accel_klass.slot_types):
             raise InitializationError(
                 "Slot types defined by an accelerator plugin must be prefixed "
                 "by the plugin's key.")
@@ -49,11 +65,11 @@ async def detect_resources(plugin_configs: Mapping[str, Any], reserved_slots):
     for key, klass in compute_device_types.items():
         known_slot_types.update(klass.slot_types)
         resource_slots = await klass.available_slots()
-        for skey, sval in resource_slots.items():
-            slots[skey] = max(0, sval - reserved_slots.get(skey, 0))
-            if slots[skey] <= 0 and skey in ('cpu', 'mem'):
+        for sname, sval in resource_slots.items():
+            slots[sname] = Decimal(max(0, sval - reserved_slots.get(sname, 0)))
+            if slots[sname] <= 0 and sname in (SlotName('cpu'), SlotName('mem')):
                 raise InitializationError(
-                    f"The resource slot '{skey}' is not sufficient (zero or below zero). "
+                    f"The resource slot '{sname}' is not sufficient (zero or below zero). "
                     "Try to adjust the reserved resources or use a larger machine.")
 
     log.info('Resource slots: {!r}', slots)
@@ -61,8 +77,8 @@ async def detect_resources(plugin_configs: Mapping[str, Any], reserved_slots):
     return compute_device_types, slots
 
 
-async def get_resource_spec_from_container(container):
-    for mount in container['HostConfig']['Mounts']:
+async def get_resource_spec_from_container(container_info) -> Optional[KernelResourceSpec]:
+    for mount in container_info['HostConfig']['Mounts']:
         if mount['Target'] == '/home/config':
             with open(Path(mount['Source']) / 'resource.txt', 'r') as f:
                 return KernelResourceSpec.read_from_file(f)

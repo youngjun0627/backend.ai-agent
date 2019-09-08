@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABCMeta, abstractmethod
 import asyncio
 import concurrent.futures
 from functools import partial
@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import sys
 import time
+from typing import ClassVar, MutableMapping, Optional
 
 import janus
 from jupyter_client import KernelManager
@@ -50,20 +51,24 @@ async def terminate_and_kill(proc):
         await proc.wait()
 
 
-class BaseRunner(ABC):
+class BaseRunner(metaclass=ABCMeta):
 
-    log_prefix = 'generic-kernel'
-    default_runtime_path = None
-    default_child_env = {
+    log_prefix: ClassVar[str] = 'generic-kernel'
+    default_runtime_path: ClassVar[Optional[str]] = None
+    default_child_env: ClassVar[MutableMapping[str, str]] = {
         'LANG': 'C.UTF-8',
         'SHELL': '/bin/sh',
         'HOME': '/home/work',
         'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
         'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
     }
-    jupyter_kspec_name = ''
+    jupyter_kspec_name: ClassVar[str] = ''
     kernel_mgr = None
     kernel_client = None
+
+    child_env: MutableMapping[str, str]
+    subproc: asyncio.subprocess.Process
+    runtime_path: Optional[Path]
 
     def __init__(self, loop=None):
         self.child_env = {**os.environ, **self.default_child_env}
@@ -502,8 +507,8 @@ class BaseRunner(ABC):
                 await self.outsock.send_multipart(rec)
                 log_queue.task_done()
         except asyncio.CancelledError:
-            log_queue.close()
-            await log_queue.wait_closed()
+            self.log_queue.close()
+            await self.log_queue.wait_closed()
 
     async def main_loop(self, cmdargs):
         user_input_server = \
@@ -589,11 +594,13 @@ class BaseRunner(ABC):
         finally:
             # allow remaining logs to be flushed.
             await asyncio.sleep(0.1)
-            self._log_task.cancel()
-            await self._log_task
-            if self.outsock:
-                self.outsock.close()
-            await self._shutdown_jupyter_kernel()
+            try:
+                if self.outsock:
+                    self.outsock.close()
+                await self._shutdown_jupyter_kernel()
+            finally:
+                self._log_task.cancel()
+                await self._log_task
 
     async def _shutdown_jupyter_kernel(self):
         if self.kernel_mgr and self.kernel_mgr.is_alive():

@@ -3,12 +3,13 @@ import os
 from pathlib import Path
 import shlex
 import tempfile
+from typing import List
 
 from .. import BaseRunner
 
 log = logging.getLogger()
 
-DEFAULT_BFLAGS = ['']
+DEFAULT_BFLAGS: List[str] = ['']
 
 
 class Runner(BaseRunner):
@@ -36,11 +37,13 @@ class Runner(BaseRunner):
 
     async def build_heuristic(self) -> int:
         if Path('main.go').is_file():
-            gofiles = Path('.').glob('**/*.go')
-            gofiles = ' '.join(map(lambda p: shlex.quote(str(p)), gofiles))
-            cmd = f'go build -o main {DEFAULT_BFLAGS} {gofiles}'
-            cmd = [self.runtime_path,
-                   'build', '-o', 'main', *DEFAULT_BFLAGS, gofiles]
+            go_glob = Path('.').glob('**/*.go')
+            go_files = ' '.join(map(lambda p: shlex.quote(str(p)), go_glob))
+            cmd = [
+                self.runtime_path,
+                'build', '-o', 'main',
+                *DEFAULT_BFLAGS, go_files
+            ]
             return await self.run_subproc(cmd)
         else:
             log.error('cannot find main file ("main.go").')

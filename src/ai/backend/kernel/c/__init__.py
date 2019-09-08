@@ -42,15 +42,14 @@ class Runner(BaseRunner):
 
     async def build_heuristic(self) -> int:
         if Path('main.c').is_file():
-            cfiles = list(Path('.').glob('**/*.c'))
-            ofiles = [Path(p.stem + '.o') for p in sorted(cfiles)]
-            for cf in cfiles:
+            cfiles_glob = list(Path('.').glob('**/*.c'))
+            ofiles_glob = [Path(p.stem + '.o') for p in sorted(cfiles_glob)]
+            for cf in cfiles_glob:
                 cmd = [self.runtime_path, '-c', cf, *DEFAULT_CFLAGS]
                 ret = await self.run_subproc(cmd)
                 if ret != 0:  # stop if gcc has failed
                     return ret
-            cfiles = ' '.join(map(lambda p: shlex.quote(str(p)), cfiles))
-            ofiles = ' '.join(map(lambda p: shlex.quote(str(p)), ofiles))
+            ofiles = ' '.join(map(lambda p: shlex.quote(str(p)), ofiles_glob))
             cmd = [self.runtime_path, ofiles, *DEFAULT_CFLAGS, '-o', './main']
             return await self.run_subproc(cmd)
         else:

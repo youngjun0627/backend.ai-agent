@@ -58,15 +58,6 @@ def test_numeric_list():
     assert ret == [123, 456]
 
 
-def test_read_sysfs(tmpdir):
-    p = tmpdir.join('test.txt')
-    p.write('1357')
-    ret = stats.read_sysfs(p)
-
-    assert isinstance(ret, int)
-    assert ret == 1357
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize('collection_type', active_collection_types)
 async def test_collector(event_loop,

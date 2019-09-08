@@ -1,8 +1,7 @@
 import asyncio
 import base64
 from decimal import Decimal
-import functools
-import logging, logging.config
+import logging
 import os
 from pathlib import Path
 import pkg_resources
@@ -13,34 +12,39 @@ import shutil
 import signal
 import struct
 import sys
-import time
-from typing import Mapping, MutableMapping, Set
+from typing import (
+    Any, Optional, Union,
+    Dict, Mapping, MutableMapping,
+    Set,
+    List, Tuple,
+    Type,
+)
+from typing_extensions import Literal
 
 import aiohttp
-import aioredis
-import aiotools
-import aiozmq, aiozmq.rpc
 import attr
 from async_timeout import timeout
-import snappy
 import zmq
 
 from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
 
-from ai.backend.common import msgpack
 from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import (
+    KernelCreationConfig,
+    KernelCreationResult,
+    KernelId,
+    DeviceName,
+    SlotName,
+    MetricKey, MetricValue,
     MountPermission,
     MountTypes,
-    ResourceSlot
+    ResourceSlot,
+    ServicePort,
 )
 from .kernel import DockerKernel
-from .resources import (
-    detect_resources,
-)
-from .. import __version__ as VERSION
+from .resources import detect_resources
 from ..exception import InsufficientResource
 from ..fs import create_scratch_filesystem, destroy_scratch_filesystem
 from ..kernel import match_krunner_volume, KernelFeatures
@@ -48,63 +52,85 @@ from ..resources import (
     Mount,
     KernelResourceSpec,
 )
-from ..server import (
-    AbstractAgentServer,
-    ComputerContext,
+from ..agent import (
+    AbstractAgent,
     ipc_base_path,
+)
+from ..resources import (
+    AbstractComputePlugin,
+)
+from ..server import (
     get_extra_volumes,
-    parse_service_port
 )
 from ..stats import (
-    StatContext, StatModes,
     spawn_stat_synchronizer, StatSyncState
 )
 from ..utils import (
     update_nested_dict,
     get_kernel_id_from_container,
     host_pid_to_container_pid,
-    container_pid_to_host_pid
+    container_pid_to_host_pid,
+    parse_service_port,
 )
 
-log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
+log = BraceStyleAdapter(logging.getLogger(__name__))
 
 
-class AgentServer(AbstractAgentServer):
+class DockerAgent(AbstractAgent):
 
-    def __init__(self, config, loop=None):
-        super().__init__(config, loop=loop)
+    docker: Docker
+    monitor_fetch_task: asyncio.Task
+    monitor_handle_task: asyncio.Task
+    agent_sockpath: Path
+    agent_sock_task: asyncio.Task
+    scan_images_timer: asyncio.Task
 
+    def __init__(self, config) -> None:
+        super().__init__(config)
+
+    async def __ainit__(self) -> None:
         self.docker = Docker()
-        self.container_registry: MutableMapping[str, DockerKernel] = {}
-        self.redis_stat_pool = None
+        docker_version = await self.docker.version()
+        log.info('running with Docker {0} with API {1}',
+                 docker_version['Version'], docker_version['ApiVersion'])
+        await super().__ainit__()
+        self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
+        self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
+        self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
+        self.monitor_handle_task = self.loop.create_task(self.handle_docker_events())
 
-        self.restarting_kernels = {}
-        self.blocking_cleans = {}
+    async def shutdown(self, stop_signal: signal.Signals):
+        try:
+            await super().shutdown(stop_signal)
+        finally:
+            # Stop docker event monitoring.
+            if self.monitor_fetch_task is not None:
+                self.monitor_fetch_task.cancel()
+                self.monitor_handle_task.cancel()
+                await self.monitor_fetch_task
+                await self.monitor_handle_task
+            try:
+                await self.docker.events.stop()
+            except Exception:
+                pass
+            await self.docker.close()
 
-        self.computers: Mapping[str, ComputerContext] = {}
-        self.images: Mapping[str, str] = {}  # repoTag -> digest
+        # Stop handlign agent sock.
+        # (But we don't remove the socket file)
+        if self.agent_sock_task is not None:
+            self.agent_sock_task.cancel()
+            await self.agent_sock_task
 
-        self.event_sock = None
-        self.scan_images_timer = None
-        self.monitor_fetch_task = None
-        self.monitor_handle_task = None
-        self.hb_timer = None
-        self.clean_timer = None
-        self.stat_sync_task = None
+    @staticmethod
+    async def detect_resources(resource_configs: Mapping[str, Any],
+                               plugin_configs: Mapping[str, Any]) \
+                               -> Tuple[
+                                   Mapping[DeviceName, Type[AbstractComputePlugin]],
+                                   Mapping[SlotName, Decimal]
+                               ]:
+        return await detect_resources(resource_configs, plugin_configs)
 
-        self.stat_ctx = StatContext(self, mode=StatModes(config['container']['stats-type']))
-        self.live_stat_timer = None
-        self.agent_sock_task = None
-
-        self.port_pool = set(range(
-            config['container']['port-range'][0],
-            config['container']['port-range'][1] + 1,
-        ))
-
-        self._orphan_tasks: Set[asyncio.Task] = set()
-        self.runner_lock: asyncio.Lock = asyncio.Lock()
-
-    async def scan_running_containers(self):
+    async def scan_running_kernels(self) -> None:
         for container in (await self.docker.containers.list()):
             kernel_id = await get_kernel_id_from_container(container)
             if kernel_id is None:
@@ -132,7 +158,7 @@ class AgentServer(AbstractAgentServer):
                         container, computer_set.alloc_map)
                 kernel_host = self.config['container']['kernel-host']
                 config_dir = (self.config['container']['scratch-root'] /
-                                kernel_id / 'config').resolve()
+                              kernel_id / 'config').resolve()
                 with open(config_dir / 'resource.txt', 'r') as f:
                     resource_spec = KernelResourceSpec.read_from_file(f)
                     # legacy handling
@@ -149,7 +175,7 @@ class AgentServer(AbstractAgentServer):
                     service_port['host_port'] = \
                         port_map.get(service_port['container_port'], None)
                     service_ports.append(service_port)
-                self.container_registry[kernel_id] = DockerKernel(
+                self.kernel_registry[kernel_id] = await DockerKernel.new(
                     kernel_id,
                     ImageRef(image),
                     int(labels.get('ai.backend.kernelspec', '1')),
@@ -175,7 +201,7 @@ class AgentServer(AbstractAgentServer):
             log.info('{}: {!r}', computer_name,
                         dict(computer_ctx.alloc_map.allocations))
 
-    async def scan_images(self, interval):
+    async def scan_images(self, interval: float = None) -> None:
         all_images = await self.docker.images.list()
         updated_images = {}
         for image in all_images:
@@ -193,209 +219,6 @@ class AgentServer(AbstractAgentServer):
         for removed_image in (self.images.keys() - updated_images.keys()):
             log.debug('removed kernel image: {0}', removed_image)
         self.images = updated_images
-
-    async def deregister_myself(self):
-        # TODO: reimplement using Redis heartbeat stream
-        pass
-
-    async def send_event(self, event_name, *args):
-        if self.event_sock is None:
-            return
-        log.debug('send_event({0})', event_name)
-        self.event_sock.write((
-            event_name.encode('ascii'),
-            self.config['agent']['id'].encode('utf8'),
-            msgpack.packb(args),
-        ))
-
-    async def sync_container_stats(self):
-        my_uid = os.getuid()
-        my_gid = os.getgid()
-        kernel_uid = self.config['container']['kernel-uid']
-        kernel_gid = self.config['container']['kernel-gid']
-        try:
-            stat_sync_sock = self.zmq_ctx.socket(zmq.REP)
-            stat_sync_sock.setsockopt(zmq.LINGER, 1000)
-            stat_sync_sock.bind('ipc://' + str(self.stat_sync_sockpath))
-            if my_uid == 0:
-                os.chown(self.agent_sockpath, kernel_uid, kernel_gid)
-            else:
-                if my_uid != kernel_uid:
-                    log.error('The UID of agent ({}) must be same to the container UID ({}).',
-                              my_uid, kernel_uid)
-                if my_gid != kernel_gid:
-                    log.error('The GID of agent ({}) must be same to the container GID ({}).',
-                              my_gid, kernel_gid)
-            log.info('opened stat-sync socket at {}', self.stat_sync_sockpath)
-            recv = functools.partial(stat_sync_sock.recv_serialized,
-                                     lambda frames: [*map(msgpack.unpackb, frames)])
-            send = functools.partial(stat_sync_sock.send_serialized,
-                                     serialize=lambda msgs: [*map(msgpack.packb, msgs)])
-            async for msg in aiotools.aiter(lambda: recv(), None):
-                cid = msg[0]['cid']
-                status = msg[0]['status']
-                try:
-                    if status == 'terminated':
-                        self.stat_sync_states[cid].terminated.set()
-                    elif status == 'collect-stat':
-                        cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
-                        self.stat_sync_states[cid].last_stat = cstat
-                    else:
-                        log.warning('unrecognized stat sync status: {}', status)
-                finally:
-                    await send([{'ack': True}])
-        except asyncio.CancelledError:
-            pass
-        except zmq.ZMQError:
-            log.exception('zmq socket error with {}', self.stat_sync_sockpath)
-        finally:
-            stat_sync_sock.close()
-            try:
-                self.stat_sync_sockpath.unlink()
-            except IOError:
-                pass
-
-    async def collect_node_stat(self, interval):
-        try:
-            await self.stat_ctx.collect_node_stat()
-        except asyncio.CancelledError:
-            pass
-
-    async def init(self):
-        ipc_base_path.mkdir(parents=True, exist_ok=True)
-        self.zmq_ctx = zmq.asyncio.Context()
-
-        # Show Docker version info.
-        docker_version = await self.docker.version()
-        log.info('running with Docker {0} with API {1}',
-                 docker_version['Version'], docker_version['ApiVersion'])
-
-        reserved_slots = {
-            'cpu': self.config['resource']['reserved-cpu'],
-            'mem': self.config['resource']['reserved-mem'],
-            'disk': self.config['resource']['reserved-disk'],
-        }
-        computers, self.slots = await detect_resources(self.config['plugins'], reserved_slots)
-        for name, klass in computers.items():
-            devices = await klass.list_devices()
-            alloc_map = await klass.create_alloc_map()
-            self.computers[name] = ComputerContext(klass, devices, alloc_map)
-
-        # scan_images task should be done before heartbeat,
-        # so call it here although we spawn a scheduler
-        # for this task below.
-        await self.scan_images(None)
-        await self.scan_running_containers()
-
-        self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
-        self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
-
-        self.redis_stat_pool = await aioredis.create_redis_pool(
-            self.config['redis']['addr'].as_sockaddr(),
-            password=(self.config['redis']['password']
-                        if self.config['redis']['password'] else None),
-            timeout=3.0,
-            encoding='utf8',
-            db=0)  # REDIS_STAT_DB in backend.ai-manager
-
-        self.event_sock = await aiozmq.create_zmq_stream(
-            zmq.PUSH, connect=f"tcp://{self.config['event']['addr']}")
-        self.event_sock.transport.setsockopt(zmq.LINGER, 50)
-
-        # Spawn image scanner task.
-        self.scan_images_timer = aiotools.create_timer(self.scan_images, 60.0)
-
-        # Spawn stat collector task.
-        self.stat_sync_sockpath = ipc_base_path / f'stats.{os.getpid()}.sock'
-        self.stat_sync_states = dict()
-        self.stat_sync_task = self.loop.create_task(self.sync_container_stats())
-
-        # Start container stats collector for existing containers.
-        for kernel_id, kernel_obj in self.container_registry.items():
-            cid = kernel_obj['container_id']
-            self.stat_sync_states[cid] = StatSyncState(kernel_id)
-            async with spawn_stat_synchronizer(self.config['_src'],
-                                                self.stat_sync_sockpath,
-                                                self.stat_ctx.mode, cid):
-                pass
-
-        # Start collecting agent live stat.
-        self.live_stat_timer = aiotools.create_timer(self.collect_node_stat, 2.0)
-
-        # Spawn docker monitoring tasks.
-        self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
-        self.monitor_handle_task = self.loop.create_task(self.monitor())
-
-        # Send the first heartbeat.
-        self.hb_timer    = aiotools.create_timer(self.heartbeat, 3.0)
-        self.clean_timer = aiotools.create_timer(self.clean_old_kernels, 10.0)
-
-        # Notify the gateway.
-        await self.send_event('instance_started')
-
-    async def shutdown(self, stop_signal):
-        await self.deregister_myself()
-
-        # Close all pending kernel runners.
-        for kernel_obj in self.container_registry.values():
-            if kernel_obj.runner is not None:
-                await kernel_obj.runner.close()
-            await kernel_obj.close()
-
-        if stop_signal == signal.SIGTERM:
-            await self.clean_all_kernels(blocking=True)
-
-        # Await for any orphan tasks such as cleaning/destroying kernels
-        await asyncio.gather(*self._orphan_tasks, return_exceptions=True)
-
-        # Stop timers.
-        if self.scan_images_timer is not None:
-            self.scan_images_timer.cancel()
-            await self.scan_images_timer
-        if self.hb_timer is not None:
-            self.hb_timer.cancel()
-            await self.hb_timer
-        if self.live_stat_timer is not None:
-            self.live_stat_timer.cancel()
-            await self.live_stat_timer
-        if self.clean_timer is not None:
-            self.clean_timer.cancel()
-            await self.clean_timer
-
-        # Stop event monitoring.
-        if self.monitor_fetch_task is not None:
-            self.monitor_fetch_task.cancel()
-            self.monitor_handle_task.cancel()
-            await self.monitor_fetch_task
-            await self.monitor_handle_task
-        try:
-            await self.docker.events.stop()
-        except Exception:
-            pass
-
-        await self.docker.close()
-
-        # Stop stat collector task.
-        if self.stat_sync_task is not None:
-            self.stat_sync_task.cancel()
-            await self.stat_sync_task
-
-        if self.redis_stat_pool is not None:
-            self.redis_stat_pool.close()
-            await self.redis_stat_pool.wait_closed()
-
-        # Stop handlign agent sock.
-        # (But we don't remove the socket file)
-        if self.agent_sock_task is not None:
-            self.agent_sock_task.cancel()
-            await self.agent_sock_task
-
-        # Notify the gateway.
-        if self.event_sock is not None:
-            await self.send_event('instance_terminated', 'shutdown')
-            self.event_sock.close()
-
-        self.zmq_ctx.term()
 
     async def handle_agent_socket(self):
         '''
@@ -416,8 +239,8 @@ class AgentServer(AbstractAgentServer):
 
         All strings are UTF-8 encoded.
         '''
-        my_uid = os.getuid()
-        my_gid = os.getgid()
+        my_uid = os.geteuid()
+        my_gid = os.getegid()
         kernel_uid = self.config['container']['kernel-uid']
         kernel_gid = self.config['container']['kernel-gid']
         try:
@@ -428,10 +251,10 @@ class AgentServer(AbstractAgentServer):
             else:
                 if my_uid != kernel_uid:
                     log.error('The UID of agent ({}) must be same to the container UID ({}).',
-                                my_uid, kernel_uid)
+                              my_uid, kernel_uid)
                 if my_gid != kernel_gid:
                     log.error('The GID of agent ({}) must be same to the container GID ({}).',
-                                my_gid, kernel_gid)
+                              my_gid, kernel_gid)
             while True:
                 msg = await agent_sock.recv_multipart()
                 if not msg:
@@ -469,7 +292,8 @@ class AgentServer(AbstractAgentServer):
         finally:
             agent_sock.close()
 
-    async def create_kernel(self, kernel_id, kernel_config, restarting=False):
+    async def create_kernel(self, kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
+                            restarting: bool = False) -> KernelCreationResult:
 
         await self.send_event('kernel_preparing', kernel_id)
 
@@ -477,7 +301,7 @@ class AgentServer(AbstractAgentServer):
         image_ref = ImageRef(
             kernel_config['image']['canonical'],
             [kernel_config['image']['registry']['name']])
-        environ: dict = kernel_config.get('environ', {})
+        environ: MutableMapping[str, str] = {**kernel_config['environ']}
         extra_mount_list = await get_extra_volumes(self.docker, image_ref.short)
 
         try:
@@ -514,9 +338,9 @@ class AgentServer(AbstractAgentServer):
         await self.send_event('kernel_creating', kernel_id)
         image_labels = kernel_config['image']['labels']
 
-        version        = int(image_labels.get('ai.backend.kernelspec', '1'))
-        envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
-        envs_corecount = envs_corecount.split(',') if envs_corecount else []
+        version = int(image_labels.get('ai.backend.kernelspec', '1'))
+        label_envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
+        envs_corecount = label_envs_corecount.split(',') if label_envs_corecount else []
         kernel_features = set(image_labels.get('ai.backend.features', '').split())
 
         scratch_dir = (self.config['container']['scratch-root'] / kernel_id).resolve()
@@ -534,7 +358,7 @@ class AgentServer(AbstractAgentServer):
             slots = ResourceSlot.from_json(kernel_config['resource_slots'])
             vfolders = kernel_config['mounts']
             resource_spec = KernelResourceSpec(
-                container_id=None,
+                container_id='',
                 allocations={},
                 slots={**slots},  # copy
                 mounts=[],
@@ -552,7 +376,7 @@ class AgentServer(AbstractAgentServer):
             environ['LOCAL_GROUP_ID'] = str(gid)
 
         # Inject Backend.AI-intrinsic mount points and extra mounts
-        mounts = [
+        mounts: List[Mount] = [
             Mount(MountTypes.BIND, config_dir, '/home/config',
                   MountPermission.READ_ONLY),
             Mount(MountTypes.BIND, work_dir, '/home/work/',
@@ -580,29 +404,31 @@ class AgentServer(AbstractAgentServer):
                 mounts.append(mount)
         else:
             # Ensure that we have intrinsic slots.
-            assert 'cpu' in slots
-            assert 'mem' in slots
+            assert SlotName('cpu') in slots
+            assert SlotName('mem') in slots
 
             # Realize ComputeDevice (including accelerators) allocations.
-            dev_types = set()
-            for slot_type in slots.keys():
-                dev_type = slot_type.split('.', maxsplit=1)[0]
-                dev_types.add(dev_type)
+            dev_names: Set[SlotName] = set()
+            for slot_name in slots.keys():
+                dev_name = slot_name.split('.', maxsplit=1)[0]
+                dev_names.add(dev_name)
 
             try:
-                for dev_type in dev_types:
-                    computer_set = self.computers[dev_type]
+                for dev_name in dev_names:
+                    computer_set = self.computers[dev_name]
                     device_specific_slots = {
-                        slot_type: amount for slot_type, amount in slots.items()
-                        if slot_type.startswith(dev_type)
+                        slot_name: alloc
+                        for slot_name, alloc in slots.items()
+                        if slot_name.startswith(dev_name)
                     }
-                    resource_spec.allocations[dev_type] = \
-                        computer_set.alloc_map.allocate(device_specific_slots,
-                                                        context_tag=dev_type)
+                    resource_spec.allocations[dev_name] = \
+                        computer_set.alloc_map.allocate(
+                            device_specific_slots,
+                            context_tag=dev_name)
             except InsufficientResource:
                 log.info('insufficient resource: {} of {}\n'
                          '(alloc map: {})',
-                         device_specific_slots, dev_type,
+                         device_specific_slots, dev_name,
                          computer_set.alloc_map.allocations)
                 raise
 
@@ -632,25 +458,32 @@ class AgentServer(AbstractAgentServer):
             del vfolders
 
         # Inject Backend.AI-intrinsic env-variables for libbaihook and gosu
-        cpu_core_count = len(resource_spec.allocations['cpu']['cpu'])
+        cpu_core_count = len(resource_spec.allocations[DeviceName('cpu')][SlotName('cpu')])
         environ.update({k: str(cpu_core_count) for k in envs_corecount})
 
-        def _mount(type, src, target, perm='ro', opts=None):
+        def _mount(type: MountTypes,
+                   src: Union[str, Path], target: Union[str, Path],
+                   perm: Literal['ro', 'rw'] = 'ro',
+                   opts: Mapping[str, Any] = None) -> None:
             nonlocal mounts
             mounts.append(Mount(type, src, target, MountPermission(perm), opts=opts))
 
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
+        matched_distro, krunner_volume = match_krunner_volume(
+            self.config['container']['krunner-volumes'], distro)
+        log.debug('selected krunner: {}', matched_distro)
+        log.debug('krunner volume: {}', krunner_volume)
         arch = platform.machine()
         entrypoint_sh_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/entrypoint.sh'))
         suexec_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/su-exec.{distro}.bin'))
+            'ai.backend.agent', f'../runner/su-exec.{matched_distro}.bin'))
         if self.config['container']['sandbox-type'] == 'jail':
             jail_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/jail.{distro}.bin'))
+                'ai.backend.agent', f'../runner/jail.{matched_distro}.bin'))
         hook_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/libbaihook.{distro}.{arch}.so'))
+            'ai.backend.agent', f'../runner/libbaihook.{matched_distro}.{arch}.so'))
         kernel_pkg_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../kernel'))
         helpers_pkg_path = Path(pkg_resources.resource_filename(
@@ -671,8 +504,6 @@ class AgentServer(AbstractAgentServer):
             _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
 
-        matched_distro, krunner_volume = match_krunner_volume(
-            self.config['container']['krunner-volumes'], distro)
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
                                 '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
@@ -701,7 +532,7 @@ class AgentServer(AbstractAgentServer):
                                     perm='rw')
 
         # Inject ComputeDevice-specific env-varibles and hooks
-        computer_docker_args = {}
+        computer_docker_args: Dict[str, Any] = {}
         for dev_type, device_alloc in resource_spec.allocations.items():
             computer_set = self.computers[dev_type]
             update_nested_dict(computer_docker_args,
@@ -711,7 +542,7 @@ class AgentServer(AbstractAgentServer):
             for dev_id, per_dev_alloc in device_alloc.items():
                 alloc_sum += sum(per_dev_alloc.values())
             if alloc_sum > 0:
-                hook_paths = await computer_set.klass.get_hooks(distro, arch)
+                hook_paths = await computer_set.klass.get_hooks(matched_distro, arch)
                 if hook_paths:
                     log.debug('accelerator {} provides hooks: {}',
                               computer_set.klass.__name__,
@@ -739,7 +570,7 @@ class AgentServer(AbstractAgentServer):
             if KernelFeatures.UID_MATCH in kernel_features:
                 uid = self.config['container']['kernel-uid']
                 gid = self.config['container']['kernel-gid']
-                if os.getuid() == 0:  # only possible when I am root.
+                if os.geteuid() == 0:  # only possible when I am root.
                     os.chown(work_dir, uid, gid)
                     os.chown(work_dir / '.jupyter', uid, gid)
             os.makedirs(config_dir, exist_ok=True)
@@ -769,7 +600,7 @@ class AgentServer(AbstractAgentServer):
         #     by the plugin implementation.
 
         exposed_ports = [2000, 2001]
-        service_ports = {}
+        service_ports: MutableMapping[int, ServicePort] = {}
         for item in image_labels.get('ai.backend.service-ports', '').split(','):
             if not item:
                 continue
@@ -792,7 +623,7 @@ class AgentServer(AbstractAgentServer):
 
         runtime_type = image_labels.get('ai.backend.runtime-type', 'python')
         runtime_path = image_labels.get('ai.backend.runtime-path', None)
-        cmdargs = []
+        cmdargs: List[str] = []
         if self.config['container']['sandbox-type'] == 'jail':
             cmdargs += [
                 "/opt/kernel/jail",
@@ -806,7 +637,7 @@ class AgentServer(AbstractAgentServer):
         ]
         if runtime_path is not None:
             cmdargs.append(runtime_path)
-        container_config = {
+        container_config: MutableMapping[str, Any] = {
             'Image': image_ref.canonical,
             'Tty': True,
             'OpenStdin': True,
@@ -859,8 +690,8 @@ class AgentServer(AbstractAgentServer):
             # Write resource.txt again to update the contaienr id.
             with open(config_dir / 'resource.txt', 'w') as f:
                 resource_spec.write_to_file(f)
-                for dev_type, device_alloc in resource_spec.allocations.items():
-                    computer_ctx = self.computers[dev_type]
+                for dev_name, device_alloc in resource_spec.allocations.items():
+                    computer_ctx = self.computers[dev_name]
                     kvpairs = \
                         await computer_ctx.klass.generate_resource_data(device_alloc)
                     for k, v in kvpairs.items():
@@ -874,10 +705,10 @@ class AgentServer(AbstractAgentServer):
 
             # Get attached devices information (including model_name).
             attached_devices = {}
-            for dev_type, device_alloc in resource_spec.allocations.items():
-                computer_set = self.computers[dev_type]
+            for dev_name, device_alloc in resource_spec.allocations.items():
+                computer_set = self.computers[dev_name]
                 devices = await computer_set.klass.get_attached_devices(device_alloc)
-                attached_devices[dev_type] = devices
+                attached_devices[dev_name] = devices
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -889,8 +720,8 @@ class AgentServer(AbstractAgentServer):
                 shutil.rmtree(tmp_dir)
             shutil.rmtree(scratch_dir)
             self.port_pool.update(host_ports)
-            for dev_type, device_alloc in resource_spec.allocations.items():
-                self.computers[dev_type].alloc_map.free(device_alloc)
+            for dev_name, device_alloc in resource_spec.allocations.items():
+                self.computers[dev_name].alloc_map.free(device_alloc)
             raise
 
         stdin_port = 0
@@ -909,7 +740,7 @@ class AgentServer(AbstractAgentServer):
             elif port == 2003:  # legacy
                 stdout_port = host_port
 
-        self.container_registry[kernel_id] = DockerKernel(
+        self.kernel_registry[kernel_id] = await DockerKernel.new(
             kernel_id,
             image_ref,
             version,
@@ -939,17 +770,17 @@ class AgentServer(AbstractAgentServer):
             'stdout_port': stdout_port,  # legacy
             'service_ports': list(service_ports.values()),
             'container_id': container._id,
-            'resource_spec': resource_spec.to_json(),
+            'resource_spec': resource_spec.to_json_serializable_dict(),
             'attached_devices': attached_devices,
         }
 
-    async def destroy_kernel(self, kernel_id, reason):
+    async def destroy_kernel(self, kernel_id: KernelId, reason: str) \
+            -> Optional[Mapping[MetricKey, MetricValue]]:
         try:
-            kernel_obj = self.container_registry[kernel_id]
+            kernel_obj = self.kernel_registry[kernel_id]
             cid = kernel_obj['container_id']
         except KeyError:
-            kernel_obj = None
-            log.warning('destroy_kernel({0}) kernel missing (already dead?)',
+            log.warning('destroy_kernel(k:{0}) kernel missing (already dead?)',
                         kernel_id)
 
             async def force_cleanup():
@@ -958,9 +789,10 @@ class AgentServer(AbstractAgentServer):
                                       kernel_id, 'self-terminated',
                                       None)
 
-            self._orphan_tasks.discard(asyncio.Task.current_task())
+            self.orphan_tasks.discard(asyncio.Task.current_task())
             await asyncio.shield(force_cleanup())
             return None
+
         container = self.docker.containers.container(cid)
         if kernel_obj.runner is not None:
             await kernel_obj.runner.close()
@@ -974,203 +806,46 @@ class AgentServer(AbstractAgentServer):
                         await s.terminated.wait()
                 except asyncio.TimeoutError:
                     log.warning('stat-collector shutdown sync timeout.')
-                last_stat = s.last_stat
                 self.stat_sync_states.pop(cid, None)
-                last_stat = {
+                last_stat: MutableMapping[MetricKey, MetricValue] = {
                     key: metric.to_serializable_dict()
-                    for key, metric in last_stat.items()
+                    for key, metric in s.last_stat.items()
                 }
-                # make it client compatible with legacy
-                last_stat['version'] = 2
+                last_stat['version'] = 2  # type: ignore
                 return last_stat
-            # The container will be deleted in the docker monitoring coroutine.
-            return None
         except DockerError as e:
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
-                log.warning('destroy_kernel({0}) already dead', kernel_id)
+                log.warning('destroy_kernel(k:{0}) already dead', kernel_id)
                 kernel_obj.release_slots(self.computers)
                 await kernel_obj.close()
-                self.container_registry.pop(kernel_id, None)
+                self.kernel_registry.pop(kernel_id, None)
             elif e.status == 404:
                 # missing
-                log.warning('destroy_kernel({0}) kernel missing, '
+                log.warning('destroy_kernel(k:{0}) kernel missing, '
                             'forgetting this kernel', kernel_id)
                 kernel_obj.release_slots(self.computers)
                 await kernel_obj.close()
-                self.container_registry.pop(kernel_id, None)
+                self.kernel_registry.pop(kernel_id, None)
             else:
-                log.exception('destroy_kernel({0}) kill error', kernel_id)
+                log.exception('destroy_kernel(k:{0}) kill error', kernel_id)
                 self.error_monitor.capture_exception()
         except asyncio.CancelledError:
-            log.exception('destroy_kernel({0}) operation cancelled', kernel_id)
+            log.exception('destroy_kernel(k:{0}) operation cancelled', kernel_id)
             raise
         except Exception:
-            log.exception('destroy_kernel({0}) unexpected error', kernel_id)
+            log.exception('destroy_kernel(k:{0}) unexpected error', kernel_id)
             self.error_monitor.capture_exception()
         finally:
-            self._orphan_tasks.discard(asyncio.Task.current_task())
+            self.orphan_tasks.discard(asyncio.Task.current_task())
+        # The container will be deleted in the docker monitoring coroutine.
+        return None
 
-    async def execute(self, api_version, kernel_id,
-                      run_id, mode, text, opts,
-                      flush_timeout):
-        # Wait for the kernel restarting if it's ongoing...
-        restart_tracker = self.restarting_kernels.get(kernel_id)
-        if restart_tracker:
-            await restart_tracker.done_event.wait()
-
+    async def clean_kernel(self, kernel_id: KernelId):
         try:
-            kernel_obj = self.container_registry[kernel_id]
-            result = await kernel_obj.execute(
-                run_id, mode, text,
-                opts=opts,
-                flush_timeout=flush_timeout,
-                api_version=api_version)
-        except KeyError:
-            await self.send_event('kernel_terminated',
-                                  kernel_id, 'self-terminated',
-                                  None)
-            raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
-                                '(might be terminated--try it again)') from None
-
-        if result['status'] in ('finished', 'exec-timeout'):
-            log.debug('_execute({0}) {1}', kernel_id, result['status'])
-        if result['status'] == 'exec-timeout':
-            self._orphan_tasks.add(
-                self.loop.create_task(self.destroy_kernel(kernel_id, 'exec-timeout'))
-            )
-        return {
-            **result,
-            'files': [],  # kept for API backward-compatibility
-        }
-
-    async def get_completions(self, kernel_id, text, opts):
-        return await self.container_registry[kernel_id].get_completions(text, opts)
-
-    async def get_logs(self, kernel_id):
-        return await self.container_registry[kernel_id].get_logs()
-
-    async def interrupt_kernel(self, kernel_id):
-        return await self.container_registry[kernel_id].interrupt_kernel()
-
-    async def start_service(self, kernel_id, service, opts):
-        return await self.container_registry[kernel_id].start_service(service, opts)
-
-    async def accept_file(self, kernel_id, filename, filedata):
-        return await self.container_registry[kernel_id].accept_file(filename, filedata)
-
-    async def download_file(self, kernel_id, filepath):
-        return await self.container_registry[kernel_id].download_file(filepath)
-
-    async def list_files(self, kernel_id: str, path: str):
-        return await self.container_registry[kernel_id].list_files(path)
-
-    async def heartbeat(self, interval):
-        '''
-        Send my status information and available kernel images.
-        '''
-        res_slots = {}
-        for cctx in self.computers.values():
-            for slot_key, slot_type in cctx.klass.slot_types:
-                res_slots[slot_key] = (
-                    slot_type,
-                    str(self.slots.get(slot_key, 0)),
-                )
-        agent_info = {
-            'ip': str(self.config['agent']['rpc-listen-addr'].host),
-            'region': self.config['agent']['region'],
-            'scaling_group': self.config['agent']['scaling-group'],
-            'addr': f"tcp://{self.config['agent']['rpc-listen-addr']}",
-            'resource_slots': res_slots,
-            'version': VERSION,
-            'compute_plugins': {
-                key: {
-                    'version': computer.klass.get_version(),
-                    **(await computer.klass.extra_info())
-                }
-                for key, computer in self.computers.items()
-            },
-            'images': snappy.compress(msgpack.packb([
-                (repo_tag, digest) for repo_tag, digest in self.images.items()
-            ])),
-        }
-        try:
-            await self.send_event('instance_heartbeat', agent_info)
-        except asyncio.TimeoutError:
-            log.warning('event dispatch timeout: instance_heartbeat')
-        except Exception:
-            log.exception('instance_heartbeat failure')
-            self.error_monitor.capture_exception()
-
-    async def fetch_docker_events(self):
-        while True:
-            try:
-                await self.docker.events.run()
-            except asyncio.TimeoutError:
-                # The API HTTP connection may terminate after some timeout
-                # (e.g., 5 minutes)
-                log.info('restarting docker.events.run()')
-                continue
-            except aiohttp.ClientError as e:
-                log.warning('restarting docker.events.run() due to {0!r}', e)
-                continue
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                log.exception('unexpected error')
-                self.error_monitor.capture_exception()
-                break
-
-    async def monitor(self):
-        subscriber = self.docker.events.subscribe()
-        last_footprint = None
-        while True:
-            try:
-                evdata = await subscriber.get()
-            except asyncio.CancelledError:
-                break
-            if evdata is None:
-                # fetch_docker_events() will automatically reconnect.
-                continue
-
-            # FIXME: Sometimes(?) duplicate event data is received.
-            # Just ignore the duplicate ones.
-            new_footprint = (
-                evdata['Type'],
-                evdata['Action'],
-                evdata['Actor']['ID'],
-            )
-            if new_footprint == last_footprint:
-                continue
-            last_footprint = new_footprint
-
-            if evdata['Action'] == 'die':
-                # When containers die, we immediately clean up them.
-                container_id = evdata['Actor']['ID']
-                container_name = evdata['Actor']['Attributes']['name']
-                kernel_id = await get_kernel_id_from_container(container_name)
-                if kernel_id is None:
-                    continue
-                try:
-                    exit_code = evdata['Actor']['Attributes']['exitCode']
-                except KeyError:
-                    exit_code = '(unknown)'
-                log.debug('docker-event: container-terminated: '
-                            '{0} with exit code {1} ({2})',
-                            container_id[:7], exit_code, kernel_id)
-                await self.send_event('kernel_terminated',
-                                      kernel_id, 'self-terminated',
-                                      None)
-                self._orphan_tasks.add(
-                    self.loop.create_task(self.clean_kernel(kernel_id))
-                )
-
-    async def clean_kernel(self, kernel_id):
-        try:
-            kernel_obj = self.container_registry[kernel_id]
+            kernel_obj = self.kernel_registry[kernel_id]
             found = True
         except KeyError:
-            kernel_obj = None
             found = False
         try:
             if found:
@@ -1222,50 +897,74 @@ class AgentServer(AbstractAgentServer):
                     pass
                 kernel_obj.release_slots(self.computers)
                 await kernel_obj.close()
-                self.container_registry.pop(kernel_id, None)
+                self.kernel_registry.pop(kernel_id, None)
         except Exception:
             log.exception('unexpected error while cleaning up kernel (k:{})', kernel_id)
         finally:
-            self._orphan_tasks.discard(asyncio.Task.current_task())
+            self.orphan_tasks.discard(asyncio.Task.current_task())
             if kernel_id in self.blocking_cleans:
                 self.blocking_cleans[kernel_id].set()
 
-    async def clean_old_kernels(self, interval):
-        now = time.monotonic()
-        keys = tuple(self.container_registry.keys())
-        tasks = []
-        for kernel_id in keys:
+    async def fetch_docker_events(self):
+        while True:
             try:
-                last_used = self.container_registry[kernel_id]['last_used']
-                idle_timeout = \
-                    self.container_registry[kernel_id].resource_spec \
-                    .idle_timeout
-                if idle_timeout > 0 and now - last_used > idle_timeout:
-                    log.info('destroying kernel {0} as clean-up', kernel_id)
-                    task = asyncio.ensure_future(
-                        self.destroy_kernel(kernel_id, 'idle-timeout'))
-                    tasks.append(task)
-            except KeyError:
-                # The kernel may be destroyed by other means?
-                pass
-        await asyncio.gather(*tasks)
+                await self.docker.events.run()
+            except asyncio.TimeoutError:
+                # The API HTTP connection may terminate after some timeout
+                # (e.g., 5 minutes)
+                log.info('restarting docker.events.run()')
+                continue
+            except aiohttp.ClientError as e:
+                log.warning('restarting docker.events.run() due to {0!r}', e)
+                continue
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception('unexpected error')
+                self.error_monitor.capture_exception()
+                break
 
-    async def clean_all_kernels(self, blocking=False):
-        log.info('cleaning all kernels...')
-        kernel_ids = [*self.container_registry.keys()]
-        tasks = []
-        if blocking:
-            for kernel_id in kernel_ids:
-                self.blocking_cleans[kernel_id] = asyncio.Event()
-        for kernel_id in kernel_ids:
-            task = asyncio.ensure_future(
-                self.destroy_kernel(kernel_id, 'agent-termination'))
-            tasks.append(task)
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for kernel_id, result in zip(kernel_ids, results):
-            log.info('force-terminated kernel: {} (result: {})', kernel_id, result)
-        if blocking:
-            waiters = [self.blocking_cleans[kernel_id].wait()
-                        for kernel_id in kernel_ids]
-            await asyncio.gather(*waiters)
-            self.blocking_cleans.clear()
+    async def handle_docker_events(self):
+        subscriber = self.docker.events.subscribe()
+        last_footprint = None
+        while True:
+            try:
+                evdata = await subscriber.get()
+            except asyncio.CancelledError:
+                break
+            if evdata is None:
+                # fetch_docker_events() will automatically reconnect.
+                continue
+
+            # FIXME: Sometimes(?) duplicate event data is received.
+            # Just ignore the duplicate ones.
+            new_footprint = (
+                evdata['Type'],
+                evdata['Action'],
+                evdata['Actor']['ID'],
+            )
+            if new_footprint == last_footprint:
+                continue
+            last_footprint = new_footprint
+
+            if self.config['debug']['log-docker-events']:
+                log.debug('docker-event: raw: {}', evdata)
+
+            if evdata['Action'] == 'die':
+                # When containers die, we immediately clean up them.
+                container_name = evdata['Actor']['Attributes']['name']
+                kernel_id = await get_kernel_id_from_container(container_name)
+                if kernel_id is None:
+                    continue
+                try:
+                    exit_code = evdata['Actor']['Attributes']['exitCode']
+                except KeyError:
+                    exit_code = 255
+                await self.send_event('kernel_terminated',
+                                      kernel_id, 'self-terminated',
+                                      exit_code)
+                self.orphan_tasks.add(
+                    self.loop.create_task(self.clean_kernel(kernel_id))
+                )
+
+        await asyncio.sleep(0.5)

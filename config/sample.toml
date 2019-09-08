@@ -191,6 +191,12 @@ enabled = false
 # launches, due to bugs in initialization steps such as jail.
 skip-container-deletion = false
 
+# Include debug-level logs for statistics.
+log-stats = false
+
+# Include debug-level logs for docker event stream.
+log-docker-events = false
+
 [debug.coredump]
 # If set true, enable coredumps in containers. Only supported in Linux.
 # (This option is not related to the agent itself.)

@@ -13,9 +13,18 @@ import enum
 import logging
 import os
 from pathlib import Path
+import signal
 import sys
 import time
-from typing import Callable, List, Mapping, FrozenSet, Tuple, Optional
+from typing import (
+    Optional,
+    Callable,
+    List, Tuple,
+    Dict, Mapping, MutableMapping,
+    FrozenSet,
+    TYPE_CHECKING,
+)
+from typing_extensions import Final
 
 import aiodocker
 import aiotools
@@ -27,11 +36,16 @@ import zmq.asyncio
 from ai.backend.common import config
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.identity import is_containerized
+from ai.backend.common.types import (
+    ContainerId, DeviceId, KernelId,
+    MetricKey, MetricValue, MovingStatValue,
+)
 from ai.backend.common import msgpack
 from .utils import (
     numeric_list, remove_exponent,
 )
-from .types import DeviceId, KernelId, MetricKey
+if TYPE_CHECKING:
+    from .agent import AbstractAgent
 
 __all__ = (
     'StatContext', 'StatModes',
@@ -43,7 +57,7 @@ __all__ = (
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.stats'))
 
-CLONE_NEWNET = 0x40000000
+CLONE_NEWNET: Final = 0x40000000
 
 
 def _errcheck(ret, func, args):
@@ -63,6 +77,7 @@ class StatModes(enum.Enum):
     CGROUP = 'cgroup'
     DOCKER = 'docker'
 
+    @staticmethod
     def get_preferred_mode():
         '''
         Returns the most preferred statistics collector type for the host OS.
@@ -98,7 +113,7 @@ class NodeMeasurement:
     per_device: Mapping[DeviceId, Measurement] = attr.Factory(dict)
     unit_hint: Optional[str] = None
     stats_filter: FrozenSet[str] = attr.Factory(frozenset)
-    current_hook: Callable[['Metric'], Decimal] = None
+    current_hook: Optional[Callable[['Metric'], Decimal]] = None
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -111,7 +126,7 @@ class ContainerMeasurement:
     per_container: Mapping[str, Measurement] = attr.Factory(dict)
     unit_hint: Optional[str] = None
     stats_filter: FrozenSet[str] = attr.Factory(frozenset)
-    current_hook: Callable[['Metric'], Decimal] = None
+    current_hook: Optional[Callable[['Metric'], Decimal]] = None
 
 
 class MovingStatistics:
@@ -180,7 +195,7 @@ class MovingStatistics:
                     Decimal(self._last[-1][1] - self._last[-2][1]))
         return Decimal(0)
 
-    def to_serializable_dict(self) -> Mapping[str, str]:
+    def to_serializable_dict(self) -> MovingStatValue:
         q = Decimal('0.000')
         return {
             'min': str(remove_exponent(self.min.quantize(q))),
@@ -189,6 +204,7 @@ class MovingStatistics:
             'avg': str(remove_exponent(self.avg.quantize(q))),
             'diff': str(remove_exponent(self.diff.quantize(q))),
             'rate': str(remove_exponent(self.rate.quantize(q))),
+            'version': 2,
         }
 
 
@@ -201,7 +217,7 @@ class Metric:
     current: Decimal
     capacity: Optional[Decimal] = None
     unit_hint: Optional[str] = None
-    current_hook: Callable[['Metric'], Decimal] = None
+    current_hook: Optional[Callable[['Metric'], Decimal]] = None
 
     def update(self, value: Measurement):
         if value.capacity is not None:
@@ -211,7 +227,7 @@ class Metric:
         if self.current_hook is not None:
             self.current = self.current_hook(self)
 
-    def to_serializable_dict(self) -> Mapping[str, str]:
+    def to_serializable_dict(self) -> MetricValue:
         q = Decimal('0.000')
         q_pct = Decimal('0.00')
         return {
@@ -226,7 +242,7 @@ class Metric:
                     self.capacity > 0)
                 else None),
             'unit_hint': self.unit_hint,
-            **{f'stats.{k}': v
+            **{f'stats.{k}': v  # type: ignore
                for k, v in self.stats.to_serializable_dict().items()
                if k in self.stats_filter},
         }
@@ -241,19 +257,24 @@ class StatSyncState:
 
 class StatContext:
 
-    def __init__(self, agent: object, mode: StatModes = None, *,
+    agent: 'AbstractAgent'
+    mode: StatModes
+    node_metrics: Mapping[MetricKey, Metric]
+    device_metrics: Mapping[MetricKey, MutableMapping[DeviceId, Metric]]
+    kernel_metrics: MutableMapping[KernelId, MutableMapping[MetricKey, Metric]]
+
+    def __init__(self, agent: 'AbstractAgent', mode: StatModes = None, *,
                  cache_lifespan: float = 30.0):
         self.agent = agent
-        self.mode: StatModes = mode if mode is not None else StatModes.get_preferred_mode()
+        self.mode = mode if mode is not None else StatModes.get_preferred_mode()
         self.cache_lifespan = cache_lifespan
 
-        self.node_metrics: Mapping[MetricKey, Metric] = {}
-        self.device_metrics: Mapping[MetricKey, Mapping[DeviceId, Metric]] = {}
-        self.kernel_metrics: Mapping[KernelId, Mapping[MetricKey, Metric]] = {}
+        self.node_metrics = {}
+        self.device_metrics = {}
+        self.kernel_metrics = {}
 
         self._lock = asyncio.Lock()
-        self._container_stat_api_cache = {}
-        self._timestamps = {}
+        self._timestamps: MutableMapping[str, float] = {}
 
     def update_timestamp(self, timestamp_key: str) -> Tuple[float, float]:
         '''
@@ -278,8 +299,6 @@ class StatContext:
         Intended to be used by the agent.
         '''
         async with self._lock:
-            self._container_stat_api_cache.clear()
-
             # gather node/device metrics from compute plugins
             _tasks = []
             for computer in self.agent.computers.values():
@@ -327,8 +346,8 @@ class StatContext:
             container_ids = []
             kernel_id_map = {}
             used_kernel_ids = set()
-            for kid, info in self.agent.container_registry.items():
-                cid = info['container_id']
+            for kid, kobj in self.agent.kernel_registry.items():
+                cid = kobj['container_id']
                 container_ids.append(cid)
                 kernel_id_map[cid] = kid
                 used_kernel_ids.add(kid)
@@ -377,6 +396,9 @@ class StatContext:
                 for metric_key, per_device in self.device_metrics.items()
             },
         }
+        if self.agent.config['debug']['log-stats']:
+            log.debug('stats: node_updates: {0}: {1}',
+                      self.agent.config['agent']['id'], redis_agent_updates['node'])
         pipe.set(self.agent.config['agent']['id'], msgpack.packb(redis_agent_updates))
         pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
         for kernel_id, metrics in self.kernel_metrics.items():
@@ -388,17 +410,17 @@ class StatContext:
             pipe.expire(kernel_id, self.cache_lifespan)
         await pipe.execute()
 
-    async def collect_container_stat(self, container_id: str) -> Mapping[MetricKey, Metric]:
+    async def collect_container_stat(self, container_id: ContainerId) -> Mapping[MetricKey, Metric]:
         '''
         Collect the per-container statistics only,
 
         Intended to be used by the agent and triggered by container cgroup synchronization processes.
         '''
         async with self._lock:
-            kernel_id_map = {}
-            for kid, info in self.agent.container_registry.items():
+            kernel_id_map: Dict[ContainerId, KernelId] = {}
+            for kid, info in self.agent.kernel_registry.items():
                 cid = info['container_id']
-                kernel_id_map[cid] = kid
+                kernel_id_map[ContainerId(cid)] = kid
 
             _tasks = []
             kernel_id = None
@@ -441,6 +463,9 @@ class StatContext:
                 key: obj.to_serializable_dict()
                 for key, obj in metrics.items()
             }
+            if self.agent.config['debug']['log-stats']:
+                log.debug('kernel_updates: {0}: {1}',
+                          kernel_id, serialized_metrics)
             pipe.set(kernel_id, msgpack.packb(serialized_metrics))
             pipe.expire(kernel_id, self.cache_lifespan)
             await pipe.execute()
@@ -481,6 +506,8 @@ async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
 
 @contextmanager
 def join_cgroup_and_namespace(cid, ping_agent, signal_sock):
+    stop_signals = {signal.SIGINT, signal.SIGTERM}
+    signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
     libc = CDLL('libc.so.6', use_errno=True)
     libc.setns.errcheck = _errcheck
     mypid = os.getpid()
@@ -549,8 +576,10 @@ def join_cgroup_and_namespace(cid, ping_agent, signal_sock):
         sys.exit(0)
 
     try:
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
         yield
     finally:
+        signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
         # Move to the parent cgroup and self-remove the container cgroup
         for cgroup in cgroups:
             Path(f'/sys/fs/cgroup/{cgroup}/cgroup.procs').write_text(str(mypid))
@@ -558,6 +587,7 @@ def join_cgroup_and_namespace(cid, ping_agent, signal_sock):
                 os.rmdir(f'/sys/fs/cgroup/{cgroup}/docker/{cid}')
             except OSError:
                 pass
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
 
 
 def is_cgroup_running(cid):
@@ -603,7 +633,7 @@ def main(args):
             sync_sock.send_serialized([msg], lambda msgs: [*map(msgpack.packb, msgs)])
             sync_sock.recv_serialized(lambda frames: [*map(msgpack.unpackb, frames)])
 
-        log.info('started statistics collection for {}', args.cid)
+        log.debug('started statistics collection for {}', args.cid)
 
         if args.type == StatModes.CGROUP:
             with closing(sync_sock), join_cgroup_and_namespace(args.cid,
@@ -622,12 +652,15 @@ def main(args):
                     # Agent periodically collects container stats.
                     time.sleep(0.3)
         elif args.type == StatModes.DOCKER:
+            stop_signals = {signal.SIGINT, signal.SIGTERM}
+            signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
             loop = asyncio.get_event_loop()
             with closing(sync_sock):
                 # Notify the agent to start the container.
                 signal_sock.send_multipart([b''])
                 # Wait for the container to be actually started.
                 signal_sock.recv_multipart()
+                signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
                 while True:
                     is_running = loop.run_until_complete(is_container_running(args.cid))
                     if is_running:
@@ -640,13 +673,17 @@ def main(args):
             loop.close()
 
     except (KeyboardInterrupt, SystemExit):
-        sys.exit(1)
+        exit_code = 1
     else:
-        sys.exit(0)
+        exit_code = 0
     finally:
         signal_sock.close()
         signal_sockpath.unlink()
-        log.info('terminated statistics collection for {}', args.cid)
+        log.debug('terminated statistics collection for {}', args.cid)
+        context.term()
+
+    time.sleep(0.05)
+    sys.exit(exit_code)
 
 
 if __name__ == '__main__':

@@ -49,7 +49,10 @@ async def handle_status(request: web.Request) -> web.Response:
     proc = await asyncio.create_subprocess_exec(
         *['sudo', 'systemctl', 'is-active', svc],
         stdout=subprocess.PIPE)
-    status = (await proc.stdout.read()).strip().decode()
+    if proc.stdout is not None:
+        status = (await proc.stdout.read()).strip().decode()
+    else:
+        status = 'unknown'
     await proc.wait()
     return web.json_response({
         'agent-status': status,  # maybe also "inactive", "activating"
@@ -167,9 +170,9 @@ async def handle_mount(request: web.Request) -> web.Response:
     proc = await asyncio.create_subprocess_exec(*cmd,
                                                 stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.PIPE)
-    out, err = await proc.communicate()
-    out = out.decode('utf8')
-    err = err.decode('utf8')
+    raw_out, raw_err = await proc.communicate()
+    out = raw_out.decode('utf8')
+    err = raw_err.decode('utf8')
     await proc.wait()
     if err:
         log.error('Mount error: ' + err)
@@ -196,9 +199,9 @@ async def handle_umount(request: web.Request) -> web.Response:
     proc = await asyncio.create_subprocess_exec(*[
         'sudo', 'umount', str(mountpoint),
     ], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    out, err = await proc.communicate()
-    out = out.decode('utf8')
-    err = err.decode('utf8')
+    raw_out, raw_err = await proc.communicate()
+    out = raw_out.decode('utf8')
+    err = raw_err.decode('utf8')
     await proc.wait()
     if err:
         log.error('Unmount error: ' + err)

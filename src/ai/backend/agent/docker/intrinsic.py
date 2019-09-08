@@ -4,22 +4,36 @@ import logging
 import os
 from pathlib import Path
 import platform
-from typing import Any, Collection, Mapping, Sequence
+from typing import (
+    cast,
+    Any,
+    Collection, Mapping,
+    Sequence, List,
+)
 
 import aiohttp
-from aiodocker.docker import DockerContainer
+from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
 import psutil
 
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.utils import nmget
-from .resources import get_resource_spec_from_container
+from ai.backend.common.types import (
+    DeviceName, DeviceId,
+    DeviceModelInfo,
+    SlotName, SlotTypes,
+    MetricKey,
+)
+from .resources import (
+    get_resource_spec_from_container,
+)
+from .. import __version__
 from ..resources import (
+    AbstractAllocMap,
     DiscretePropertyAllocMap,
     AbstractComputeDevice,
     AbstractComputePlugin,
 )
-from .. import __version__
 from ..stats import (
     StatContext, NodeMeasurement, ContainerMeasurement,
     StatModes, MetricTypes, Measurement,
@@ -27,7 +41,7 @@ from ..stats import (
 from ..utils import read_sysfs, current_loop
 from ..vendor.linux import libnuma
 
-log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.intrinsic'))
+log = BraceStyleAdapter(logging.getLogger(__name__))
 
 
 # Pseudo-plugins for intrinsic devices (CPU and the main memory)
@@ -41,9 +55,9 @@ class CPUPlugin(AbstractComputePlugin):
     Represents the CPU.
     '''
 
-    key = 'cpu'
+    key = DeviceName('cpu')
     slot_types = [
-        ('cpu', 'count')
+        (SlotName('cpu'), SlotTypes.COUNT)
     ]
 
     @classmethod
@@ -53,7 +67,7 @@ class CPUPlugin(AbstractComputePlugin):
         assert 1 <= overcommit_factor <= 4
         return [
             CPUDevice(
-                device_id=str(core_idx),
+                device_id=DeviceId(str(core_idx)),
                 hw_location='root',
                 numa_node=libnuma.node_of_cpu(core_idx),
                 memory_size=0,
@@ -63,10 +77,10 @@ class CPUPlugin(AbstractComputePlugin):
         ]
 
     @classmethod
-    async def available_slots(cls) -> Mapping[str, str]:
+    async def available_slots(cls) -> Mapping[SlotName, Decimal]:
         devices = await cls.list_devices()
         return {
-            'cpu': sum(dev.processing_units for dev in devices),
+            SlotName('cpu'): Decimal(sum(dev.processing_units for dev in devices)),
         }
 
     @classmethod
@@ -85,19 +99,26 @@ class CPUPlugin(AbstractComputePlugin):
     async def gather_node_measures(cls, ctx: StatContext) -> Sequence[NodeMeasurement]:
         _cstat = psutil.cpu_times(True)
         q = Decimal('0.000')
-        total_cpu_used = sum((Decimal(c.user + c.system) * 1000).quantize(q) for c in _cstat)
-        now, interval = ctx.update_timestamp('cpu-node')
-        interval = Decimal(interval * 1000).quantize(q)
+        total_cpu_used = cast(Decimal,
+                              sum((Decimal(c.user + c.system) * 1000).quantize(q) for c in _cstat))
+        now, raw_interval = ctx.update_timestamp('cpu-node')
+        interval = Decimal(raw_interval * 1000).quantize(q)
 
         return [
             NodeMeasurement(
-                'cpu_util', MetricTypes.UTILIZATION,
+                MetricKey('cpu_util'),
+                MetricTypes.UTILIZATION,
                 unit_hint='msec',
                 current_hook=lambda metric: metric.stats.diff,
                 per_node=Measurement(total_cpu_used, interval),
-                per_device={str(idx): Measurement((Decimal(c.user + c.system) * 1000).quantize(q),
-                                                  interval)
-                            for idx, c in enumerate(_cstat)},
+                per_device={
+                    DeviceId(str(idx)):
+                    Measurement(
+                        (Decimal(c.user + c.system) * 1000).quantize(q),
+                        interval,
+                    )
+                    for idx, c in enumerate(_cstat)
+                },
             ),
         ]
 
@@ -108,7 +129,7 @@ class CPUPlugin(AbstractComputePlugin):
         async def sysfs_impl(container_id):
             cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
             try:
-                cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage') / 1e6
+                cpu_used = read_sysfs(cpu_prefix + 'cpuacct.usage', int) / 1e6
             except IOError as e:
                 log.warning('cannot read stats: sysfs unreadable for container {0}\n{1!r}',
                             container_id[:7], e)
@@ -154,21 +175,23 @@ class CPUPlugin(AbstractComputePlugin):
             per_container_cpu_used[cid] = Measurement(Decimal(cpu_used).quantize(q))
         return [
             ContainerMeasurement(
-                'cpu_util', MetricTypes.UTILIZATION,
+                MetricKey('cpu_util'),
+                MetricTypes.UTILIZATION,
                 unit_hint='percent',
                 current_hook=lambda metric: metric.stats.diff,
-                stats_filter={'avg', 'max'},
+                stats_filter=frozenset({'avg', 'max'}),
                 per_container=per_container_cpu_used,
             ),
             ContainerMeasurement(
-                'cpu_used', MetricTypes.USAGE,
+                MetricKey('cpu_used'),
+                MetricTypes.USAGE,
                 unit_hint='msec',
                 per_container=per_container_cpu_used.copy(),
             ),
         ]
 
     @classmethod
-    async def create_alloc_map(cls) -> Mapping[str, str]:
+    async def create_alloc_map(cls) -> AbstractAllocMap:
         devices = await cls.list_devices()
         return DiscretePropertyAllocMap(
             devices=devices,
@@ -181,36 +204,39 @@ class CPUPlugin(AbstractComputePlugin):
 
     @classmethod
     async def generate_docker_args(cls,
-                                   docker: 'aiodocker.docker.Docker',  # noqa
-                                   device_alloc,
-                                  ) -> Mapping[str, Any]:
-        cores = [*device_alloc['cpu'].keys()]
+                                   docker: Docker,
+                                   device_alloc) \
+                                  -> Mapping[str, Any]:
+        cores = [*map(int, device_alloc['cpu'].keys())]
+        sorted_core_ids = [*map(str, sorted(cores))]
         return {
             'HostConfig': {
                 'CpuPeriod': 100_000,  # docker default
                 'CpuQuota': int(100_000 * len(cores)),
-                'Cpus': ','.join(sorted(cores)),
-                'CpusetCpus': ','.join(sorted(cores)),
+                'Cpus': ','.join(sorted_core_ids),
+                'CpusetCpus': ','.join(sorted_core_ids),
                 # 'CpusetMems': f'{resource_spec.numa_node}',
             }
         }
 
     @classmethod
-    async def restore_from_container(cls, container, alloc_map):
+    async def restore_from_container(cls, container: Mapping[str, Any],
+                                     alloc_map: AbstractAllocMap) -> None:
         assert isinstance(alloc_map, DiscretePropertyAllocMap)
         # Docker does not return the original cpuset.... :(
         # We need to read our own records.
         resource_spec = await get_resource_spec_from_container(container)
         if resource_spec is None:
             return
-        alloc_map.allocations['cpu'].update(
-            resource_spec.allocations['cpu']['cpu'])
+        alloc_map.allocations[SlotName('cpu')].update(
+            resource_spec.allocations[DeviceName('cpu')][SlotName('cpu')])
 
     @classmethod
-    async def get_attached_devices(cls, device_alloc) -> Sequence[Mapping[str, str]]:
-        device_ids = [*device_alloc['cpu'].keys()]
+    async def get_attached_devices(cls, device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]) \
+                                   -> Sequence[DeviceModelInfo]:
+        device_ids = [*device_alloc[SlotName('cpu')].keys()]
         available_devices = await cls.list_devices()
-        attached_devices = []
+        attached_devices: List[DeviceModelInfo] = []
         for device in available_devices:
             if device.device_id in device_ids:
                 attached_devices.append({
@@ -232,9 +258,9 @@ class MemoryPlugin(AbstractComputePlugin):
     in addition to the memory usage.
     '''
 
-    key = 'mem'
+    key = DeviceName('mem')
     slot_types = [
-        ('mem', 'bytes')
+        (SlotName('mem'), SlotTypes.BYTES)
     ]
 
     @classmethod
@@ -242,7 +268,7 @@ class MemoryPlugin(AbstractComputePlugin):
         # TODO: support NUMA?
         memory_size = psutil.virtual_memory().total
         return [MemoryDevice(
-            device_id='root',
+            device_id=DeviceId('root'),
             hw_location='root',
             numa_node=0,
             memory_size=memory_size,
@@ -250,10 +276,10 @@ class MemoryPlugin(AbstractComputePlugin):
         )]
 
     @classmethod
-    async def available_slots(cls) -> Mapping[str, str]:
+    async def available_slots(cls) -> Mapping[SlotName, Decimal]:
         devices = await cls.list_devices()
         return {
-            'mem': sum(dev.memory_size for dev in devices),
+            SlotName('mem'): Decimal(sum(dev.memory_size for dev in devices)),
         }
 
     @classmethod
@@ -293,31 +319,37 @@ class MemoryPlugin(AbstractComputePlugin):
             await loop.run_in_executor(None, get_disk_stat)
         return [
             NodeMeasurement(
-                'mem', MetricTypes.USAGE,
+                MetricKey('mem'),
+                MetricTypes.USAGE,
                 unit_hint='bytes',
-                stats_filter={'max'},
+                stats_filter=frozenset({'max'}),
                 per_node=Measurement(total_mem_used_bytes, total_mem_capacity_bytes),
-                per_device={'root': Measurement(total_mem_used_bytes, total_mem_capacity_bytes)},
+                per_device={DeviceId('root'):
+                            Measurement(total_mem_used_bytes,
+                                        total_mem_capacity_bytes)},
             ),
             NodeMeasurement(
-                'disk', MetricTypes.USAGE,
+                MetricKey('disk'),
+                MetricTypes.USAGE,
                 unit_hint='bytes',
                 per_node=Measurement(total_disk_usage, total_disk_capacity),
                 per_device=per_disk_stat,
             ),
             NodeMeasurement(
-                'net_rx', MetricTypes.RATE,
+                MetricKey('net_rx'),
+                MetricTypes.RATE,
                 unit_hint='bps',
                 current_hook=lambda metric: metric.stats.rate,
                 per_node=Measurement(Decimal(net_rx_bytes)),
-                per_device={'node': Measurement(Decimal(net_rx_bytes))},
+                per_device={DeviceId('node'): Measurement(Decimal(net_rx_bytes))},
             ),
             NodeMeasurement(
-                'net_tx', MetricTypes.RATE,
+                MetricKey('net_tx'),
+                MetricTypes.RATE,
                 unit_hint='bps',
                 current_hook=lambda metric: metric.stats.rate,
                 per_node=Measurement(Decimal(net_tx_bytes)),
-                per_device={'node': Measurement(Decimal(net_tx_bytes))},
+                per_device={DeviceId('node'): Measurement(Decimal(net_tx_bytes))},
             ),
         ]
 
@@ -326,7 +358,7 @@ class MemoryPlugin(AbstractComputePlugin):
             -> Sequence[ContainerMeasurement]:
 
         def get_scratch_size(container_id: str) -> int:
-            for kernel_id, info in ctx.agent.container_registry.items():
+            for kernel_id, info in ctx.agent.kernel_registry.items():
                 if info['container_id'] == container_id:
                     break
             else:
@@ -344,13 +376,13 @@ class MemoryPlugin(AbstractComputePlugin):
             mem_prefix = f'/sys/fs/cgroup/memory/docker/{container_id}/'
             io_prefix = f'/sys/fs/cgroup/blkio/docker/{container_id}/'
             try:
-                mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes')
-                active_anon = read_sysfs(mem_prefix + 'memory_stats.stats.active_anon')
-                inactive_anon = read_sysfs(mem_prefix + 'memory_stats.stats.inactive_anon')
-                active_file = read_sysfs(mem_prefix + 'memory_stats.stats.active_file')
-                inactive_file = read_sysfs(mem_prefix + 'memory_stats.stats.inactive_file')
-                cache = read_sysfs(mem_prefix + 'memory_stats.stats.cache')
-                rss = read_sysfs(mem_prefix + 'memory_stats.stats.rss')
+                mem_cur_bytes = read_sysfs(mem_prefix + 'memory.usage_in_bytes', int)
+                active_anon = read_sysfs(mem_prefix + 'memory_stats.stats.active_anon', int)
+                inactive_anon = read_sysfs(mem_prefix + 'memory_stats.stats.inactive_anon', int)
+                active_file = read_sysfs(mem_prefix + 'memory_stats.stats.active_file', int)
+                inactive_file = read_sysfs(mem_prefix + 'memory_stats.stats.inactive_file', int)
+                cache = read_sysfs(mem_prefix + 'memory_stats.stats.cache', int)
+                rss = read_sysfs(mem_prefix + 'memory_stats.stats.rss', int)
                 shared_mem_cur_bytes = (
                     (active_anon + inactive_anon - active_file - inactive_file - rss + cache) / 2.0
                 )
@@ -451,39 +483,44 @@ class MemoryPlugin(AbstractComputePlugin):
                 Decimal(result[4]))
         return [
             ContainerMeasurement(
-                'mem', MetricTypes.USAGE,
+                MetricKey('mem'),
+                MetricTypes.USAGE,
                 unit_hint='bytes',
-                stats_filter={'max'},
+                stats_filter=frozenset({'max'}),
                 per_container=per_container_mem_used_bytes,
             ),
             ContainerMeasurement(
-                'io_read', MetricTypes.USAGE,
+                MetricKey('io_read'),
+                MetricTypes.USAGE,
                 unit_hint='bytes',
-                stats_filter={'rate'},
+                stats_filter=frozenset({'rate'}),
                 per_container=per_container_io_read_bytes,
             ),
             ContainerMeasurement(
-                'io_write', MetricTypes.USAGE,
+                MetricKey('io_write'),
+                MetricTypes.USAGE,
                 unit_hint='bytes',
-                stats_filter={'rate'},
+                stats_filter=frozenset({'rate'}),
                 per_container=per_container_io_write_bytes,
             ),
             ContainerMeasurement(
-                'io_scratch_size', MetricTypes.USAGE,
+                MetricKey('io_scratch_size'),
+                MetricTypes.USAGE,
                 unit_hint='bytes',
-                stats_filter={'max'},
+                stats_filter=frozenset({'max'}),
                 per_container=per_container_io_scratch_size,
             ),
             ContainerMeasurement(
-                'shared_mem', MetricTypes.USAGE,
+                MetricKey('shared_mem'),
+                MetricTypes.USAGE,
                 unit_hint='bytes',
-                stats_filter={'max'},
+                stats_filter=frozenset({'max'}),
                 per_container=per_container_shared_mem_bytes,
             ),
         ]
 
     @classmethod
-    async def create_alloc_map(cls) -> Mapping[str, str]:
+    async def create_alloc_map(cls) -> AbstractAllocMap:
         devices = await cls.list_devices()
         return DiscretePropertyAllocMap(
             devices=devices,
@@ -495,9 +532,9 @@ class MemoryPlugin(AbstractComputePlugin):
 
     @classmethod
     async def generate_docker_args(cls,
-                                   docker: 'aiodocker.docker.Docker',  # noqa
-                                   device_alloc,
-                                  ) -> Mapping[str, Any]:
+                                   docker: Docker,
+                                   device_alloc) \
+                                  -> Mapping[str, Any]:
         memory = sum(device_alloc['mem'].values())
         return {
             'HostConfig': {
@@ -507,16 +544,18 @@ class MemoryPlugin(AbstractComputePlugin):
         }
 
     @classmethod
-    async def restore_from_container(cls, container, alloc_map):
+    async def restore_from_container(cls, container: Mapping[str, Any],
+                                     alloc_map: AbstractAllocMap) -> None:
         assert isinstance(alloc_map, DiscretePropertyAllocMap)
         memory_limit = container['HostConfig']['Memory']
-        alloc_map.allocations['mem']['root'] += memory_limit
+        alloc_map.allocations[SlotName('mem')][DeviceId('root')] += memory_limit
 
     @classmethod
-    async def get_attached_devices(cls, device_alloc) -> Sequence[Mapping[str, str]]:
-        device_ids = [*device_alloc['mem'].keys()]
+    async def get_attached_devices(cls, device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]) \
+                                   -> Sequence[DeviceModelInfo]:
+        device_ids = [*device_alloc[SlotName('mem')].keys()]
         available_devices = await cls.list_devices()
-        attached_devices = []
+        attached_devices: List[DeviceModelInfo] = []
         for device in available_devices:
             if device.device_id in device_ids:
                 attached_devices.append({

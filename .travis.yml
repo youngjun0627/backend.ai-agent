@@ -57,10 +57,9 @@ before_script:
   - sudo setcap cap_sys_ptrace,cap_sys_admin,cap_dac_override+eip $(readlink -f $(which python))
   # pull minimal kernel images and prepare krunner-env
   - docker pull lablup/lua:5.3-alpine3.8
-  - python -m ai.backend.agent.kernel build-krunner-env alpine3.8
-  - python -m ai.backend.agent.kernel build-krunner-env ubuntu16.04
 script:
   - python -m flake8 src tests
+  - python -m mypy src/ai/backend
   - python -m pytest -v --cov=src
 after_success:
   - codecov

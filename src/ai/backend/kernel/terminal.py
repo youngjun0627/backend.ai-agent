@@ -68,7 +68,7 @@ class Terminal:
 
     async def do_resize_term(self, args) -> int:
         if self.fd is None:
-            return
+            return 0
         origsz = struct.pack('HHHH', 0, 0, 0, 0)
         origsz = fcntl.ioctl(self.fd, termios.TIOCGWINSZ, origsz)
         _, _, origx, origy = struct.unpack('HHHH', origsz)
@@ -96,8 +96,8 @@ class Terminal:
                 return 127
         except:
             exc_type, exc_val, tb = sys.exc_info()
-            trace = traceback.format_exception(exc_type, exc_val, tb)
-            await self.sock_out.send_multipart([b'stderr', trace.encode()])
+            traces = traceback.format_exception(exc_type, exc_val, tb)
+            await self.sock_out.send_multipart([b'stderr', ''.join(traces).encode()])
             return 1
         finally:
             opts = {

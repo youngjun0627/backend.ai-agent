@@ -34,9 +34,9 @@ class Runner(BaseRunner):
 
     async def build_heuristic(self) -> int:
         # GHC will generate error if no Main module exist among srcfiles.
-        srcfiles = Path('.').glob('**/*.hs')
-        srcfiles = ' '.join(map(lambda p: shlex.quote(str(p)), srcfiles))
-        cmd = f'ghc --make main {srcfiles}'
+        src_glob = Path('.').glob('**/*.hs')
+        src_files = ' '.join(map(lambda p: shlex.quote(str(p)), src_glob))
+        cmd = f'ghc --make main {src_files}'
         return await self.run_subproc(cmd)
 
     async def execute_heuristic(self) -> int:

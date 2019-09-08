@@ -6,16 +6,22 @@ from dataclasses import dataclass
 import io
 import json
 import logging
+import math
 import re
 import secrets
 import time
-from typing import Any, Dict, Mapping, Set, Tuple
+from typing import (
+    Any, Optional,
+    Dict, Mapping,
+    Set, FrozenSet, Tuple,
+)
 
 from async_timeout import timeout
 import zmq
 
 from ai.backend.common import msgpack
 from ai.backend.common.docker import ImageRef
+from ai.backend.common.types import aobject
 from ai.backend.common.utils import StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
 from .resources import KernelResourceSpec
@@ -43,8 +49,11 @@ class ClientFeatures(StringSetFlag):
 
 
 # TODO: use Python 3.7 contextvars for per-client feature selection
-default_client_features = {ClientFeatures.INPUT, ClientFeatures.CONTINUATION}
-default_api_version = 3
+default_client_features = frozenset({
+    ClientFeatures.INPUT.value,
+    ClientFeatures.CONTINUATION.value,
+})
+default_api_version = 4
 
 
 class RunEvent(Exception):
@@ -76,17 +85,19 @@ class ExecTimeout(RunEvent):
 
 @dataclass
 class ResultRecord:
-    msg_type: str = None
-    data: str = None
+    msg_type: Optional[str] = None
+    data: Optional[str] = None
 
 
-class AbstractKernel(UserDict, metaclass=ABCMeta):
+class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
 
-    def __init__(self, kernel_id: str, image: ImageRef, version: str, *,
+    runner: 'AbstractCodeRunner'
+
+    def __init__(self, kernel_id: str, image: ImageRef, version: int, *,
                  config: Mapping[str, Any],
                  resource_spec: KernelResourceSpec,
                  service_ports: Any,  # TODO: type-annotation
-                 data: Dict[str, Any]):
+                 data: Dict[str, Any]) -> None:
         self.config = config
         self.kernel_id = kernel_id
         self.image = image
@@ -94,10 +105,17 @@ class AbstractKernel(UserDict, metaclass=ABCMeta):
         self.last_used = time.monotonic()
         self.resource_spec = resource_spec
         self.service_ports = service_ports
-        self.runner = None
         self.data = data
         self._runner_lock = asyncio.Lock()
         self._tasks: Set[asyncio.Task] = set()
+
+    async def __ainit__(self) -> None:
+        log.debug('kernel.__ainit__(k:{0}, api-ver:{1}, client-features:{2}): '
+                  'starting new runner',
+                  self.kernel_id, default_api_version, default_client_features)
+        self.runner = await self.create_code_runner(
+            client_features=default_client_features,
+            api_version=default_api_version)
 
     @abstractmethod
     async def close(self):
@@ -122,8 +140,8 @@ class AbstractKernel(UserDict, metaclass=ABCMeta):
             computer_ctxs[accel_key].alloc_map.free(accel_alloc)
 
     @abstractmethod
-    def create_code_runner(self, *,
-                           client_features: Set[str],
+    async def create_code_runner(self, *,
+                           client_features: FrozenSet[str],
                            api_version: int) \
                            -> 'AbstractCodeRunner':
         raise NotImplementedError
@@ -160,9 +178,11 @@ class AbstractKernel(UserDict, metaclass=ABCMeta):
     async def list_files(self, path: str):
         raise NotImplementedError
 
-    async def execute(self, run_id, mode, text, *,
-                      opts, flush_timeout, api_version):
-        await self.ensure_runner()
+    async def execute(self,
+                      run_id: Optional[str], mode: str, text: str, *,
+                      opts: Mapping[str, Any],
+                      api_version: int,
+                      flush_timeout: float):
         self.last_used = time.monotonic()
         try:
             myself = asyncio.Task.current_task()
@@ -185,53 +205,72 @@ class AbstractKernel(UserDict, metaclass=ABCMeta):
         finally:
             self._tasks.remove(myself)
 
-    async def ensure_runner(self):
-        async with self._runner_lock:
-            if self.runner is not None:
-                log.debug('_execute_code:v{0}({1}) use '
-                          'existing runner', default_api_version, self.kernel_id)
-            else:
-                runner = self.create_code_runner(
-                    client_features=default_client_features,
-                    api_version=default_api_version)
-                log.debug('_execute:v{0}({1}) start new runner',
-                          default_api_version, self.kernel_id)
-                self.runner = runner
-                await runner.start()
-            return self.runner
 
+class AbstractCodeRunner(aobject, metaclass=ABCMeta):
 
-class AbstractCodeRunner:
+    started_at: float
+    finished_at: Optional[float]
+    exec_timeout: float
+    max_record_size: int
+    client_features: FrozenSet[str]
 
-    def __init__(self, repl_in_port, repl_out_port, *,
-                 exec_timeout=0, client_features=None):
-        self.started_at = None
+    input_sock: zmq.asyncio.Socket
+    output_sock: zmq.asyncio.Socket
+
+    # FIXME: use __future__.annotations in Python 3.7+
+    completion_queue: asyncio.Queue  # contains: bytes
+    service_queue: asyncio.Queue     # contains: bytes
+    status_queue: asyncio.Queue      # contains: bytes
+    output_queue: Optional[asyncio.Queue]  # contains: ResultRecord
+    current_run_id: Optional[str]
+    pending_queues: OrderedDict  # contains: [str, Tuple[asyncio.Event, asyncio.Queue[ResultRecord]]]
+
+    read_task: Optional[asyncio.Task]
+    status_task: Optional[asyncio.Task]
+    watchdog_task: Optional[asyncio.Task]
+
+    def __init__(self, kernel_id, *,
+                 exec_timeout: float = 0,
+                 client_features: FrozenSet[str] = None) -> None:
+        self.started_at = time.monotonic()
         self.finished_at = None
-        self.repl_in_port = repl_in_port
-        self.repl_out_port = repl_out_port
-        self.zctx = zmq.asyncio.Context()
-        self.input_sock = None
-        self.output_sock = None
-        assert exec_timeout >= 0
+        if not math.isfinite(exec_timeout) or exec_timeout < 0:
+            raise ValueError('execution timeout must be a zero or finite positive number.')
         self.exec_timeout = exec_timeout
-        self.max_record_size = 10485760  # 10 MBytes
+        self.max_record_size = 10 * (2 ** 20)  # 10 MBytes
+        self.client_features = client_features or frozenset()
+        self.zctx = zmq.asyncio.Context()
+        self.input_sock = self.zctx.socket(zmq.PUSH)
+        self.output_sock = self.zctx.socket(zmq.PULL)
         self.completion_queue = asyncio.Queue(maxsize=128)
         self.service_queue = asyncio.Queue(maxsize=128)
         self.status_queue = asyncio.Queue(maxsize=128)
-        self.read_task = None
-        self.client_features = client_features or set()
-
         self.output_queue = None
         self.pending_queues = OrderedDict()
         self.current_run_id = None
 
+    async def __ainit__(self) -> None:
         loop = current_loop()
+        self.input_sock.connect(await self.get_repl_in_addr())
+        self.input_sock.setsockopt(zmq.LINGER, 50)
+        self.output_sock.connect(await self.get_repl_out_addr())
+        self.output_sock.setsockopt(zmq.LINGER, 50)
         self.status_task = loop.create_task(self.ping_status())
+        self.read_task = loop.create_task(self.read_output())
+        if self.exec_timeout > 0:
+            self.watchdog_task = loop.create_task(self.watchdog())
+        else:
+            self.watchdog_task = None
 
-    async def start(self):
-        pass
+    @abstractmethod
+    async def get_repl_in_addr(self) -> str:
+        raise NotImplementedError
 
-    async def close(self):
+    @abstractmethod
+    async def get_repl_out_addr(self) -> str:
+        raise NotImplementedError
+
+    async def close(self) -> None:
         if self.watchdog_task and not self.watchdog_task.done():
             self.watchdog_task.cancel()
             await self.watchdog_task
@@ -503,13 +542,13 @@ class AbstractCodeRunner:
             log.exception('unexpected error')
             raise
 
-    async def attach_output_queue(self, run_id):
+    async def attach_output_queue(self, run_id: Optional[str]) -> None:
         # Context: per API request
         if run_id is None:
             run_id = secrets.token_hex(16)
         assert run_id is not None
         if run_id not in self.pending_queues:
-            q = asyncio.Queue(maxsize=4096)
+            q: asyncio.Queue[ResultRecord] = asyncio.Queue(maxsize=4096)
             activated = asyncio.Event()
             self.pending_queues[run_id] = (activated, q)
         else:
@@ -528,7 +567,7 @@ class AbstractCodeRunner:
         self.current_run_id = run_id
         assert self.output_queue is q
 
-    def resume_output_queue(self):
+    def resume_output_queue(self) -> None:
         '''
         Use this to conclude get_next_result() when the execution should be
         continued from the client.
@@ -537,9 +576,11 @@ class AbstractCodeRunner:
         We don't change self.output_queue here so that we can continue to read
         outputs while the client sends the continuation request.
         '''
+        if self.current_run_id is None:
+            return
         self.pending_queues.move_to_end(self.current_run_id, last=False)
 
-    def next_output_queue(self):
+    def next_output_queue(self) -> None:
         '''
         Use this to conclude get_next_result() when we have finished a "run".
         '''
@@ -639,19 +680,26 @@ def match_krunner_volume(krunner_volumes: Mapping[str, Any], distro: str) -> Tup
     else:
         distro_prefix = distro[:-len(m.group(1))]
         distro_ver = m.group(1)
-    krunner_volumes = [
+    krunner_volume_list = [
         (distro_key, volume)
         for distro_key, volume in krunner_volumes.items()
         if distro_key.startswith(distro_prefix)
     ]
-    krunner_volumes = sorted(
-        krunner_volumes,
-        key=lambda item: tuple(map(int, rx_ver_suffix.search(item[0]).group(1).split('.'))),
+
+    def _extract_version(item: Tuple[str, Any]) -> Tuple[int, ...]:
+        m = rx_ver_suffix.search(item[0])
+        if m is not None:
+            return tuple(map(int, m.group(1).split('.')))
+        return (0,)
+
+    krunner_volume_list = sorted(
+        krunner_volume_list,
+        key=_extract_version,
         reverse=True)
-    if krunner_volumes:
+    if krunner_volume_list:
         if distro_ver is None:
-            return krunner_volumes[0]
-        for distro_key, volume in krunner_volumes:
+            return krunner_volume_list[0]
+        for distro_key, volume in krunner_volume_list:
             if distro_key == distro:
                 return (distro_key, volume)
     raise RuntimeError('krunner volume not found', distro)

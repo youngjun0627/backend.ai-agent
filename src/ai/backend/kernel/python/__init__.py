@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+from typing import List
 
 import janus
 
@@ -11,7 +12,7 @@ from .. import BaseRunner
 
 log = logging.getLogger()
 
-DEFAULT_PYFLAGS = []
+DEFAULT_PYFLAGS: List[str] = []
 
 
 class Runner(BaseRunner):

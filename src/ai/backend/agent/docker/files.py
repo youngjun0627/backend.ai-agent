@@ -2,11 +2,12 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+from typing import Dict
 
 from ai.backend.common.logging import BraceStyleAdapter
 import botocore, aiobotocore
 
-log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.files'))
+log = BraceStyleAdapter(logging.getLogger(__name__))
 
 # the names of following AWS variables follow boto3 convention.
 s3_access_key = os.environ.get('AWS_ACCESS_KEY_ID', 'dummy-access-key')
@@ -70,7 +71,7 @@ def scandir(root: Path, allowed_max_size: int):
     Scans a directory recursively and returns a dictionary of all files and
     their last modified time.
     '''
-    file_stats = dict()
+    file_stats: Dict[Path, float] = dict()
     if not isinstance(root, Path):
         root = Path(root)
     if not root.exists():

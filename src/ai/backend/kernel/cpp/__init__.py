@@ -41,15 +41,14 @@ class Runner(BaseRunner):
 
     async def build_heuristic(self) -> int:
         if Path('main.cpp').is_file():
-            cppfiles = list(Path('.').glob('**/*.cpp'))
-            ofiles = [Path(p.stem + '.o') for p in sorted(cppfiles)]
-            for cppf in cppfiles:
+            cppfiles_glob = list(Path('.').glob('**/*.cpp'))
+            ofiles_glob = [Path(p.stem + '.o') for p in sorted(cppfiles_glob)]
+            for cppf in cppfiles_glob:
                 cmd = [self.runtime_path, '-c', cppf, *DEFAULT_CFLAGS]
                 ret = await self.run_subproc(cmd)
                 if ret != 0:  # stop if g++ has failed
                     return ret
-            cppfiles = ' '.join(map(lambda p: shlex.quote(str(p)), cppfiles))
-            ofiles = ' '.join(map(lambda p: shlex.quote(str(p)), ofiles))
+            ofiles = ' '.join(map(lambda p: shlex.quote(str(p)), ofiles_glob))
             cmd = [self.runtime_path, ofiles, *DEFAULT_CFLAGS, '-o', './main']
             return await self.run_subproc(cmd)
         else:

@@ -1,21 +1,28 @@
 import asyncio
 import signal
+from typing import (
+    Awaitable, Callable, Optional,
+    Collection,
+    TypeVar,
+)
 
 __all__ = (
     'current_loop',
 )
 
 
+current_loop: Callable[[], asyncio.AbstractEventLoop]
 if hasattr(asyncio, 'get_running_loop'):
-    current_loop = asyncio.get_running_loop
+    current_loop = asyncio.get_running_loop  # type: ignore
 else:
-    current_loop = asyncio.get_event_loop
+    current_loop = asyncio.get_event_loop    # type: ignore
 
 
-if hasattr(asyncio, 'all_tasks'):  # Python 3.7+
-    all_tasks = asyncio.all_tasks
+all_tasks: Callable[[], Collection[asyncio.Task]]
+if hasattr(asyncio, 'all_tasks'):
+    all_tasks = asyncio.all_tasks       # type: ignore
 else:
-    all_tasks = asyncio.Task.all_tasks
+    all_tasks = asyncio.Task.all_tasks  # type: ignore
 
 
 def _cancel_all_tasks(loop):
@@ -53,10 +60,13 @@ def _asyncio_run(coro, *, debug=False):
             loop.close()
 
 
-if hasattr(asyncio, 'run'):  # Python 3.7+
-    asyncio_run = asyncio.run
+_T = TypeVar('_T')
+
+run: Callable[[Awaitable[_T], Optional[bool]], _T]
+if hasattr(asyncio, 'run'):
+    asyncio_run = asyncio.run   # type: ignore
 else:
-    asyncio_run = _asyncio_run
+    asyncio_run = _asyncio_run  # type: ignore
 
 
 def asyncio_run_forever(setup_coro, shutdown_coro, *,

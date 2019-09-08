@@ -1,31 +1,37 @@
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from decimal import Decimal
-import io
 import logging
 import json
 from pathlib import Path
 from typing import (
-    Any, Container, Collection, Mapping, Sequence, Optional, Union,
+    cast,
+    Any, Collection, Iterable,
+    List, Sequence,
+    MutableMapping, Mapping,
+    FrozenSet,
+    Tuple, Union,
+    Optional,
+    TextIO,
 )
 
 import attr
+import aiodocker
 
 from ai.backend.common.types import (
-    ResourceSlot,
+    ResourceSlot, SlotName, SlotTypes,
+    DeviceId, DeviceName, DeviceModelInfo,
     MountPermission, MountTypes,
-    DeviceId, SlotType,
-    Allocation, ResourceAllocations,
     BinarySize,
 )
 from ai.backend.common.logging import BraceStyleAdapter
 from .exception import InsufficientResource
 from .stats import StatContext, NodeMeasurement, ContainerMeasurement
 
-
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
 
-known_slot_types = {}
+
+known_slot_types: Mapping[SlotName, SlotTypes] = {}
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -42,21 +48,21 @@ class KernelResourceSpec(metaclass=ABCMeta):
     container_id: str
 
     '''Stores the original user-requested resource slots.'''
-    slots: ResourceSlot
+    slots: Mapping[SlotName, str]
 
     '''
     Represents the resource allocations for each slot (device) type and devices.
     '''
-    allocations: ResourceAllocations
-
-    '''The mounted vfolder list.'''
-    mounts: Sequence[str] = attr.Factory(list)
+    allocations: MutableMapping[DeviceName, Mapping[SlotName, Mapping[DeviceId, Decimal]]]
 
     '''The size of scratch disk. (not implemented yet)'''
-    scratch_disk_size: int = None
+    scratch_disk_size: int
+
+    '''The mounted vfolder list.'''
+    mounts: List['Mount'] = attr.Factory(list)
 
     '''The idle timeout in seconds.'''
-    idle_timeout: int = None
+    idle_timeout: Optional[int] = None
 
     def write_to_string(self) -> str:
         mounts_str = ','.join(map(str, self.mounts))
@@ -70,20 +76,23 @@ class KernelResourceSpec(metaclass=ABCMeta):
         resource_str += f'SLOTS={slots_str}\n'
         resource_str += f'IDLE_TIMEOUT={self.idle_timeout}\n'
 
-        for device_type, slots in self.allocations.items():
-            for slot_type, per_device_alloc in slots.items():
+        for device_name, slots in self.allocations.items():
+            for slot_name, per_device_alloc in slots.items():
+                if not (slot_name.startswith(f'{device_name}.') or slot_name == device_name):
+                    raise ValueError(f'device_name ({device_name}) must be a prefix of '
+                                     f'slot_name ({slot_name})')
                 pieces = []
                 for dev_id, alloc in per_device_alloc.items():
-                    if known_slot_types[slot_type] == 'bytes':
+                    if known_slot_types[slot_name] == 'bytes':
                         pieces.append(f'{dev_id}:{BinarySize(alloc):s}')
                     else:
                         pieces.append(f'{dev_id}:{alloc}')
                 alloc_str = ','.join(pieces)
-                resource_str += f'{slot_type.upper()}_SHARES={alloc_str}\n'
+                resource_str += f'{slot_name.upper()}_SHARES={alloc_str}\n'
 
         return resource_str
 
-    def write_to_file(self, file: io.TextIOBase) -> None:
+    def write_to_file(self, file: TextIO) -> None:
         file.write(self.write_to_string())
 
     @classmethod
@@ -94,31 +103,35 @@ class KernelResourceSpec(metaclass=ABCMeta):
                 continue
             key, val = line.strip().split('=', maxsplit=1)
             kvpairs[key] = val
-        allocations = defaultdict(dict)
+        allocations = cast(MutableMapping[DeviceName,
+                                          MutableMapping[SlotName,
+                                                         Mapping[DeviceId, Decimal]]],
+                           defaultdict(dict))
         for key, val in kvpairs.items():
             if key.endswith('_SHARES'):
-                slot_type = key[:-7].lower()
-                device_type = slot_type.split('.')[0]
-                per_device_alloc = {}
+                slot_name = SlotName(key[:-7].lower())
+                device_name = DeviceName(slot_name.split('.')[0])
+                per_device_alloc: MutableMapping[DeviceId, Decimal] = {}
                 for entry in val.split(','):
-                    dev_id, _, alloc = entry.partition(':')
-                    if not dev_id or not alloc:
+                    raw_dev_id, _, raw_alloc = entry.partition(':')
+                    if not raw_dev_id or not raw_alloc:
                         continue
+                    dev_id = DeviceId(raw_dev_id)
                     try:
-                        if known_slot_types[slot_type] == 'bytes':
-                            value = BinarySize.from_str(alloc)
+                        if known_slot_types[slot_name] == 'bytes':
+                            alloc = Decimal(BinarySize.from_str(raw_alloc))
                         else:
-                            value = Decimal(alloc)
+                            alloc = Decimal(raw_alloc)
                     except KeyError as e:
                         log.warning('A previously launched container has '
                                     'unknown slot type: {}. Ignoring it.',
                                     e.args[0])
                         continue
-                    per_device_alloc[dev_id] = value
-                allocations[device_type][slot_type] = per_device_alloc
+                    per_device_alloc[dev_id] = alloc
+                allocations[device_name][slot_name] = per_device_alloc
         mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',') if m]
         return cls(
-            container_id=kvpairs.get('CID'),
+            container_id=kvpairs.get('CID', 'unknown'),
             scratch_disk_size=BinarySize.from_str(kvpairs['SCRATCH_SIZE']),
             allocations=dict(allocations),
             slots=ResourceSlot(json.loads(kvpairs['SLOTS'])),
@@ -127,27 +140,30 @@ class KernelResourceSpec(metaclass=ABCMeta):
         )
 
     @classmethod
-    def read_from_file(cls, file: io.TextIOBase) -> 'KernelResourceSpec':
+    def read_from_file(cls, file: TextIO) -> 'KernelResourceSpec':
         text = '\n'.join(file.readlines())
         return cls.read_from_string(text)
 
-    def to_json(self) -> str:
+    def to_json_serializable_dict(self) -> Mapping[str, Any]:
         o = attr.asdict(self)
-        for slot_type, alloc in o['slots'].items():
-            if known_slot_types[slot_type] == 'bytes':
+        for slot_name, alloc in o['slots'].items():
+            if known_slot_types[slot_name] == 'bytes':
                 o['slots'] = f'{BinarySize(alloc):s}'
             else:
                 o['slots'] = str(alloc)
-        for dev_type, dev_alloc in o['allocations'].items():
-            for slot_type, per_device_alloc in dev_alloc.items():
+        for dev_name, dev_alloc in o['allocations'].items():
+            for slot_name, per_device_alloc in dev_alloc.items():
                 for dev_id, alloc in per_device_alloc.items():
-                    if known_slot_types[slot_type] == 'bytes':
+                    if known_slot_types[slot_name] == 'bytes':
                         alloc = f'{BinarySize(alloc):s}'
                     else:
                         alloc = str(alloc)
-                    o['allocations'][dev_type][slot_type][dev_id] = alloc
+                    o['allocations'][dev_name][slot_name][dev_id] = alloc
         o['mounts'] = list(map(str, self.mounts))
-        return json.dumps(o)
+        return o
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_json_serializable_dict())
 
 
 @attr.s(auto_attribs=True)
@@ -161,8 +177,8 @@ class AbstractComputeDevice():
 
 class AbstractComputePlugin(metaclass=ABCMeta):
 
-    key = 'accelerator'
-    slot_types = []
+    key: DeviceName = DeviceName('accelerator')
+    slot_types: Sequence[Tuple[SlotName, SlotTypes]] = []
 
     @classmethod
     @abstractmethod
@@ -171,15 +187,15 @@ class AbstractComputePlugin(metaclass=ABCMeta):
         Return the list of accelerator devices, as read as physically
         on the host.
         '''
-        return []
+        raise NotImplementedError
 
     @classmethod
     @abstractmethod
-    async def available_slots(cls) -> Mapping[str, str]:
+    async def available_slots(cls) -> Mapping[SlotName, Decimal]:
         '''
         Return available slot amounts for each slot key.
         '''
-        return []
+        raise NotImplementedError
 
     @classmethod
     @abstractmethod
@@ -187,7 +203,7 @@ class AbstractComputePlugin(metaclass=ABCMeta):
         '''
         Return the version string of the plugin.
         '''
-        return ''
+        raise NotImplementedError
 
     @classmethod
     @abstractmethod
@@ -209,7 +225,7 @@ class AbstractComputePlugin(metaclass=ABCMeta):
         Note that the key must not conflict with other accelerator plugins and must not
         contain dots.
         '''
-        return {}
+        raise NotImplementedError
 
     @classmethod
     @abstractmethod
@@ -218,19 +234,19 @@ class AbstractComputePlugin(metaclass=ABCMeta):
         '''
         Return the container-level statistic metrics.
         '''
-        return {}
+        raise NotImplementedError
 
     @classmethod
     @abstractmethod
-    def create_alloc_map(cls) -> 'AbstractAllocMap':
+    async def create_alloc_map(cls) -> 'AbstractAllocMap':
         '''
         Create and return an allocation map for this plugin.
         '''
-        return None
+        raise NotImplementedError
 
     @classmethod
     @abstractmethod
-    def get_hooks(cls, distro: str, arch: str) -> Sequence[Path]:
+    async def get_hooks(cls, distro: str, arch: str) -> Sequence[Path]:
         '''
         Return the library hook paths used by the plugin (optional).
 
@@ -263,7 +279,8 @@ class AbstractComputePlugin(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    async def restore_from_container(cls, container, alloc_map):
+    async def restore_from_container(cls, container: Mapping[str, Any],
+                                     alloc_map: 'AbstractAllocMap') -> None:
         '''
         When the agent restarts, retore the allocation map from the container
         metadata dictionary fetched from aiodocker.
@@ -272,18 +289,20 @@ class AbstractComputePlugin(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    async def get_attached_devices(cls, device_alloc) -> Mapping[str, str]:
+    async def get_attached_devices(cls, device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]) \
+                                   -> Sequence[DeviceModelInfo]:
         '''
         Make up container-attached device information with allocated device id.
         '''
-        pass
+        return []
 
 
 @attr.s(auto_attribs=True, slots=True)
 class Mount:
+
     type: MountTypes
     source: Union[Path, str]
-    target: Path
+    target: Union[Path, str]
     permission: MountPermission = MountPermission.READ_ONLY
     opts: Optional[Mapping[str, Any]] = None
 
@@ -312,26 +331,34 @@ class Mount:
 
 class AbstractAllocMap(metaclass=ABCMeta):
 
-    allocations: Mapping[str, Decimal]
+    devices: Mapping[DeviceId, AbstractComputeDevice]
+    device_mask: FrozenSet[DeviceId]
+    allocations: MutableMapping[SlotName, MutableMapping[DeviceId, Decimal]]
 
-    def __init__(self, *, devices: Container[AbstractComputeDevice] = None,
-                 device_mask: Container[DeviceId] = None):
-        self.devices = {dev.device_id: dev for dev in devices}
-        self.device_mask = device_mask
+    def __init__(self, *,
+                 devices: Iterable[AbstractComputeDevice] = None,
+                 device_mask: Iterable[DeviceId] = None):
+        self.devices = {dev.device_id: dev for dev in devices} if devices is not None else {}
+        self.device_mask = frozenset(device_mask) if device_mask is not None else frozenset()
+        self.allocations = {}
 
     @abstractmethod
-    def allocate(self, slots: Mapping[SlotType, Allocation], *,
-                 context_tag: str = None) -> ResourceAllocations:
+    def allocate(self, slots: Mapping[SlotName, Decimal], *,
+                 context_tag: str = None) \
+                 -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
         '''
         Allocate the given amount of resources.
 
-        Returns a token that can be used to free the exact resources allocated in the
-        current allocation.
+        For a slot type, there may be multiple different devices which can allocate resources
+        in the given slot type.  An implementation of alloc map finds suitable match from the
+        remaining capacities of those devices.
+
+        Returns a mapping from each requested slot to the allocations per device.
         '''
         pass
 
     @abstractmethod
-    def free(self, existing_alloc: ResourceAllocations):
+    def free(self, existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]):
         '''
         Free the allocated resources using the token returned when the allocation
         occurred.
@@ -339,7 +366,7 @@ class AbstractAllocMap(metaclass=ABCMeta):
         pass
 
 
-def bitmask2set(mask):
+def bitmask2set(mask: int) -> FrozenSet[int]:
     bpos = 0
     bset = []
     while mask > 0:
@@ -368,52 +395,52 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
             dev_id: 0 for dev_id in self.devices.keys()
         })
 
-    def allocate(self, slots: Mapping[SlotType, Allocation], *,
-                 context_tag: str = None) -> ResourceAllocations:
+    def allocate(self, slots: Mapping[SlotName, Decimal], *,
+                 context_tag: str = None) \
+                 -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
         allocation = {}
-        for slot_type, alloc in slots.items():
-            slot_allocation = {}
+        for slot_name, alloc in slots.items():
+            slot_allocation: MutableMapping[DeviceId, Decimal] = {}
             remaining_alloc = int(alloc)
 
             # fill up starting from the most free devices
             sorted_dev_allocs = sorted(
-                self.allocations[slot_type].items(),
+                self.allocations[slot_name].items(),
                 key=lambda pair: self.property_func(self.devices[pair[0]]) - pair[1],
                 reverse=True)
             log.debug('DiscretePropertyAllocMap: allocating {} {}',
-                      slot_type, alloc)
+                      slot_name, alloc)
             log.debug('DiscretePropertyAllocMap: current-alloc: {!r}',
                       sorted_dev_allocs)
 
-            total_allocatable = 0
+            total_allocatable = int(0)
             for dev_id, current_alloc in sorted_dev_allocs:
-                current_alloc = self.allocations[slot_type][dev_id]
+                current_alloc = self.allocations[slot_name][dev_id]
                 total_allocatable += (self.property_func(self.devices[dev_id]) -
                                       current_alloc)
             if total_allocatable < alloc:
                 raise InsufficientResource(
                     'DiscretePropertyAllocMap: insufficient allocatable amount!',
-                    context_tag, slot_type, str(alloc), str(total_allocatable))
+                    context_tag, slot_name, str(alloc), str(total_allocatable))
 
-            slot_allocation = {}
             for dev_id, current_alloc in sorted_dev_allocs:
-                current_alloc = self.allocations[slot_type][dev_id]
+                current_alloc = self.allocations[slot_name][dev_id]
                 allocatable = (self.property_func(self.devices[dev_id]) -
                                current_alloc)
                 if allocatable > 0:
                     allocated = min(remaining_alloc, allocatable)
                     slot_allocation[dev_id] = allocated
-                    self.allocations[slot_type][dev_id] += allocated
+                    self.allocations[slot_name][dev_id] += allocated
                     remaining_alloc -= allocated
                 if remaining_alloc == 0:
                     break
-            allocation[slot_type] = slot_allocation
+            allocation[slot_name] = slot_allocation
         return allocation
 
-    def free(self, existing_alloc: ResourceAllocations):
-        for slot_type, per_device_alloc in existing_alloc.items():
+    def free(self, existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]):
+        for slot_name, per_device_alloc in existing_alloc.items():
             for dev_id, alloc in per_device_alloc.items():
-                self.allocations[slot_type][dev_id] -= alloc
+                self.allocations[slot_name][dev_id] -= alloc
 
 
 class FractionAllocMap(AbstractAllocMap):
@@ -425,47 +452,48 @@ class FractionAllocMap(AbstractAllocMap):
             dev_id: Decimal(0) for dev_id in self.devices.keys()
         })
 
-    def allocate(self, slots: Mapping[SlotType, Allocation], *,
-                 context_tag: str = None) -> ResourceAllocations:
+    def allocate(self, slots: Mapping[SlotName, Decimal], *,
+                 context_tag: str = None) \
+                 -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
         allocation = {}
-        for slot_type, alloc in slots.items():
-            slot_allocation = {}
+        for slot_name, alloc in slots.items():
+            slot_allocation: MutableMapping[DeviceId, Decimal] = {}
             remaining_alloc = Decimal(alloc).normalize()
 
             # fill up starting from the most free devices
             sorted_dev_allocs = sorted(
-                self.allocations[slot_type].items(),
+                self.allocations[slot_name].items(),
                 key=lambda pair: self.shares_per_device[pair[0]] - pair[1],
                 reverse=True)
-            log.debug('FractionAllocMap: allocating {} {}', slot_type, alloc)
+            log.debug('FractionAllocMap: allocating {} {}', slot_name, alloc)
             log.debug('FractionAllocMap: current-alloc: {!r}', sorted_dev_allocs)
 
-            total_allocatable = 0
+            total_allocatable = Decimal(0)
             for dev_id, current_alloc in sorted_dev_allocs:
-                current_alloc = self.allocations[slot_type][dev_id]
+                current_alloc = self.allocations[slot_name][dev_id]
                 total_allocatable += (self.shares_per_device[dev_id] -
                                       current_alloc)
             if total_allocatable < alloc:
                 raise InsufficientResource(
                     'FractionAllocMap: insufficient allocatable amount!',
-                    context_tag, slot_type, str(alloc), str(total_allocatable))
+                    context_tag, slot_name, str(alloc), str(total_allocatable))
 
             slot_allocation = {}
             for dev_id, current_alloc in sorted_dev_allocs:
-                current_alloc = self.allocations[slot_type][dev_id]
+                current_alloc = self.allocations[slot_name][dev_id]
                 allocatable = (self.shares_per_device[dev_id] -
                                current_alloc)
                 if allocatable > 0:
                     allocated = min(remaining_alloc, allocatable)
                     slot_allocation[dev_id] = allocated
-                    self.allocations[slot_type][dev_id] += allocated
+                    self.allocations[slot_name][dev_id] += allocated
                     remaining_alloc -= allocated
                 if remaining_alloc <= 0:
                     break
-            allocation[slot_type] = slot_allocation
+            allocation[slot_name] = slot_allocation
         return allocation
 
-    def free(self, existing_alloc: ResourceAllocations):
-        for slot_type, per_device_alloc in existing_alloc.items():
+    def free(self, existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]):
+        for slot_name, per_device_alloc in existing_alloc.items():
             for dev_id, alloc in per_device_alloc.items():
-                self.allocations[slot_type][dev_id] -= alloc
+                self.allocations[slot_name][dev_id] -= alloc
