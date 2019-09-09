@@ -82,9 +82,16 @@ For the detailed instructions on installing the manager, please refer
 [the manager's README](https://github.com/lablup/backend.ai-manager/blob/master/README.md)
 and come back here again.
 
-#### Common steps
+#### Preparing working copy
+
+Get `git-lfs` and let it be installed and activated.
+
+```console
+$ git lfs init
+```
 
 Next, prepare the source clone of the agent and install from it as follows.
+`pyenv` is just a recommendation; you may use other virtualenv management tools.
 
 ```console
 $ git clone https://github.com/lablup/backend.ai-agent agent
@@ -95,25 +102,10 @@ $ pip install -U pip setuptools
 $ pip install -U -r requirements-dev.txt
 ```
 
-From now on, let's assume all shell commands are executed inside the virtualenv.
+### Linting
 
-Before running, you first need to prepare "the kernel runner environment", which is
-composed of a dedicated Docker image that is mounted into kernel containers at
-runtime.
-Since our kernel images have two different base Linux distros, Alpine and Ubuntu,
-you need to build/download the krunner-env images twice as follows.
-
-For development:
-```console
-$ python -m ai.backend.agent.kernel build-krunner-env alpine3.8
-$ python -m ai.backend.agent.kernel build-krunner-env ubuntu16.04
-```
-or you pull the matching version from the Docker Hub (only supported for already
-released versions):
-```console
-$ docker pull lablup/backendai-krunner-env:19.03-alpine3.8
-$ docker pull lablup/backendai-krunner-env:19.03-ubuntu16.04
-```
+We use `flake8` and `mypy` to statically check our code styles and type consistency.
+Enable those linters in your favoriate IDE or editor.
 
 ### Halfstack (single-node development & testing)
 
