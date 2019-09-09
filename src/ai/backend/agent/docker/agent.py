@@ -673,11 +673,11 @@ class DockerAgent(AbstractAgent):
                 'PublishAllPorts': False,  # we manage port mapping manually!
             },
         }
-        if resource_opts and resource_opts.get('shm-size'):
-            shm_size = resource_opts.get('shm-size')
-            computer_docker_args['HostConfig']['ShmSize'] = shm_size
-            computer_docker_args['HostConfig']['MemorySwap'] -= shm_size
-            computer_docker_args['HostConfig']['Memory'] -= shm_size
+        if resource_opts and resource_opts.get('shmem'):
+            shmem = resource_opts.get('shmem')
+            computer_docker_args['HostConfig']['ShmSize'] = shmem
+            computer_docker_args['HostConfig']['MemorySwap'] -= shmem
+            computer_docker_args['HostConfig']['Memory'] -= shmem
         if self.config['container']['sandbox-type'] == 'jail':
             container_config['HostConfig']['SecurityOpt'] = [
                 'seccomp=unconfined',
