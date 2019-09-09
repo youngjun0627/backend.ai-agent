@@ -88,7 +88,7 @@ Install and activate [`git-lfs`](https://git-lfs.github.com/) to work with pre-b
 `src/ai/backend/runner`.
 
 ```console
-$ git lfs init
+$ git lfs install
 ```
 
 Next, prepare the source clone of the agent and install from it as follows.
