@@ -22,7 +22,7 @@ from typing import (
 from typing_extensions import Literal
 
 import aiohttp
-import aiozmq
+from aiozmq import rpc
 import attr
 from async_timeout import timeout
 import zmq
@@ -85,7 +85,7 @@ class DockerAgent(AbstractAgent):
     agent_sockpath: Path
     agent_sock_task: asyncio.Task
     scan_images_timer: asyncio.Task
-    storage_agent: aiozmq.rpc.RPCClient
+    storage_agent: rpc.rpc.RPCClient
 
     def __init__(self, config) -> None:
         super().__init__(config)
@@ -103,7 +103,7 @@ class DockerAgent(AbstractAgent):
 
         # Connect to scratch storage agent RPC.
         storage_agent_ip = await self.etcd.get('nodes/storage/ip')
-        self.storage_agent = await aiozmq.rpc.connect_rpc(
+        self.storage_agent = await rpc.connect_rpc(
             connect=f'tcp://{storage_agent_ip}:6020', error_table={
                 'concurrent.futures._base.TimeoutError': asyncio.TimeoutError,
             })
