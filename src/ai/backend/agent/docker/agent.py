@@ -90,7 +90,7 @@ class DockerAgent(AbstractAgent):
     def __init__(self, config) -> None:
         super().__init__(config)
 
-    async def __ainit__(self, etcd) -> None:
+    async def __ainit__(self) -> None:
         self.docker = Docker()
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}',
@@ -102,14 +102,15 @@ class DockerAgent(AbstractAgent):
         self.monitor_handle_task = self.loop.create_task(self.handle_docker_events())
 
         # Connect to scratch storage agent RPC.
-        storage_agent_ip = await self.etcd.get('nodes/storage/ip')
-        self.storage_agent = await rpc.connect_rpc(
-            connect=f'tcp://{storage_agent_ip}:6020', error_table={
-                'concurrent.futures._base.TimeoutError': asyncio.TimeoutError,
-            })
-        self.storage_agent.transport.setsockopt(zmq.LINGER, 1000)
-        if await self.storage_agent.call.hello(self.config['agent']['id']) != 'OLLEH':
-            raise InitializationError('Storage Agent hello not fullfilled')
+        if self.config['container']['scratch-type'] == 'storage-agent':
+            storage_agent_ip = self.config['container']['storage-agent-ip']
+            self.storage_agent = await rpc.connect_rpc(
+                connect=f'tcp://{storage_agent_ip}:6020', error_table={
+                    'concurrent.futures._base.TimeoutError': asyncio.TimeoutError,
+                })
+            self.storage_agent.transport.setsockopt(zmq.LINGER, 1000)
+            if await self.storage_agent.call.hello(self.config['agent']['id']) != 'OLLEH':
+                raise InitializationError('Storage Agent hello not fullfilled')
 
     async def shutdown(self, stop_signal: signal.Signals):
         try:

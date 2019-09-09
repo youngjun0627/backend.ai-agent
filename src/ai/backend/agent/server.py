@@ -125,7 +125,9 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
 
         if self.config['agent']['mode'] == 'docker':
             from .docker.agent import DockerAgent
-            self.agent = await DockerAgent.new(self.config, self.etcd)
+            if self.config['container']['scratch-type'] == 'storage-agent':
+                self.config['container']['storage-agent-ip'] = await self.etcd.get('nodes/storage/ip')
+            self.agent = await DockerAgent.new(self.config)
         else:
             from .k8s.agent import K8sAgent
             self.agent = await K8sAgent.new(self.config)
