@@ -852,7 +852,7 @@ class DockerAgent(AbstractAgent):
                 last_stat['version'] = 2  # type: ignore
                 return last_stat
             # The container will be deleted in the docker monitoring coroutine.
-            if self.config['agent']['scratch-type'] == 'storage-agent':
+            if self.config['container']['scratch-type'] == 'storage-agent':
                 await self.storage_agent.call.remove(kernel_id)
             return None
         except DockerError as e:
