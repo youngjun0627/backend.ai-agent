@@ -1,6 +1,15 @@
 Changes
 =======
 
+19.09.0b12 (2019-09-09)
+-----------------------
+
+* NEW: Add support for specifying shared memory for containers (#140)
+
+* Internally applied static type checks to avoid potential bugs due to human mistakes. (#138)
+  Also refactored the codebase to split the manager-agent communication part and the kernel interaction
+  part (which is now replacible!) for extensible development.
+
 19.09.0b11 (2019-09-03)
 -----------------------
 
