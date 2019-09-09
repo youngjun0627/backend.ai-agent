@@ -84,7 +84,8 @@ and come back here again.
 
 #### Preparing working copy
 
-Get `git-lfs` and let it be installed and activated.
+Install and activate [`git-lfs`](https://git-lfs.github.com/) to work with pre-built binaries in
+`src/ai/backend/runner`.
 
 ```console
 $ git lfs init
@@ -105,7 +106,7 @@ $ pip install -U -r requirements-dev.txt
 ### Linting
 
 We use `flake8` and `mypy` to statically check our code styles and type consistency.
-Enable those linters in your favoriate IDE or editor.
+Enable those linters in your favorite IDE or editor.
 
 ### Halfstack (single-node development & testing)
 
