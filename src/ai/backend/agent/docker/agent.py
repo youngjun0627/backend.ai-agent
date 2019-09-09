@@ -353,6 +353,7 @@ class DockerAgent(AbstractAgent):
         if restarting:
             with open(config_dir / 'resource.txt', 'r') as f:
                 resource_spec = KernelResourceSpec.read_from_file(f)
+            resource_opts = None
         else:
             # resource_slots is already sanitized by the manager.
             slots = ResourceSlot.from_json(kernel_config['resource_slots'])
@@ -365,6 +366,7 @@ class DockerAgent(AbstractAgent):
                 scratch_disk_size=0,  # TODO: implement (#70)
                 idle_timeout=kernel_config['idle_timeout'],
             )
+            resource_opts = kernel_config.get('resource_opts', {})
 
         # PHASE 2: Apply the resource spec.
 
@@ -671,6 +673,11 @@ class DockerAgent(AbstractAgent):
                 'PublishAllPorts': False,  # we manage port mapping manually!
             },
         }
+        if resource_opts and resource_opts.get('shm-size'):
+            shm_size = resource_opts.get('shm-size')
+            computer_docker_args['HostConfig']['ShmSize'] = shm_size
+            computer_docker_args['HostConfig']['MemorySwap'] -= shm_size
+            computer_docker_args['HostConfig']['Memory'] -= shm_size
         if self.config['container']['sandbox-type'] == 'jail':
             container_config['HostConfig']['SecurityOpt'] = [
                 'seccomp=unconfined',
