@@ -934,7 +934,11 @@ class DockerAgent(AbstractAgent):
                         await destroy_tmp_filesystem(scratch_dir)
                         await destroy_tmp_filesystem(tmp_dir)
                         shutil.rmtree(tmp_dir)
-                    shutil.rmtree(scratch_dir)
+                    if self.config['container']['scratch-type'] == 'storage-agent':
+                        await self.storage_agent.call.remove(kernel_id)
+                    else:
+                        shutil.rmtree(scratch_dir)
+
                 except FileNotFoundError:
                     pass
                 kernel_obj.release_slots(self.computers)
