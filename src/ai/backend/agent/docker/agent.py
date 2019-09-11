@@ -95,11 +95,6 @@ class DockerAgent(AbstractAgent):
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}',
                  docker_version['Version'], docker_version['ApiVersion'])
-        await super().__ainit__()
-        self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
-        self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
-        self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
-        self.monitor_handle_task = self.loop.create_task(self.handle_docker_events())
 
         # Connect to scratch storage agent RPC.
         if self.config['container']['scratch-type'] == 'storage-agent':
@@ -111,6 +106,12 @@ class DockerAgent(AbstractAgent):
             self.storage_agent.transport.setsockopt(zmq.LINGER, 1000)
             if await self.storage_agent.call.hello(self.config['agent']['id']) != 'OLLEH':
                 raise InitializationError('Storage Agent hello not fullfilled')
+
+        await super().__ainit__()
+        self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
+        self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
+        self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
+        self.monitor_handle_task = self.loop.create_task(self.handle_docker_events())
 
     async def shutdown(self, stop_signal: signal.Signals):
         try:
