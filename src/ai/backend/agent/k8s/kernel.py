@@ -40,9 +40,36 @@ class K8sKernel(AbstractKernel):
 
     async def __ainit__(self) -> None:
         await super().__ainit__()
+        
+        scale = await self.scale(1)
+        if scale.to_dict()['spec']['replicas'] == 0:
+            log.error('Scaling failed! Response body: {0}', scale)
+            raise K8sError(f'Scaling failed! Response body: {scale}')
+
+        if scale.to_dict()['status']['replicas'] == 0:
+            while not await self.runner.is_scaled():
+                asyncio.sleep(0.5)
+
 
     async def close(self) -> None:
-        pass
+        await self.scale(0)
+
+    async def scale(self, num: int):
+        await K8sConfig.load_kube_config()
+        k8sAppsApi = K8sClient.AppsV1Api()
+        return await k8sAppsApi.replace_namespaced_deployment_scale(
+            self.deployment_name, 'backend-ai',
+            body={
+                'apiVersion': 'autoscaling/v1',
+                'kind': 'Scale',
+                'metadata': {
+                    'name': self.deployment_name,
+                    'namespace': 'backend-ai',
+                },
+                'spec': {'replicas': num},
+                'status': {'replicas': num, 'selector': f'run={self.deployment_name}'}
+            }
+        )
 
     async def create_code_runner(self, *,
                            client_features: FrozenSet[str],
@@ -72,7 +99,7 @@ class K8sKernel(AbstractKernel):
             return {'logs': ''}
 
         pods = await k8sCoreApi.list_namespaced_pod(
-            'backend-ai', label_selector=f'run={self.deployment_name}'
+            'backend-ai', label_selector=f'run={self.kernel_id}'
         )
         pod_name = pods.items[0].metadata.name
         logs = await k8sCoreApi.read_namespaced_pod_log(pod_name, 'backend-ai')
@@ -88,6 +115,16 @@ class K8sKernel(AbstractKernel):
                 break
         else:
             return {'status': 'failed', 'error': 'invalid service name'}
+        
+        scale = await self.scale(1)
+        if scale.to_dict()['spec']['replicas'] == 0:
+            log.error('Scaling failed! Response body: {0}', scale)
+            return {'status': 'failed', 'error': 'Deployment scaling failed: ' + str(scale)}
+
+        if scale.to_dict()['status']['replicas'] == 0:
+            while not await self.runner.is_scaled():
+                asyncio.sleep(0.5)
+
         result = await self.runner.feed_start_service({
             'name': service,
             'port': sport['container_port'],

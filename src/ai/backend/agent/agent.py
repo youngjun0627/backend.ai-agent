@@ -166,6 +166,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
 
         # Start container stats collector for existing containers.
         for kernel_id, kernel_obj in self.kernel_registry.items():
+            if 'sync_stat' in kernel_obj.data.keys() and not kernel_obj.data['sync_stat']:
+                continue
             cid = kernel_obj['container_id']
             stat_sync_state = StatSyncState(kernel_id)
             self.stat_sync_states[cid] = stat_sync_state

@@ -1,0 +1,91 @@
+[etcd]
+namespace = "local"
+addr = { host = "127.0.0.1", port = 8120 }
+user = ""
+password = ""
+
+
+[agent]
+mode = "k8s"
+rpc-listen-addr = { host = "127.0.0.1", port = 6001 }
+# id = "i-something-special"
+scaling-group = "default"
+pid-file = "./agent.pid"
+
+
+[registry]
+addr = { host = "localhost", port = 5000 }
+
+
+[baistatic]
+# NFS information for backend.ai static files
+nfs-addr = "localhost"
+path = "/backend.ai"
+capacity = "10G"
+options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated with comma 
+mounted-at = "/home/ubuntu/halfstack/backend.ai-static"
+
+[vfolder-pv]
+# Needed when serving vFolder as NFS
+nfs-addr = "localhost"
+path = "/"
+capacity = "10G"
+options = "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" # NFS mount option, seperated with comma 
+
+
+[container]
+port-range = [30000, 31000]
+kernel-uid = -1
+kernel-gid = -1
+kernel-host = "127.0.0.1"
+sandbox-type = "docker"
+scratch-type = "hostdir"
+scratch-root = "./scratches"
+scratch-size = "1G"
+
+
+[watcher]
+service-addr = { host = "127.0.0.1", port = 6009 }
+ssl-enabled = false
+#ssl-cert = ""
+#ssl-key = ""
+target-service = "backendai-agent.service"
+soft-reset-available = false
+
+
+[logging]
+level = "INFO"
+drivers = ["console"]
+
+[logging.pkg-ns]
+"" = "WARNING"
+"aiodocker" = "INFO"
+"aiotools" = "INFO"
+"aiohttp" = "INFO"
+"ai.backend" = "INFO"
+
+[logging.console]
+colored = true
+format = "verbose"
+
+[logging.file]
+path = "./logs"
+filename = "agent.log"
+rotation-size = "10M"
+
+[logging.logstash]
+endpoint = { host = "localhost", port = 9300 }
+protocol = "tcp"
+ssl-enabled = true
+ssl-verify = false
+
+
+[resource]
+reserved-cpu = 1
+reserved-mem = "1G"
+reserved-disk = "8G"
+
+
+[debug]
+enabled = true
+skip-container-deletion = false

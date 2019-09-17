@@ -1,7 +1,7 @@
 from decimal import Decimal
 import logging
 from typing import (
-    Collection, List, Mapping, Sequence
+    Any, Collection, List, Mapping, Sequence
 )
 
 from kubernetes_asyncio import config as K8sConfig, client as K8sClient
@@ -125,7 +125,13 @@ class MemoryPlugin(AbstractComputePlugin):
         nodes = await k8sCoreApi.list_node()
 
         for node in nodes.items:
-            if 'node-role.kubernetes.io/master' in node.metadata.labels.keys():
+            is_master = False
+            for taint in node.spec.taints if node.spec.taints != None else []:
+                if taint.key == 'node-role.kubernetes.io/master' and taint.effect == 'NoSchedule':
+                    is_master = True
+                    break
+        
+            if is_master:
                 continue
             memory_size = int(node.status.capacity['memory'][:-2]) * 1024
             devices.append(MemoryDevice(
@@ -225,14 +231,14 @@ class K8sCUDAPlugin(AbstractComputePlugin):
         )
 
     @classmethod
-    async def extra_info(cls) -> Mapping[str, str]:
+    async def extra_info(cls) -> Mapping[str, Any]:
         if cls.enabled:
             try:
                 return {
-                    'cuda_support': 'True'
+                    'cuda_support': True
                 }
             except (RuntimeError, ImportError):
                 cls.enabled = False
         return {
-            'cuda_support': 'False',
+            'cuda_support': False,
         }

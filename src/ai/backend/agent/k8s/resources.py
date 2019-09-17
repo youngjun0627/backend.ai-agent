@@ -10,11 +10,9 @@ from kubernetes_asyncio import config as K8sConfig, client as K8sClient
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import SlotName, SlotTypes, DeviceId, DeviceName
 from ..exception import InsufficientResource, InitializationError
-from ..resources import AbstractComputePlugin, AbstractAllocMap
+from ..resources import AbstractComputePlugin, AbstractAllocMap, known_slot_types
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
-
-known_slot_types: Mapping[SlotName, SlotTypes] = {}
 
 
 class DiscretePropertyAllocMap(AbstractAllocMap):

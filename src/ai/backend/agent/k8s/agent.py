@@ -12,7 +12,7 @@ from pprint import pformat
 import random
 import time
 from typing import (
-    Any, Dict, List, 
+    Any, Dict, List,
     Optional, Mapping,
     Tuple, Type,
 )
@@ -93,7 +93,7 @@ class K8sAgent(AbstractAgent):
     vfolder_as_pvc: bool
     ecr_address: str
     ecr_token: str
-    ecr_token_expireAt: float
+    ecr_token_expireAt: datetime.datetime
     k8s_images: List[str]
     workers: dict
 
@@ -104,10 +104,12 @@ class K8sAgent(AbstractAgent):
         self.vfolder_as_pvc = False
         self.ecr_address = ''
         self.ecr_token = ''
-        self.ecr_token_expireAt = -1
+        self.ecr_token_expireAt = datetime.datetime.now()
         self.k8s_images = []
 
         self.workers = {}
+
+        await super().__ainit__()
         await K8sConfig.load_kube_config()
         await self.fetch_workers()
 
@@ -118,6 +120,15 @@ class K8sAgent(AbstractAgent):
             await self.get_aws_credentials()
 
         await self.check_krunner_pv_status()
+
+        k8sVersionApi = K8sClient.VersionApi()
+        k8s_version_response = await k8sVersionApi.get_code()
+        k8s_version = k8s_version_response.git_version
+        k8s_platform = k8s_version_response.platform
+
+        log.info('running with Kubernetes {0} with Platform {1}', 
+                 k8s_version, k8s_platform)
+
 
     @staticmethod
     async def detect_resources(resource_configs: Mapping[str, Any],
@@ -220,7 +231,13 @@ class K8sAgent(AbstractAgent):
         k8sCoreApi = K8sClient.CoreV1Api()
         nodes = await k8sCoreApi.list_node()
         for node in nodes.items:
-            if 'node-role.kubernetes.io/master' in node.metadata.labels.keys():
+            is_master = False
+            for taint in node.spec.taints if node.spec.taints != None else []:
+                if taint.key == 'node-role.kubernetes.io/master' and taint.effect == 'NoSchedule':
+                    is_master = True
+                    break
+
+            if is_master:
                 continue
             self.workers[node.metadata.name] = node.status.capacity
             for addr in node.status.addresses:
@@ -260,7 +277,7 @@ class K8sAgent(AbstractAgent):
             if self.ecr_address and \
                     self.ecr_token and self.ecr_token_expireAt and \
                     utc.localize(datetime.datetime.now()) < \
-                        utc.localize(datetime.datetime.utcfromtimestamp(self.ecr_token_expireAt)):
+                        utc.localize(self.ecr_token_expireAt):
                 registry_addr, headers = self.ecr_address, {'Authorization': 'Basic ' + self.ecr_token}
                 return registry_addr, headers
 
@@ -294,20 +311,32 @@ class K8sAgent(AbstractAgent):
 
         for deployment in deployments.items:
             kernel_id = deployment.metadata.labels['backend.ai/kernel_id']
-
-            registry_cm = await k8sCoreApi.read_namespaced_config_map(
-                f'{kernel_id}-registry', 'backend-ai'
-            )
+            
+            try:
+                registry_cm = await k8sCoreApi.read_namespaced_config_map(
+                    f'{kernel_id}-registry', 'backend-ai'
+                )
+            except:
+                log.error('ConfigMap for kernel {0} not found, skipping restoration', kernel_id)
+                continue
             registry = json.loads(registry_cm.data['registry'])
-            registry['deployment_name'] = deployment.metadata.name
-            registry['lang'] = ImageRef(registry['lang']['canonical'], registry['lang']['registry'])
-            registry['kernel_host'] = random.choice([x['InternalIP'] for x in self.workers.values()])
-            registry['last_used'] = time.monotonic()
-            registry['runner_tasks'] = set()
-            registry['resource_spec'] = KernelResourceSpec.read_from_string(registry['resource_spec'])
-            registry['agent_tasks'] = []
+            self.kernel_registry[kernel_id] = await K8sKernel.new(
+                deployment.metadata.name, 
+                ImageRef(registry['lang']['canonical'], registry['lang']['registry']),
+                registry['version'],
+                config=self.config,
+                resource_spec=KernelResourceSpec.read_from_string(registry['resource_spec']),
+                service_ports=registry['service_ports'],
+                data={
+                    'kernel_host': random.choice([x['InternalIP'] for x in self.workers.values()]),
+                    'repl_in_port': registry['repl_in_port'],
+                    'repl_out_port': registry['repl_out_port'],
+                    'stdin_port': registry['stdin_port'],
+                    'stdout_port': registry['stdout_port'],
+                    'host_ports': registry['host_ports']
+                }
+            )
 
-            self.kernel_registry[kernel_id] = registry
             log.info('Restored kernel {0} from K8s', kernel_id)
 
     async def scan_images(self, interval: float = None) -> None:
@@ -334,6 +363,9 @@ class K8sAgent(AbstractAgent):
         for removed_image in list(set(self.k8s_images) - set(updated_images)):
             log.debug('removed kernel image: {0}', removed_image)
         self.k8s_images = updated_images
+
+    async def collect_node_stat(self, interval: float):
+        pass
 
     async def heartbeat(self, interval: float) -> None:
         '''
@@ -621,7 +653,7 @@ class K8sAgent(AbstractAgent):
                  pformat(attr.asdict(resource_spec)))
 
         exposed_ports = []
-        service_ports = {}
+        service_ports: Dict[int, Any] = {}
 
         # Extract port expose information from kernel creation request
         for item in image_labels.get('ai.backend.service-ports', '').split(','):
@@ -728,7 +760,7 @@ class K8sAgent(AbstractAgent):
         repl_in_port = 0
         repl_out_port = 0
 
-        exposed_port_results: Dict[str, int] = {}
+        exposed_port_results: Dict[int, int] = {}
 
         # Randomly select IP from all available worker nodes
         # When service is exposed via NodePort, we do not have to make request only to the worker node
@@ -736,10 +768,10 @@ class K8sAgent(AbstractAgent):
         target_node_ip = random.choice([x['InternalIP'] for x in self.workers.values()])
 
         for port in node_ports:
-            exposed_port_results[str(port.port)] = port.node_port
+            exposed_port_results[port.port] = port.node_port
 
         for k in service_ports.keys():
-            service_ports[k]['host_port'] = exposed_port_results[k]
+            service_ports[str(k)]['host_port'] = exposed_port_results[str(k)]
 
         # Check NodePort assigend to REPL
         for nodeport in repl_service_api_response.spec.ports:
@@ -765,9 +797,9 @@ class K8sAgent(AbstractAgent):
             deployment.name,
             image_ref,
             version,
-            self.config,
-            resource_spec,
-            list(service_ports.values()),
+            config=self.config,
+            resource_spec=resource_spec,
+            service_ports=list(service_ports.values()),
             data={
                 'kernel_host': target_node_ip,  # IP or FQDN
                 'repl_in_port': repl_in_port,  # Int
@@ -775,6 +807,7 @@ class K8sAgent(AbstractAgent):
                 'stdin_port': stdin_port,    # legacy, Int
                 'stdout_port': stdout_port,  # legacy, Int
                 'host_ports': exposed_port_results.values(),  # List[Int]
+                'sync_stat': False
             }
         )
 
@@ -834,7 +867,7 @@ class K8sAgent(AbstractAgent):
 
             await asyncio.shield(force_cleanup())
             return None
-        deployment_name = kernel['deployment_name']
+        deployment_name = kernel.kernel_id
 
         try:
             await k8sCoreApi.delete_namespaced_service(f'repl-{kernel_id}', 'backend-ai')
@@ -856,11 +889,18 @@ class K8sAgent(AbstractAgent):
             await k8sAppsApi.delete_namespaced_deployment(f'{deployment_name}', 'backend-ai')
         except:
             log.warning('_destroy({0}) kernel missing (already dead?)', kernel_id)
-
-        del self.kernel_registry[kernel_id]
+        
+        await self.kernel_registry[kernel_id].runner.close()
 
         await force_cleanup(reason=reason)
         return None
+
+    async def clean_kernel(self, kernel_id: KernelId) -> None:
+        kernel_obj = self.kernel_registry[kernel_id]
+        await kernel_obj.runner.close()
+        await kernel_obj.close()
+        del self.kernel_registry[kernel_id]
+        self.blocking_cleans[kernel_id].set()
 
     async def clean_all_kernels(self, blocking=False):
         log.info('cleaning all kernels...')
