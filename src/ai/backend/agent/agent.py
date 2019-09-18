@@ -19,7 +19,6 @@ from typing_extensions import Final
 import attr
 import aioredis
 import aiotools
-import aiozmq
 from async_timeout import timeout
 import snappy
 import zmq, zmq.asyncio
@@ -85,7 +84,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
     images: Mapping[str, str]
     port_pool: Set[int]
 
-    event_sock: zmq.asyncio.Socket
+    redis: aioredis.Redis
     zmq_ctx: zmq.asyncio.Context
 
     restarting_kernels: MutableMapping[KernelId, RestartTracker]
@@ -127,11 +126,9 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         An implementation of AbstractAgent would define its own ``__ainit__()`` method.
         It must call this super method in an appropriate order, only once.
         '''
+        self.redis = await self._create_redis()
         ipc_base_path.mkdir(parents=True, exist_ok=True)
         self.zmq_ctx = zmq.asyncio.Context()
-        self.event_sock = await aiozmq.create_zmq_stream(
-            zmq.PUSH, connect=f"tcp://{self.config['event']['addr']}")
-        self.event_sock.transport.setsockopt(zmq.LINGER, 50)
 
         computers, self.slots = await self.detect_resources(
             self.config['resource'],
@@ -176,7 +173,21 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.timer_tasks.append(aiotools.create_timer(self.clean_old_kernels, 10.0))
 
         # Notify the gateway.
-        await self.send_event('instance_started')
+        await self.produce_event('instance_started')
+
+    async def _create_redis(self):
+        while True:
+            try:
+                return await aioredis.create_redis_pool(
+                    self.config['redis']['addr'].as_sockaddr(),
+                    db=4,  # REDIS_STREAM_DB in gateway.defs
+                    password=(self.config['redis']['password']
+                              if self.config['redis']['password'] else None),
+                    encoding=None,
+                )
+            except ConnectionRefusedError:
+                await asyncio.sleep(0.5)
+                continue
 
     async def shutdown(self, stop_signal: signal.Signals) -> None:
         '''
@@ -212,23 +223,33 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             await self.redis_stat_pool.wait_closed()
 
         # Notify the gateway.
-        if self.event_sock is not None:
-            await self.send_event('instance_terminated', 'shutdown')
-            self.event_sock.close()
+        await self.produce_event('instance_terminated', 'shutdown')
+        self.redis.close()
+        await self.redis.wait_closed()
 
-    async def send_event(self, event_name: str, *args) -> None:
+    async def produce_event(self, event_name: str, *args) -> None:
         '''
         Send an event to the manager(s).
         '''
-        if self.event_sock is None:
-            return
         _log = log.debug if event_name == 'instance_heartbeat' else log.info
-        _log('send_event({0})', event_name)
-        self.event_sock.write((
-            event_name.encode('ascii'),
-            self.config['agent']['id'].encode('utf8'),
-            msgpack.packb(args),
-        ))
+        _log('produce_event({0})', event_name)
+        encoded_event = msgpack.packb({
+            'event_name': event_name,
+            'agent_id': self.config['agent']['id'],
+            'args': args,
+        })
+        while True:
+            try:
+                commands = self.redis.pipeline()
+                commands.rpush('events.prodcons', encoded_event)
+                commands.publish('events.pubsub', encoded_event)
+                await commands.execute()
+            except (ConnectionRefusedError, aioredis.errors.ConnectionClosedError,
+                    aioredis.errors.PipelineError):
+                await asyncio.sleep(0.2)
+                continue
+            else:
+                break
 
     async def heartbeat(self, interval: float):
         '''
@@ -260,7 +281,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             ])),
         }
         try:
-            await self.send_event('instance_heartbeat', agent_info)
+            await self.produce_event('instance_heartbeat', agent_info)
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_heartbeat')
         except Exception:
@@ -383,11 +404,11 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         Create a new kernel.
 
         Things to do:
-        * ``await self.send_event('kernel_preparing', kernel_id)``
+        * ``await self.produce_event('kernel_preparing', kernel_id)``
         * Check availability of kernel image.
-        * ``await self.send_event('kernel_pulling', kernel_id)``
+        * ``await self.produce_event('kernel_pulling', kernel_id)``
         * Pull the kernel image if image is not ready in the agent. (optional; may return error)
-        * ``await self.send_event('kernel_creating', kernel_id)``
+        * ``await self.produce_event('kernel_creating', kernel_id)``
         * Create KernelResourceSpec object or read it from kernel's internal configuration cache.
           Use *restarting* argument to detect if the kernel is being created or restarted.
         * Determine the matched base-distro and kernel-runner volume name for the image
@@ -395,11 +416,11 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         * Set up the kernel-runner volume, other volumes, and bind-mounts.
         * Create and start the kernel (e.g., container, process, etc.) with statistics synchronizer.
         * Create the kernel object (derived from AbstractKernel) and add it to ``self.kernel_registry``.
-        * ``await self.send_event('kernel_started', kernel_id)``
+        * ``await self.produce_event('kernel_started', kernel_id)``
         * Return the kernel creation result.
         '''
 
-        # TODO: clarify when to ``self.send_event('kernel_terminated', ...)``
+        # TODO: clarify when to ``self.produce_event('kernel_terminated', ...)``
 
     @abstractmethod
     async def destroy_kernel(self, kernel_id: KernelId, reason: str) \
@@ -409,7 +430,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
 
         Things to do:
         * If kernel_obj is not present, schedule ``self.clean_kernel(kernel_id)``
-          and ``await self.send_event('kernel_terminated', kernel_id, 'self-terminated')``
+          and ``await self.produce_event('kernel_terminated', kernel_id, 'self-terminated')``
         * ``await kernel_obj.runner.close()``
         * Send a forced-kill signal to the kernel
         * Collect last-moment statistics
@@ -495,9 +516,9 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 flush_timeout=flush_timeout,
                 api_version=api_version)
         except KeyError:
-            await self.send_event('kernel_terminated',
-                                  kernel_id, 'self-terminated',
-                                  None)
+            await self.produce_event('kernel_terminated',
+                                     kernel_id, 'self-terminated',
+                                     None)
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
                                 '(might be terminated--try it again)') from None
 

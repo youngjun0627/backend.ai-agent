@@ -27,6 +27,7 @@ from typing import (
 from typing_extensions import Final
 
 import aiodocker
+import aioredis
 import aiotools
 import attr
 from setproctitle import setproctitle
@@ -384,7 +385,6 @@ class StatContext:
                             self.kernel_metrics[kernel_id][metric_key].update(measure)
 
         # push to the Redis server
-        pipe = self.agent.redis_stat_pool.pipeline()
         redis_agent_updates = {
             'node': {
                 key: obj.to_serializable_dict()
@@ -399,16 +399,25 @@ class StatContext:
         if self.agent.config['debug']['log-stats']:
             log.debug('stats: node_updates: {0}: {1}',
                       self.agent.config['agent']['id'], redis_agent_updates['node'])
-        pipe.set(self.agent.config['agent']['id'], msgpack.packb(redis_agent_updates))
-        pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
-        for kernel_id, metrics in self.kernel_metrics.items():
-            serialized_metrics = {
-                key: obj.to_serializable_dict()
-                for key, obj in metrics.items()
-            }
-            pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-            pipe.expire(kernel_id, self.cache_lifespan)
-        await pipe.execute()
+        while True:
+            try:
+                pipe = self.agent.redis_stat_pool.pipeline()
+                pipe.set(self.agent.config['agent']['id'], msgpack.packb(redis_agent_updates))
+                pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
+                for kernel_id, metrics in self.kernel_metrics.items():
+                    serialized_metrics = {
+                        key: obj.to_serializable_dict()
+                        for key, obj in metrics.items()
+                    }
+                    pipe.set(kernel_id, msgpack.packb(serialized_metrics))
+                    pipe.expire(kernel_id, self.cache_lifespan)
+                await pipe.execute()
+            except (ConnectionRefusedError, aioredis.errors.ConnectionClosedError,
+                    aioredis.errors.PipelineError):
+                await asyncio.sleep(0.5)
+                continue
+            else:
+                break
 
     async def collect_container_stat(self, container_id: ContainerId) -> Mapping[MetricKey, Metric]:
         '''
@@ -457,7 +466,6 @@ class StatContext:
                             self.kernel_metrics[kernel_id][metric_key].update(measure)
 
         if kernel_id is not None:
-            pipe = self.agent.redis_stat_pool.pipeline()
             metrics = self.kernel_metrics[kernel_id]
             serialized_metrics = {
                 key: obj.to_serializable_dict()
@@ -466,9 +474,18 @@ class StatContext:
             if self.agent.config['debug']['log-stats']:
                 log.debug('kernel_updates: {0}: {1}',
                           kernel_id, serialized_metrics)
-            pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-            pipe.expire(kernel_id, self.cache_lifespan)
-            await pipe.execute()
+            while True:
+                try:
+                    pipe = self.agent.redis_stat_pool.pipeline()
+                    pipe.set(kernel_id, msgpack.packb(serialized_metrics))
+                    pipe.expire(kernel_id, self.cache_lifespan)
+                    await pipe.execute()
+                except (ConnectionRefusedError, aioredis.errors.ConnectionClosedError,
+                        aioredis.errors.PipelineError):
+                    await asyncio.sleep(0.5)
+                    continue
+                else:
+                    break
             return metrics
         return {}
 

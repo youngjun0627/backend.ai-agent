@@ -193,8 +193,8 @@ class DockerAgent(AbstractAgent):
                     })
             elif status in {'exited', 'dead', 'removing'}:
                 log.info('detected terminated kernel: {0}', kernel_id)
-                await self.send_event('kernel_terminated', kernel_id,
-                                      'self-terminated', None)
+                await self.produce_event('kernel_terminated', kernel_id,
+                                         'self-terminated', None)
 
         log.info('starting with resource allocations')
         for computer_name, computer_ctx in self.computers.items():
@@ -295,7 +295,7 @@ class DockerAgent(AbstractAgent):
     async def create_kernel(self, kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
                             restarting: bool = False) -> KernelCreationResult:
 
-        await self.send_event('kernel_preparing', kernel_id)
+        await self.produce_event('kernel_preparing', kernel_id)
 
         # Read image-specific labels and settings
         image_ref = ImageRef(
@@ -311,8 +311,8 @@ class DockerAgent(AbstractAgent):
             log.info('found the local up-to-date image for {}', image_ref.canonical)
         except DockerError as e:
             if e.status == 404:
-                await self.send_event('kernel_pulling',
-                                      kernel_id, image_ref.canonical)
+                await self.produce_event('kernel_pulling',
+                                         kernel_id, image_ref.canonical)
                 auth_config = None
                 dreg_user = kernel_config['image']['registry'].get('username')
                 dreg_passwd = kernel_config['image']['registry'].get('password')
@@ -335,7 +335,7 @@ class DockerAgent(AbstractAgent):
                         auth=auth_config)
             else:
                 raise
-        await self.send_event('kernel_creating', kernel_id)
+        await self.produce_event('kernel_creating', kernel_id)
         image_labels = kernel_config['image']['labels']
 
         version = int(image_labels.get('ai.backend.kernelspec', '1'))
@@ -767,7 +767,7 @@ class DockerAgent(AbstractAgent):
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
         for service_port in service_ports.values():
             log.debug('service port: {!r}', service_port)
-        await self.send_event('kernel_started', kernel_id)
+        await self.produce_event('kernel_started', kernel_id)
         return {
             'id': kernel_id,
             'kernel_host': kernel_host,
@@ -792,9 +792,9 @@ class DockerAgent(AbstractAgent):
 
             async def force_cleanup():
                 await self.clean_kernel(kernel_id)
-                await self.send_event('kernel_terminated',
-                                      kernel_id, 'self-terminated',
-                                      None)
+                await self.produce_event('kernel_terminated',
+                                         kernel_id, 'self-terminated',
+                                         None)
 
             self.orphan_tasks.discard(asyncio.Task.current_task())
             await asyncio.shield(force_cleanup())
@@ -967,9 +967,9 @@ class DockerAgent(AbstractAgent):
                     exit_code = evdata['Actor']['Attributes']['exitCode']
                 except KeyError:
                     exit_code = 255
-                await self.send_event('kernel_terminated',
-                                      kernel_id, 'self-terminated',
-                                      exit_code)
+                await self.produce_event('kernel_terminated',
+                                         kernel_id, 'self-terminated',
+                                         exit_code)
                 self.orphan_tasks.add(
                     self.loop.create_task(self.clean_kernel(kernel_id))
                 )
