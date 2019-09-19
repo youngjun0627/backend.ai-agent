@@ -171,7 +171,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.timer_tasks.append(aiotools.create_timer(self.heartbeat, 3.0))
 
         # Prepare auto-cleaning of idle kernels.
-        self.timer_tasks.append(aiotools.create_timer(self.clean_old_kernels, 10.0))
+        self.timer_tasks.append(aiotools.create_timer(self.clean_old_kernels, 1.0))
 
         # Notify the gateway.
         await self.produce_event('instance_started', 'self-started')
@@ -333,24 +333,15 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
 
     async def clean_old_kernels(self, interval: float):
         now = time.monotonic()
-        keys = tuple(self.kernel_registry.keys())
         tasks = []
-        loop = current_loop()
-        for kernel_id in keys:
-            try:
-                last_used = self.kernel_registry[kernel_id]['last_used']
-                idle_timeout = \
-                    self.kernel_registry[kernel_id].resource_spec \
-                    .idle_timeout
-                if idle_timeout is not None and idle_timeout > 0 and now - last_used > idle_timeout:
-                    log.info('destroying kernel {0} as clean-up', kernel_id)
-                    task = loop.create_task(
-                        self.destroy_kernel(kernel_id, 'idle-timeout'))
-                    tasks.append(task)
-            except KeyError:
-                # The kernel may be destroyed by other means?
-                pass
-        await asyncio.gather(*tasks)
+        for kernel_id, kernel_obj in self.kernel_registry.items():
+            last_used = kernel_obj.last_used
+            idle_timeout = kernel_obj.resource_spec.idle_timeout
+            if idle_timeout is None:
+                continue
+            if idle_timeout > 0 and now - last_used > idle_timeout:
+                tasks.append(self.destroy_kernel(kernel_id, 'idle-timeout'))
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def clean_all_kernels(self, blocking: bool = False):
         log.info('cleaning all kernels...')
