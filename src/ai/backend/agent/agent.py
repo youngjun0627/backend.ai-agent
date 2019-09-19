@@ -174,7 +174,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.timer_tasks.append(aiotools.create_timer(self.clean_old_kernels, 10.0))
 
         # Notify the gateway.
-        await self.produce_event('instance_started')
+        await self.produce_event('instance_started', 'self-started')
 
     async def _create_redis(self):
         while True:
