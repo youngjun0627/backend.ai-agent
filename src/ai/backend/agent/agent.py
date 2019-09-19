@@ -126,6 +126,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         An implementation of AbstractAgent would define its own ``__ainit__()`` method.
         It must call this super method in an appropriate order, only once.
         '''
+        self.producer_lock = asyncio.Lock()
         self.redis = await self._create_redis()
         ipc_base_path.mkdir(parents=True, exist_ok=True)
         self.zmq_ctx = zmq.asyncio.Context()
@@ -238,18 +239,20 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             'agent_id': self.config['agent']['id'],
             'args': args,
         })
-        while True:
-            try:
-                commands = self.redis.pipeline()
-                commands.rpush('events.prodcons', encoded_event)
-                commands.publish('events.pubsub', encoded_event)
-                await commands.execute()
-            except (ConnectionRefusedError, aioredis.errors.ConnectionClosedError,
-                    aioredis.errors.PipelineError):
-                await asyncio.sleep(0.2)
-                continue
-            else:
-                break
+        async with self.producer_lock:
+            while True:
+                try:
+                    commands = self.redis.pipeline()
+                    commands.rpush('events.prodcons', encoded_event)
+                    commands.publish('events.pubsub', encoded_event)
+                    await commands.execute()
+                except (ConnectionResetError, ConnectionRefusedError,
+                        aioredis.errors.ConnectionClosedError,
+                        aioredis.errors.PipelineError):
+                    await asyncio.sleep(0.2)
+                    continue
+                else:
+                    break
 
     async def heartbeat(self, interval: float):
         '''

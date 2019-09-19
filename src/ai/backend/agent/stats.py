@@ -412,7 +412,8 @@ class StatContext:
                     pipe.set(kernel_id, msgpack.packb(serialized_metrics))
                     pipe.expire(kernel_id, self.cache_lifespan)
                 await pipe.execute()
-            except (ConnectionRefusedError, aioredis.errors.ConnectionClosedError,
+            except (ConnectionResetError, ConnectionRefusedError,
+                    aioredis.errors.ConnectionClosedError,
                     aioredis.errors.PipelineError):
                 await asyncio.sleep(0.5)
                 continue
@@ -480,7 +481,8 @@ class StatContext:
                     pipe.set(kernel_id, msgpack.packb(serialized_metrics))
                     pipe.expire(kernel_id, self.cache_lifespan)
                     await pipe.execute()
-                except (ConnectionRefusedError, aioredis.errors.ConnectionClosedError,
+                except (ConnectionResetError, ConnectionRefusedError,
+                        aioredis.errors.ConnectionClosedError,
                         aioredis.errors.PipelineError):
                     await asyncio.sleep(0.5)
                     continue
