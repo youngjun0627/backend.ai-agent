@@ -23,7 +23,7 @@ from async_timeout import timeout
 import snappy
 import zmq, zmq.asyncio
 
-from ai.backend.common import msgpack
+from ai.backend.common import msgpack, redis
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
 from ai.backend.common.plugin import install_plugins
@@ -127,7 +127,21 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         It must call this super method in an appropriate order, only once.
         '''
         self.producer_lock = asyncio.Lock()
-        self.redis = await self._create_redis()
+        self.redis_producer_pool = await redis.connect_with_retries(
+            self.config['redis']['addr'].as_sockaddr(),
+            db=4,  # REDIS_STREAM_DB in gateway.defs
+            password=(self.config['redis']['password']
+                      if self.config['redis']['password'] else None),
+            encoding=None,
+        )
+        self.redis_stat_pool = await redis.connect_with_retries(
+            self.config['redis']['addr'].as_sockaddr(),
+            db=0,  # REDIS_STAT_DB in backend.ai-manager
+            password=(self.config['redis']['password']
+                      if self.config['redis']['password'] else None),
+            encoding='utf8',
+        )
+
         ipc_base_path.mkdir(parents=True, exist_ok=True)
         self.zmq_ctx = zmq.asyncio.Context()
 
@@ -143,14 +157,6 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.timer_tasks.append(aiotools.create_timer(self.scan_images, 60.0))
         await self.scan_running_kernels()
 
-        # Prepare statistics collection.
-        self.redis_stat_pool = await aioredis.create_redis_pool(
-            self.config['redis']['addr'].as_sockaddr(),
-            password=(self.config['redis']['password']
-                      if self.config['redis']['password'] else None),
-            timeout=3.0,
-            encoding='utf8',
-            db=0)  # REDIS_STAT_DB in backend.ai-manager
         self.timer_tasks.append(aiotools.create_timer(self.collect_node_stat, 2.0))
 
         # Spawn stat collector task.
@@ -175,20 +181,6 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
 
         # Notify the gateway.
         await self.produce_event('instance_started', 'self-started')
-
-    async def _create_redis(self):
-        while True:
-            try:
-                return await aioredis.create_redis_pool(
-                    self.config['redis']['addr'].as_sockaddr(),
-                    db=4,  # REDIS_STREAM_DB in gateway.defs
-                    password=(self.config['redis']['password']
-                              if self.config['redis']['password'] else None),
-                    encoding=None,
-                )
-            except ConnectionRefusedError:
-                await asyncio.sleep(0.5)
-                continue
 
     async def shutdown(self, stop_signal: signal.Signals) -> None:
         '''
@@ -219,14 +211,13 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         if self.stat_sync_task is not None:
             self.stat_sync_task.cancel()
             await self.stat_sync_task
-        if self.redis_stat_pool is not None:
-            self.redis_stat_pool.close()
-            await self.redis_stat_pool.wait_closed()
+        self.redis_stat_pool.close()
+        await self.redis_stat_pool.wait_closed()
 
         # Notify the gateway.
         await self.produce_event('instance_terminated', 'shutdown')
-        self.redis.close()
-        await self.redis.wait_closed()
+        self.redis_producer_pool.close()
+        await self.redis_producer_pool.wait_closed()
 
     async def produce_event(self, event_name: str, *args) -> None:
         '''
@@ -240,19 +231,12 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             'args': args,
         })
         async with self.producer_lock:
-            while True:
-                try:
-                    commands = self.redis.pipeline()
-                    commands.rpush('events.prodcons', encoded_event)
-                    commands.publish('events.pubsub', encoded_event)
-                    await commands.execute()
-                except (ConnectionResetError, ConnectionRefusedError,
-                        aioredis.errors.ConnectionClosedError,
-                        aioredis.errors.PipelineError):
-                    await asyncio.sleep(0.2)
-                    continue
-                else:
-                    break
+            def _pipe_builder():
+                pipe = self.redis_producer_pool.pipeline()
+                pipe.rpush('events.prodcons', encoded_event)
+                pipe.publish('events.pubsub', encoded_event)
+                return pipe
+            await redis.execute_with_retries(_pipe_builder)
 
     async def heartbeat(self, interval: float):
         '''

@@ -34,7 +34,7 @@ from setproctitle import setproctitle
 import zmq
 import zmq.asyncio
 
-from ai.backend.common import config
+from ai.backend.common import config, redis
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.identity import is_containerized
 from ai.backend.common.types import (
@@ -399,26 +399,21 @@ class StatContext:
         if self.agent.config['debug']['log-stats']:
             log.debug('stats: node_updates: {0}: {1}',
                       self.agent.config['agent']['id'], redis_agent_updates['node'])
-        while True:
-            try:
-                pipe = self.agent.redis_stat_pool.pipeline()
-                pipe.set(self.agent.config['agent']['id'], msgpack.packb(redis_agent_updates))
-                pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
-                for kernel_id, metrics in self.kernel_metrics.items():
-                    serialized_metrics = {
-                        key: obj.to_serializable_dict()
-                        for key, obj in metrics.items()
-                    }
-                    pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-                    pipe.expire(kernel_id, self.cache_lifespan)
-                await pipe.execute()
-            except (ConnectionResetError, ConnectionRefusedError,
-                    aioredis.errors.ConnectionClosedError,
-                    aioredis.errors.PipelineError):
-                await asyncio.sleep(0.5)
-                continue
-            else:
-                break
+        serialized_agent_updates = msgpack.packb(redis_agent_updates)
+
+        def _pipe_builder():
+            pipe = self.agent.redis_stat_pool.pipeline()
+            pipe.set(self.agent.config['agent']['id'], serialized_agent_updates)
+            pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
+            for kernel_id, metrics in self.kernel_metrics.items():
+                serialized_metrics = {
+                    key: obj.to_serializable_dict()
+                    for key, obj in metrics.items()
+                }
+                pipe.set(kernel_id, msgpack.packb(serialized_metrics))
+                pipe.expire(kernel_id, self.cache_lifespan)
+            return pipe
+        await redis.execute_with_retries(_pipe_builder)
 
     async def collect_container_stat(self, container_id: ContainerId) -> Mapping[MetricKey, Metric]:
         '''
@@ -468,26 +463,21 @@ class StatContext:
 
         if kernel_id is not None:
             metrics = self.kernel_metrics[kernel_id]
-            serialized_metrics = {
+            serializable_metrics = {
                 key: obj.to_serializable_dict()
                 for key, obj in metrics.items()
             }
             if self.agent.config['debug']['log-stats']:
                 log.debug('kernel_updates: {0}: {1}',
-                          kernel_id, serialized_metrics)
-            while True:
-                try:
-                    pipe = self.agent.redis_stat_pool.pipeline()
-                    pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-                    pipe.expire(kernel_id, self.cache_lifespan)
-                    await pipe.execute()
-                except (ConnectionResetError, ConnectionRefusedError,
-                        aioredis.errors.ConnectionClosedError,
-                        aioredis.errors.PipelineError):
-                    await asyncio.sleep(0.5)
-                    continue
-                else:
-                    break
+                          kernel_id, serializable_metrics)
+            serialized_metrics = msgpack.packb(serializable_metrics)
+
+            def _pipe_builder():
+                pipe = self.agent.redis_stat_pool.pipeline()
+                pipe.set(kernel_id, serialized_metrics)
+                pipe.expire(kernel_id, self.cache_lifespan)
+                return pipe
+            await redis.execute_with_retries(_pipe_builder)
             return metrics
         return {}
 
