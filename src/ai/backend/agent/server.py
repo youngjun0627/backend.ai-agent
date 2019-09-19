@@ -86,8 +86,8 @@ def update_last_used(meth):
     @functools.wraps(meth)
     async def _inner(self, kernel_id: KernelId, *args, **kwargs):
         try:
-            kernel_info = self.agent.kernel_registry[kernel_id]
-            kernel_info['last_used'] = time.monotonic()
+            kernel_obj = self.agent.kernel_registry[kernel_id]
+            kernel_obj.last_used = time.monotonic()
         except KeyError:
             pass
         return await meth(self, kernel_id, *args, **kwargs)
@@ -100,6 +100,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
     agent: AbstractAgent
     rpc_addr: str
     agent_addr: str
+    idle_check_task: asyncio.Task
 
     def __init__(self, etcd, config, *, skip_detect_manager: bool = False) -> None:
         self.loop = current_loop()
@@ -135,6 +136,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         self.rpc_server = await aiozmq.rpc.serve_rpc(self, bind=agent_addr)
         self.rpc_server.transport.setsockopt(zmq.LINGER, 200)
         log.info('started handling RPC requests at {}', rpc_addr)
+        self.idle_check_task = self.loop.create_task(self.check_idle_timeout())
 
         await self.etcd.put('ip', rpc_addr.host, scope=ConfigScopes.NODE)
         watcher_port = utils.nmget(self.config, 'watcher.service-addr.port', None)
@@ -178,12 +180,27 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         log.info('configured vfolder fs prefix: {0}', self.config['vfolder']['fsprefix'])
 
     async def shutdown(self, stop_signal):
+        self.idle_check_task.cancel()
+        await self.idle_check_task
+
         # Stop receiving further requests.
         if self.rpc_server is not None:
             self.rpc_server.close()
             await self.rpc_server.wait_closed()
-
         await self.agent.shutdown(stop_signal)
+
+    async def check_idle_timeout(self):
+        try:
+            while True:
+                await asyncio.sleep(1.0)
+                now = time.monotonic()
+                coros = []
+                for kernel_id, kernel_obj in self.agent.kernel_registry.items():
+                    if now >= kernel_obj.last_used + kernel_obj.resource_spec.idle_timeout:
+                        coros.append(self.agent.destroy_kernel(kernel_id, 'idle-timeout'))
+                await asyncio.gather(*coros, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
 
     async def update_status(self, status):
         await self.etcd.put('', status, scope=ConfigScopes.NODE)
@@ -332,7 +349,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
     async def reset_agent(self):
         log.debug('rpc::reset()')
         async with self.handle_rpc_exception():
-            kernel_ids = tuple(self.kernel_registry.keys())
+            kernel_ids = tuple(self.agent.kernel_registry.keys())
             tasks = []
             for kernel_id in kernel_ids:
                 try:

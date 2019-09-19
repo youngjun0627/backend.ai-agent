@@ -91,21 +91,32 @@ class ResultRecord:
 
 class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
 
+    version: int
+    agent_config: Mapping[str, Any]
+    kernel_id: str
+    image: ImageRef
+    resource_spec: KernelResourceSpec
+    service_ports: Any
+    data: Dict[Any, Any]
+    last_used: float
+    termination_reason: Optional[str]
+
     runner: 'AbstractCodeRunner'
 
     def __init__(self, kernel_id: str, image: ImageRef, version: int, *,
-                 config: Mapping[str, Any],
+                 agent_config: Mapping[str, Any],
                  resource_spec: KernelResourceSpec,
                  service_ports: Any,  # TODO: type-annotation
-                 data: Dict[str, Any]) -> None:
-        self.config = config
+                 data: Dict[Any, Any]) -> None:
+        self.agent_config = agent_config
         self.kernel_id = kernel_id
         self.image = image
         self.version = version
-        self.last_used = time.monotonic()
         self.resource_spec = resource_spec
         self.service_ports = service_ports
         self.data = data
+        self.last_used = time.monotonic()
+        self.termination_reason = None
         self._runner_lock = asyncio.Lock()
         self._tasks: Set[asyncio.Task] = set()
 
@@ -183,7 +194,6 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
                       opts: Mapping[str, Any],
                       api_version: int,
                       flush_timeout: float):
-        self.last_used = time.monotonic()
         try:
             myself = asyncio.Task.current_task()
             self._tasks.add(myself)

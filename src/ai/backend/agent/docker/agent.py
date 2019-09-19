@@ -179,7 +179,7 @@ class DockerAgent(AbstractAgent):
                     kernel_id,
                     ImageRef(image),
                     int(labels.get('ai.backend.kernelspec', '1')),
-                    config=self.config,
+                    agent_config=self.config,
                     resource_spec=resource_spec,
                     service_ports=service_ports,
                     data={
@@ -751,7 +751,7 @@ class DockerAgent(AbstractAgent):
             kernel_id,
             image_ref,
             version,
-            config=self.config,
+            agent_config=self.config,
             service_ports=list(service_ports.values()),
             resource_spec=resource_spec,
             data={
@@ -786,6 +786,7 @@ class DockerAgent(AbstractAgent):
         try:
             kernel_obj = self.kernel_registry[kernel_id]
             cid = kernel_obj['container_id']
+            kernel_obj.termination_reason = reason
         except KeyError:
             log.warning('destroy_kernel(k:{0}) kernel missing (already dead?)',
                         kernel_id)
@@ -848,7 +849,7 @@ class DockerAgent(AbstractAgent):
         # The container will be deleted in the docker monitoring coroutine.
         return None
 
-    async def clean_kernel(self, kernel_id: KernelId):
+    async def clean_kernel(self, kernel_id: KernelId, exit_code: int = 255):
         try:
             kernel_obj = self.kernel_registry[kernel_id]
             found = True
@@ -856,6 +857,10 @@ class DockerAgent(AbstractAgent):
             found = False
         try:
             if found:
+                await self.produce_event(
+                    'kernel_terminated', kernel_id,
+                    kernel_obj.termination_reason or 'self-terminated',
+                    exit_code)
                 container_id = kernel_obj['container_id']
                 container = self.docker.containers.container(container_id)
                 if kernel_obj.runner is not None:
@@ -967,11 +972,8 @@ class DockerAgent(AbstractAgent):
                     exit_code = evdata['Actor']['Attributes']['exitCode']
                 except KeyError:
                     exit_code = 255
-                await self.produce_event('kernel_terminated',
-                                         kernel_id, 'self-terminated',
-                                         exit_code)
                 self.orphan_tasks.add(
-                    self.loop.create_task(self.clean_kernel(kernel_id))
+                    self.loop.create_task(self.clean_kernel(kernel_id, exit_code))
                 )
 
         await asyncio.sleep(0.5)

@@ -30,13 +30,13 @@ class DockerKernel(AbstractKernel):
     # FIXME: apply TypedDict to data in Python 3.8
 
     def __init__(self, kernel_id: str, image: ImageRef, version: int, *,
-                 config: Mapping[str, Any],
+                 agent_config: Mapping[str, Any],
                  resource_spec: KernelResourceSpec,
                  service_ports: Any,  # TODO: type-annotation
                  data: Dict[str, Any]) -> None:
         super().__init__(
             kernel_id, image, version,
-            config=config,
+            agent_config=agent_config,
             resource_spec=resource_spec,
             service_ports=service_ports,
             data=data)
@@ -93,7 +93,7 @@ class DockerKernel(AbstractKernel):
 
     async def accept_file(self, filename: str, filedata: bytes):
         loop = current_loop()
-        work_dir = self.config['container']['scratch-root'] / self.kernel_id / 'work'
+        work_dir = self.agent_config['container']['scratch-root'] / self.kernel_id / 'work'
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
