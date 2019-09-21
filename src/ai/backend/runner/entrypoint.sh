@@ -10,8 +10,7 @@ if [ -f /bin/ash ]; then  # for alpine
   adduser -s /bin/ash -h "/home/$USER_NAME" -H -D -u $USER_ID -G $USER_NAME -g "User" $USER_NAME
   export SHELL=/bin/ash
 else
-  echo "/opt/backend.ai/lib" > /etc/ld.so.conf.d/backendai.conf
-  ldconfig
+  export LD_LIBRARY_PATH="/opt/backend.ai/lib:$LD_LIBRARY_PATH"
   groupadd -g $GROUP_ID $USER_NAME
   useradd -s /bin/bash -d "/home/$USER_NAME" -M -r -u $USER_ID -g $USER_NAME -o -c "User" $USER_NAME
   export SHELL=/bin/bash

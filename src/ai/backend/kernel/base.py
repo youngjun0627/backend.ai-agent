@@ -71,10 +71,10 @@ class BaseRunner(metaclass=ABCMeta):
     runtime_path: Optional[Path]
 
     def __init__(self, loop=None):
-        self.child_env = {**os.environ, **self.default_child_env}
         self.subproc = None
         self.runtime_path = None
 
+        self.child_env = {**os.environ, **self.default_child_env}
         config_dir = Path('/home/config')
         try:
             evdata = (config_dir / 'environ.txt').read_text()
@@ -414,9 +414,14 @@ class BaseRunner(metaclass=ABCMeta):
                 # TODO: handle pseudo-tty
                 raise NotImplementedError
             else:
+                service_env = {**self.child_env, **env}
+                # avoid conflicts with Python binary used by service apps.
+                if 'LD_LIBRARY_PATH' in service_env:
+                    service_env['LD_LIBRARY_PATH'] = \
+                        service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
                 proc = await asyncio.create_subprocess_exec(
                     *cmdargs,
-                    env={**self.child_env, **env},
+                    env=service_env,
                 )
                 self.service_processes.append(proc)
             self.services_running.add(service_info['name'])
