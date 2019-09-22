@@ -158,11 +158,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         # Fill up runtime configurations from etcd.
         redis_config = await self.etcd.get_prefix('config/redis')
         self.config['redis'] = redis_config_iv.check(redis_config)
-        self.config['event'] = {
-            'addr': tx.HostPortPair().check(await self.etcd.get('nodes/manager/event_addr')),
-        }
         log.info('configured redis_addr: {0}', self.config['redis']['addr'])
-        log.info('configured event_addr: {0}', self.config['event']['addr'])
 
         vfolder_mount = await self.etcd.get('volumes/_mount')
         if vfolder_mount is None:
