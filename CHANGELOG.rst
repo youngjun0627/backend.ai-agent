@@ -1,6 +1,25 @@
 Changes
 =======
 
+19.09.0rc1 (2019-09-23)
+-----------------------
+
+* NEW: Add a new intrinsic service port "ttyd" for all kernels, which provides a clean and slick
+  web-based shell access.
+
+* NEW: Add support for sftp service if the kernel supports it (#146).
+
+* FIX: Now "kernel_terminated" events carry the correct "reason" field, which is stored in the
+  "status_info" in the manager's kernels table.
+
+* FIX: Avoid binary-level conflicts of Python library (libpythonmX.Y.so) in containers due to
+  "/opt/backend.ai/lib" mounts.  This had crashed some vendor-specific images which relies on
+  Python 3.6.4 while our krunner daemon uses Python 3.6.8.
+
+* CHANGE: The agent-to-manager notifications use Redis instead of ZeroMQ (#144,
+  lablup/backend.ai-manager#192, lablup/backend.ai-manager#125), and make the agent to survive
+  intermittent Redis connection disruptions.
+
 19.09.0b12 (2019-09-09)
 -----------------------
 
