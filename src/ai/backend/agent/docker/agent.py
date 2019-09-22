@@ -667,7 +667,7 @@ class DockerAgent(AbstractAgent):
                 ],
                 'PortBindings': {
                     f'{eport}/tcp': [{'HostPort': str(hport),
-                                      'HostIp': kernel_host}]
+                                      'HostIp': str(kernel_host)}]
                     for eport, hport in zip(exposed_ports, host_ports)
                 },
                 'PublishAllPorts': False,  # we manage port mapping manually!
@@ -770,7 +770,7 @@ class DockerAgent(AbstractAgent):
         await self.produce_event('kernel_started', kernel_id)
         return {
             'id': kernel_id,
-            'kernel_host': kernel_host,
+            'kernel_host': str(kernel_host),
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,    # legacy
