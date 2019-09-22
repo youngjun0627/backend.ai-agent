@@ -404,7 +404,7 @@ class BaseRunner(metaclass=ABCMeta):
                 return
             print(f"starting service {service_info['name']}")
             if service_info['name'] == 'ttyd':
-                cmdargs, env = ['/opt/backend.ai/bin/ttyd', 'bash'], {}
+                cmdargs, env = ['/opt/backend.ai/bin/ttyd', '/bin/sh'], {}
             else:
                 cmdargs, env = await self.start_service(service_info)
             if cmdargs is None:
