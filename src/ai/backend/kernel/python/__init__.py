@@ -126,3 +126,7 @@ class Runner(BaseRunner):
                 '--host', '0.0.0.0',
                 '--port', str(service_info['port']),
             ], {}
+        elif service_info['name'] == 'sftp':
+            return [
+                self.runtime_path, '-m', 'sftpserver', '--port', str(service_info['port'])
+            ], {}
