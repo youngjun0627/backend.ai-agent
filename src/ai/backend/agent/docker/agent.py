@@ -167,7 +167,13 @@ class DockerAgent(AbstractAgent):
                     else:
                         assert container._id == resource_spec.container_id, \
                                 'Container ID from the container must match!'
-                service_ports = []
+                service_ports: List[ServicePort] = []
+                service_ports.append({
+                    'name': 'ttyd',
+                    'protocol': 'http',
+                    'container_port': 7681,
+                    'host_port': port_map.get(7681, None)
+                })
                 for item in labels.get('ai.backend.service-ports', '').split(','):
                     if not item:
                         continue
@@ -601,8 +607,15 @@ class DockerAgent(AbstractAgent):
         #   - Refactor "/home/work" and "/opt/backend.ai" prefixes to be specified
         #     by the plugin implementation.
 
-        exposed_ports = [2000, 2001]
+        exposed_ports = [2000, 2001, 7681]
         service_ports: MutableMapping[int, ServicePort] = {}
+        service_ports[7681] = {
+            'name': 'ttyd',
+            'protocol': 'http',
+            'container_port': 7681,
+            'host_port': None
+        }
+
         for item in image_labels.get('ai.backend.service-ports', '').split(','):
             if not item:
                 continue
