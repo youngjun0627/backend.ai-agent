@@ -427,6 +427,9 @@ class BaseRunner(metaclass=ABCMeta):
                 if 'LD_LIBRARY_PATH' in service_env:
                     service_env['LD_LIBRARY_PATH'] = \
                         service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
+                print('#####')
+                print(cmdargs)
+                print(service_env)
                 proc = await asyncio.create_subprocess_exec(
                     *cmdargs,
                     env=service_env,

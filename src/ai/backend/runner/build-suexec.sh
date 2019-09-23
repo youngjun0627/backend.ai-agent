@@ -12,6 +12,7 @@ EOF
 centos_init_script=$(cat <<'EOF'
 #! /bin/sh
 set -e
+yum update
 yum install -y make gcc
 EOF
 )
