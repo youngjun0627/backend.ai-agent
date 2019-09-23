@@ -3,6 +3,7 @@ import logging
 import os
 from pathlib import Path
 import tempfile
+from typing import List
 
 from ... import BaseRunner
 
@@ -78,7 +79,6 @@ class Runner(BaseRunner):
         else:
             log.error('cannot find the main script ("main.py").')
             return 127
-
 
     async def start_service(self, service_info):
         if service_info['name'] in ['jupyter', 'jupyterlab']:
