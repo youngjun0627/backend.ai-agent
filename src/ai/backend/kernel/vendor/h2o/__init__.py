@@ -2,15 +2,13 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-import shlex
 import tempfile
 
 from ... import BaseRunner
 
 log = logging.getLogger()
 
-DEFAULT_CFLAGS = ['-Wall']
-DEFAULT_LDFLAGS = ['-lrt', '-lm', '-lpthread', '-ldl']
+DEFAULT_PYFLAGS: List[str] = []
 
 
 class Runner(BaseRunner):
@@ -81,11 +79,9 @@ class Runner(BaseRunner):
             log.error('cannot find the main script ("main.py").')
             return 127
 
-        
+
     async def start_service(self, service_info):
-        print('# ## start_service')
-        print('name:', service_info['name'])
-        if service_info['name'] in ['jupyter']:
+        if service_info['name'] in ['jupyter', 'jupyterlab']:
             with tempfile.NamedTemporaryFile(
                     'w', encoding='utf-8', suffix='.py', delete=False) as config:
                 print('c.NotebookApp.allow_root = True', file=config)
