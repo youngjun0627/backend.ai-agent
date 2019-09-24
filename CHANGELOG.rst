@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.09.0rc2 (2019-09-24)
+-----------------------
+
+* Minor bug fixes
+
+* CHANGE: The default of "debug.coredump" config becomes false in the halfstack configuration.
+
 19.09.0rc1 (2019-09-23)
 -----------------------
 
