@@ -807,7 +807,7 @@ class DockerAgent(AbstractAgent):
             async def force_cleanup():
                 await self.clean_kernel(kernel_id)
                 await self.produce_event('kernel_terminated',
-                                         kernel_id, 'self-terminated',
+                                         kernel_id, reason,
                                          None)
 
             self.orphan_tasks.discard(asyncio.Task.current_task())

@@ -217,10 +217,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
 
     @aiozmq.rpc.method
     @update_last_used
-    async def destroy_kernel(self, kernel_id: KernelId):
+    async def destroy_kernel(self, kernel_id: KernelId, reason: str = None):
         log.info('rpc::destroy_kernel(k:{0})', kernel_id)
         async with self.handle_rpc_exception():
-            return await self.agent.destroy_kernel(kernel_id, 'user-requested')
+            return await self.agent.destroy_kernel(kernel_id, reason)
 
     @aiozmq.rpc.method
     @update_last_used
