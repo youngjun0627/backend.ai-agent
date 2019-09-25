@@ -235,7 +235,7 @@ async def _per_container_live_stat_api(container):
         return None
     else:
         # API returned successfully but actually the result may be empty!
-        if ret is None:
+        if ret is None or not isinstance(ret, dict):
             return None
         if ret['preread'].startswith('0001-01-01'):
             return None
@@ -358,7 +358,7 @@ async def _collect_stats_api(container):
         return None
     else:
         # API returned successfully but actually the result may be empty!
-        if ret is None:
+        if ret is None or not isinstance(ret, dict):
             return None
         if ret['preread'].startswith('0001-01-01'):
             return None
