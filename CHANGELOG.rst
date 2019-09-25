@@ -1,6 +1,21 @@
 Changes
 =======
 
+19.03.6 (2019-09-25)
+--------------------
+
+- Backport bug fixes from the master branch.
+
+  - Protect against unexpected inputs in kernel runner's main loop
+
+  - Ignore unexpected return type when parsing docker stats API results
+
+  - Implement periodic ping-pong to keep REPL NAT ports alive (#126)
+
+  - Fix TensorBoard startup error due to binding to IPv6 address
+
+  - Update websocket ping interval to 10s (#129, #131)
+
 19.03.5 (2019-08-19)
 --------------------
 
