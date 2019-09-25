@@ -515,6 +515,9 @@ class BaseRunner(ABC):
         while True:
             try:
                 data = await self.insock.recv_multipart()
+                if len(data) != 2:
+                    # maybe some garbage data
+                    continue
                 op_type = data[0].decode('ascii')
                 text = data[1].decode('utf8')
                 if op_type == 'clean':
@@ -545,7 +548,8 @@ class BaseRunner(ABC):
                 await asyncio.sleep(0)
             except Exception:
                 log.exception('unexpected error')
-                break
+                # we need to continue anyway unless we are shutting down
+                continue
         user_input_server.close()
         await user_input_server.wait_closed()
         await self.shutdown()
