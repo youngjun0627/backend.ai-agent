@@ -151,7 +151,7 @@ class CPUPlugin(AbstractComputePlugin):
                 return None
             else:
                 # API returned successfully but actually the result may be empty!
-                if ret is None:
+                if ret is None or not isinstance(ret, dict):
                     return None
                 if ret['preread'].startswith('0001-01-01'):
                     return None
@@ -419,7 +419,7 @@ class MemoryPlugin(AbstractComputePlugin):
                 return None
             else:
                 # API returned successfully but actually the result may be empty!
-                if ret is None:
+                if ret is None or not isinstance(ret, dict):
                     return None
                 if ret['preread'].startswith('0001-01-01'):
                     return None
