@@ -27,7 +27,6 @@ from typing import (
 from typing_extensions import Final
 
 import aiodocker
-import aioredis
 import aiotools
 import attr
 from setproctitle import setproctitle
@@ -484,7 +483,7 @@ class StatContext:
 
 @aiotools.actxmgr
 async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
-                                  stat_type: MetricTypes, cid: str,
+                                  stat_type: StatModes, cid: str,
                                   *, exec_opts=None):
     # Spawn high-perf stats collector process for Linux native setups.
     # NOTE: We don't have to keep track of this process,

@@ -1,5 +1,6 @@
 import asyncio
 import os
+from typing import Mapping, Union
 import sys
 
 import pytest
@@ -7,26 +8,31 @@ import zmq
 import zmq.asyncio
 
 from ai.backend.common import msgpack
+from ai.backend.agent.agent import ipc_base_path
 from ai.backend.agent import stats
 
 
 @pytest.fixture
 def stats_server():
-    context = zmq.asyncio.Context()
-    stats_sock = context.socket(zmq.PULL)
-    stats_port = stats_sock.bind_to_random_port('tcp://127.0.0.1')
+    ipc_base_path.mkdir(parents=True, exist_ok=True)
+    zctx = zmq.asyncio.Context()
+    stat_sync_sockpath = ipc_base_path / f'test-stats.{os.getpid()}.sock'
+    stat_sync_sock = zctx.socket(zmq.REP)
+    stat_sync_sock.setsockopt(zmq.LINGER, 1000)
+    stat_sync_sock.bind('ipc://' + str(stat_sync_sockpath))
     try:
-        yield stats_sock, stats_port
+        yield stat_sync_sock, stat_sync_sockpath
     finally:
-        stats_sock.close()
-        context.term()
+        stat_sync_sock.close()
+        stat_sync_sockpath.unlink()
+        zctx.term()
 
 
-active_collection_types = ['api']
+active_stat_modes = [stats.StatModes.DOCKER]
 if sys.platform.startswith('linux'):
-    active_collection_types.append('cgroup')
+    active_stat_modes.append(stats.StatModes.CGROUP)
 
-pipe_opts = {
+pipe_opts: Mapping[str, Union[None, int]] = {
     'stdout': None,
     'stderr': None,
     'stdin': asyncio.subprocess.DEVNULL,
@@ -41,7 +47,12 @@ if 'TRAVIS' in os.environ:
 
 async def recv_deserialized(sock):
     msg = await sock.recv_multipart()
-    return [msgpack.unpackb(v) for v in msg]
+    return [*map(msgpack.unpackb, msg)]
+
+
+async def send_serialized(sock, msg):
+    encoded_msg = [*map(msgpack.packb, msg)]
+    await sock.send_multipart(encoded_msg)
 
 
 def test_numeric_list():
@@ -59,11 +70,11 @@ def test_numeric_list():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('collection_type', active_collection_types)
-async def test_collector(event_loop,
-                         create_container,
-                         stats_server,
-                         collection_type):
+@pytest.mark.parametrize('stat_mode', active_stat_modes)
+async def test_synchronizer(event_loop,
+                            create_container,
+                            stats_server,
+                            stat_mode):
 
     # Create the container but don't start it.
     container = await create_container({
@@ -80,14 +91,13 @@ async def test_collector(event_loop,
     cid = container['id']
 
     # Initialize the agent-side.
-    stats_sock, stats_port = stats_server
-
-    # Spawn the collector and wait for its initialization.
-    stat_addr = f'tcp://127.0.0.1:{stats_port}'
+    stat_sync_sock, stat_sync_sockpath = stats_server
+    config_path = 'agent.toml'
 
     proc = None
-    async with stats.spawn_stat_collector(stat_addr, collection_type, cid,
-                                          exec_opts=pipe_opts) as p:
+    async with stats.spawn_stat_synchronizer(config_path, stat_sync_sockpath,
+                                             stat_mode, cid,
+                                             exec_opts=pipe_opts) as p:
         proc = p
         await container.start()
 
@@ -99,27 +109,29 @@ async def test_collector(event_loop,
     t = event_loop.create_task(kill_after_sleep())
     msg_list = []
     while True:
-        msg = (await recv_deserialized(stats_sock))[0]
-        print(msg)
+        msg = (await recv_deserialized(stat_sync_sock))[0]
+        await send_serialized(stat_sync_sock, [{'ack': True}])
         msg_list.append(msg)
         if msg['status'] == 'terminated':
             break
+
     await proc.wait()
     await t  # for explicit clean up
 
     assert proc.returncode == 0
     assert len(msg_list) >= 1
     assert msg_list[0]['cid'] == cid
-    assert msg_list[0]['status'] in ('running', 'terminated')
-    assert msg_list[0]['data'] is not None
+    assert msg_list[-1]['cid'] == cid
+    assert msg_list[-1]['status'] == 'terminated'
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('collection_type', active_collection_types)
-async def test_collector_immediate_death(event_loop,
-                                           create_container,
-                                           stats_server,
-                                           collection_type):
+@pytest.mark.parametrize('stat_mode', active_stat_modes)
+async def test_synchronizer_immediate_death(event_loop,
+                                            create_container,
+                                            stats_server,
+                                            stat_mode):
+
     container = await create_container({
         'Cmd': ['-c', 'exit 0'],
         'Entrypoint': 'sh',
@@ -128,14 +140,13 @@ async def test_collector_immediate_death(event_loop,
     cid = container['id']
 
     # Initialize the agent-side.
-    stats_sock, stats_port = stats_server
-
-    # Spawn the collector and wait for its initialization.
-    stat_addr = f'tcp://127.0.0.1:{stats_port}'
+    stat_sync_sock, stat_sync_sockpath = stats_server
+    config_path = 'agent.toml'
 
     proc = None
-    async with stats.spawn_stat_collector(stat_addr, collection_type, cid,
-                                          exec_opts=pipe_opts) as p:
+    async with stats.spawn_stat_synchronizer(config_path, stat_sync_sockpath,
+                                             stat_mode, cid,
+                                             exec_opts=pipe_opts) as p:
         proc = p
         await container.start()
 
@@ -145,15 +156,18 @@ async def test_collector_immediate_death(event_loop,
     # Proceed to receive stats.
     msg_list = []
     while True:
-        msg = (await recv_deserialized(stats_sock))[0]
-        print(msg)
+        msg = (await recv_deserialized(stat_sync_sock))[0]
+        await send_serialized(stat_sync_sock, [{'ack': True}])
+        if msg is None:
+            break
         msg_list.append(msg)
         if msg['status'] == 'terminated':
             break
 
     await proc.wait()
 
-    assert proc.returncode == 0
+    assert proc.returncode in (0, 1)
     assert len(msg_list) >= 1
     assert msg_list[0]['cid'] == cid
-    assert msg_list[0]['data'] is not None
+    assert msg_list[-1]['cid'] == cid
+    assert msg_list[-1]['status'] == 'terminated'

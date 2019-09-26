@@ -294,16 +294,14 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             async for msg in aiotools.aiter(lambda: recv(), None):
                 cid = ContainerId(msg[0]['cid'])
                 status = msg[0]['status']
-                try:
-                    if status == 'terminated':
-                        self.stat_sync_states[cid].terminated.set()
-                    elif status == 'collect-stat':
-                        cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
-                        self.stat_sync_states[cid].last_stat = cstat
-                    else:
-                        log.warning('unrecognized stat sync status: {}', status)
-                finally:
-                    await send([{'ack': True}])
+                await send([{'ack': True}])
+                if status == 'terminated':
+                    self.stat_sync_states[cid].terminated.set()
+                elif status == 'collect-stat':
+                    cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
+                    self.stat_sync_states[cid].last_stat = cstat
+                else:
+                    log.warning('unrecognized stat sync status: {}', status)
         except asyncio.CancelledError:
             pass
         except zmq.ZMQError:

@@ -3,6 +3,28 @@ import asyncio
 import pytest
 
 
+@pytest.fixture
+def loop(event_loop):
+    # naming shortcut
+    return event_loop
+
+
+@pytest.fixture
+def docker(loop):
+    docker = None
+
+    async def get_docker():
+        nonlocal docker
+        docker = aiodocker.Docker()
+
+    async def cleanup():
+        await docker.close()
+
+    loop.run_until_complete(get_docker())
+    yield docker
+    loop.run_until_complete(cleanup())
+
+
 @pytest.fixture(scope='session')
 def prepare_docker_images():
     event_loop = asyncio.get_event_loop()
@@ -24,19 +46,6 @@ def prepare_docker_images():
         await docker.close()
 
     event_loop.run_until_complete(pull())
-
-
-@pytest.fixture
-def docker(event_loop, prepare_docker_images):
-    docker = aiodocker.Docker()
-
-    async def finalize():
-        await docker.close()
-
-    try:
-        yield docker
-    finally:
-        event_loop.run_until_complete(finalize())
 
 
 @pytest.fixture
@@ -69,7 +78,7 @@ def container(event_loop, docker):
 
 
 @pytest.fixture
-def create_container(event_loop, docker):
+async def create_container(event_loop, docker):
     container = None
 
     async def _create_container(config):
@@ -82,9 +91,5 @@ def create_container(event_loop, docker):
 
     yield _create_container
 
-    async def finalize():
-        nonlocal container
-        if container:
-            await container.delete(force=True)
-
-    event_loop.run_until_complete(finalize())
+    if container:
+        await container.delete(force=True)

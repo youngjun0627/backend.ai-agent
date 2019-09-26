@@ -1,18 +1,8 @@
 from unittest import mock
-from decimal import Decimal
-import io
-import json
-from pathlib import Path
 
-import pytest
-
-from ai.backend.common.types import (
-    MountPermission,
-)
 from ai.backend.agent.vendor import linux
 from ai.backend.agent.resources import (
     KernelResourceSpec,
-    Mount,
 )
 
 
@@ -93,51 +83,4 @@ class TestLibNuma:
         assert numa.get_core_topology() == ([], [1, 2, 5])
 
 
-'''
-class TestKernelResourceSpec:
-
-    @pytest.fixture
-    def sample_resource_spec(self):
-        return KernelResourceSpec(
-            numa_node=99,
-            cpu_set={1, 4, 9},
-            memory_limit=128 * (2**20),
-            scratch_disk_size=91124,
-            shares={
-                '_cpu': Decimal('0.47'),
-                '_mem': Decimal('1.21'),
-                '_gpu': Decimal('0.53'),
-                'cuda': {
-                    2: Decimal('0.33'),
-                    5: Decimal('0.2'),
-                },
-            },
-            mounts=[
-                Mount(Path('/home/user/hello.txt'),
-                      Path('/home/work/hello.txt'),
-                      MountPermission.READ_ONLY),
-                Mount(Path('/home/user/world.txt'),
-                      Path('/home/work/world.txt'),
-                      MountPermission.READ_WRITE),
-            ],
-        )
-
-    def test_write_read_equality(self, sample_resource_spec):
-        buffer = io.StringIO()
-        sample_resource_spec.write_to_file(buffer)
-        buffer.seek(0, io.SEEK_SET)
-        read_spec = KernelResourceSpec.read_from_file(buffer)
-        assert read_spec == sample_resource_spec
-
-    def test_to_json(self, sample_resource_spec):
-        o = json.loads(sample_resource_spec.to_json())
-        assert o['cpu_set'] == [1, 4, 9]
-        assert o['numa_node'] == 99
-        assert o['shares']['_cpu'] == '0.47'
-        assert o['shares']['_mem'] == '1.21'
-        assert o['shares']['_gpu'] == '0.53'
-        assert o['shares']['cuda']['2'] == '0.33'
-        assert o['shares']['cuda']['5'] == '0.2'
-        assert o['mounts'][0] == '/home/user/hello.txt:/home/work/hello.txt:ro'
-        assert o['mounts'][1] == '/home/user/world.txt:/home/work/world.txt:rw'
-'''
+# TODO: rerwite KernelResourceSpec read/write tests

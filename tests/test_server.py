@@ -1,20 +1,14 @@
-import argparse
 import asyncio
-from datetime import datetime
-import os
-from pathlib import Path
-import uuid
 
-import aiodocker
 import pytest
 
 from ai.backend.agent.server import (
-    get_extra_volumes, get_kernel_id_from_container, AgentRPCServer
+    AgentRPCServer,
 )
-from ai.backend.common import identity
-from ai.backend.common.argparse import host_port_pair
 
 
+# TODO: rewrite
+'''
 @pytest.fixture
 async def agent(request, tmpdir, event_loop):
     config = argparse.Namespace()
@@ -374,19 +368,4 @@ async def test_reset(agent, docker):
                 cinfo = None
             if cinfo and cinfo['State']['Status'] != 'removing':
                 await container.delete(force=True)
-
-
-'''
-def test_main(mocker, tmpdir):
-    import sys
-    import aiotools
-    from ai.backend.agent.server import main
-
-    cmd = ['backend.ai-agent', '--scratch-root', '.']
-    mocker.patch.object(sys, 'argv', cmd)
-    mocker.patch.object(aiotools, 'start_server')
-
-    main()
-
-    assert aiotools.start_server.called == 1
 '''
