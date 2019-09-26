@@ -135,7 +135,7 @@ async def test_synchronizer_immediate_death(event_loop,
     container = await create_container({
         'Cmd': ['-c', 'exit 0'],
         'Entrypoint': 'sh',
-        'Image': 'alpine:latest',
+        'Image': 'alpine:3.8',
     })
     cid = container['id']
 

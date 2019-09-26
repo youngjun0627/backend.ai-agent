@@ -32,9 +32,9 @@ def prepare_docker_images():
     async def pull():
         docker = aiodocker.Docker()
         images_to_pull = [
-            'alpine:latest',
-            'lablup/kernel-lua:5.3-alpine',
-            'nginx:latest',
+            'alpine:3.8',
+            'nginx:1.17-alpine',
+            'lablup/kernel-lua:5.3-alpine3.8',
         ]
         for img in images_to_pull:
             try:
@@ -54,7 +54,7 @@ def container(event_loop, docker):
     config = {
         'Cmd': ['-c', 'echo hello'],
         'Entrypoint': 'sh',
-        'Image': 'alpine:latest',
+        'Image': 'alpine:3.8',
     }
 
     async def spawn():

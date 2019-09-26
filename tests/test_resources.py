@@ -1,13 +1,13 @@
 from unittest import mock
 
 from ai.backend.agent.vendor import linux
-from ai.backend.agent.resources import (
-    KernelResourceSpec,
-)
 
+# TODO: write tests for KernelResourceSpec (read/write consistency)
+# from ai.backend.agent.resources import (
+#     KernelResourceSpec,
+# )
 
 # TODO: write tests for DiscretePropertyAllocMap, FractionAllocMap
-# TODO: write tests for KernelResourceSpec
 
 
 class TestLibNuma:
@@ -81,6 +81,3 @@ class TestLibNuma:
 
         numa = linux.libnuma()
         assert numa.get_core_topology() == ([], [1, 2, 5])
-
-
-# TODO: rerwite KernelResourceSpec read/write tests
