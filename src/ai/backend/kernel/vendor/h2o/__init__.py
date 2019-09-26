@@ -48,16 +48,6 @@ class Runner(BaseRunner):
         cmd = ['/opt/h2oai/dai/run-dai.sh']
         await self.run_subproc(cmd)
 
-    async def query(self, code_text) -> int:
-        return await self.term.handle_command(code_text)
-
-    async def complete(self, data):
-        return []
-
-    async def interrupt(self):
-        # subproc interrupt is already handled by BaseRunner
-        pass
-
     async def build_heuristic(self) -> int:
         if Path('setup.py').is_file():
             cmd = [
