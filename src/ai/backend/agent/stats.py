@@ -250,7 +250,7 @@ class Metric:
 
 @attr.s(auto_attribs=True, slots=True)
 class StatSyncState:
-    kernel_id: str
+    kernel_id: KernelId
     terminated: asyncio.Event = attr.Factory(asyncio.Event)
     last_stat: Mapping[MetricKey, Metric] = attr.Factory(dict)
 
