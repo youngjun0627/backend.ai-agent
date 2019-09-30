@@ -253,6 +253,8 @@ class StatSyncState:
     kernel_id: KernelId
     terminated: asyncio.Event = attr.Factory(asyncio.Event)
     last_stat: Mapping[MetricKey, Metric] = attr.Factory(dict)
+    last_sync: float = attr.Factory(time.monotonic)
+    sync_proc: Optional[asyncio.subprocess.Process] = None
 
 
 class StatContext:
@@ -409,8 +411,8 @@ class StatContext:
                     key: obj.to_serializable_dict()
                     for key, obj in metrics.items()
                 }
-                pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-                pipe.expire(kernel_id, self.cache_lifespan)
+                pipe.set(str(kernel_id), msgpack.packb(serialized_metrics))
+                pipe.expire(str(kernel_id), self.cache_lifespan)
             return pipe
         await redis.execute_with_retries(_pipe_builder)
 
@@ -473,8 +475,8 @@ class StatContext:
 
             def _pipe_builder():
                 pipe = self.agent.redis_stat_pool.pipeline()
-                pipe.set(kernel_id, serialized_metrics)
-                pipe.expire(kernel_id, self.cache_lifespan)
+                pipe.set(str(kernel_id), serialized_metrics)
+                pipe.expire(str(kernel_id), self.cache_lifespan)
                 return pipe
             await redis.execute_with_retries(_pipe_builder)
             return metrics

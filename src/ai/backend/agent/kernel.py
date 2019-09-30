@@ -58,6 +58,8 @@ default_api_version = 4
 
 class RunEvent(Exception):
 
+    data: Any
+
     def __init__(self, data=None):
         super().__init__()
         self.data = data

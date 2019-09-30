@@ -9,6 +9,7 @@ import signal
 import sys
 import time
 from typing import cast, TYPE_CHECKING
+from uuid import UUID
 
 import aiotools
 import aiozmq, aiozmq.rpc
@@ -27,7 +28,7 @@ from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
 from ai.backend.common.plugin import install_plugins
 from ai.backend.common.types import (
     aobject, HostPortPair, KernelId,
-    KernelCreationConfig, KernelCreationResult,
+    KernelCreationConfig,
 )
 from . import __version__ as VERSION
 from .agent import AbstractAgent, VolumeInfo
@@ -203,59 +204,61 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
 
     @aiozmq.rpc.method
     @update_last_used
-    async def ping_kernel(self, kernel_id: KernelId):
+    async def ping_kernel(self, kernel_id: str):
         log.debug('rpc::ping_kernel({0})', kernel_id)
 
     @aiozmq.rpc.method
     @update_last_used
-    async def create_kernel(self, kernel_id: KernelId, config: dict):
-        # type: (...) -> KernelCreationResult
+    async def create_kernel(self, kernel_id: str, config: dict):
         log.info('rpc::create_kernel(k:{0}, img:{1})',
                  kernel_id, config['image']['canonical'])
         async with self.handle_rpc_exception():
-            return await self.agent.create_kernel(kernel_id, cast(KernelCreationConfig, config))
+            return await self.agent.create_kernel(
+                KernelId(UUID(kernel_id)), cast(KernelCreationConfig, config))
 
     @aiozmq.rpc.method
     @update_last_used
-    async def destroy_kernel(self, kernel_id: KernelId, reason: str = None):
+    async def destroy_kernel(self, kernel_id: str, reason: str = None):
         log.info('rpc::destroy_kernel(k:{0})', kernel_id)
         async with self.handle_rpc_exception():
-            return await self.agent.destroy_kernel(kernel_id, reason or 'user-requested')
+            return await self.agent.destroy_kernel(
+                KernelId(UUID(kernel_id)), reason or 'user-requested')
 
     @aiozmq.rpc.method
     @update_last_used
-    async def interrupt_kernel(self, kernel_id: KernelId):
+    async def interrupt_kernel(self, kernel_id: str):
         log.info('rpc::interrupt_kernel(k:{0})', kernel_id)
         async with self.handle_rpc_exception():
-            await self.agent.interrupt_kernel(kernel_id)
+            await self.agent.interrupt_kernel(KernelId(UUID(kernel_id)))
 
     @aiozmq.rpc.method
     @update_last_used
-    async def get_completions(self, kernel_id: KernelId,
+    async def get_completions(self, kernel_id: str,
                               text: str, opts: dict):
         log.debug('rpc::get_completions(k:{0}, ...)', kernel_id)
         async with self.handle_rpc_exception():
-            await self.agent.get_completions(kernel_id, text, opts)
+            await self.agent.get_completions(KernelId(UUID(kernel_id)), text, opts)
 
     @aiozmq.rpc.method
     @update_last_used
-    async def get_logs(self, kernel_id: KernelId):
+    async def get_logs(self, kernel_id: str):
         log.info('rpc::get_logs(k:{0})', kernel_id)
         async with self.handle_rpc_exception():
-            return await self.agent.get_logs(kernel_id)
+            return await self.agent.get_logs(KernelId(UUID(kernel_id)))
 
     @aiozmq.rpc.method
     @update_last_used
-    async def restart_kernel(self, kernel_id: KernelId, new_config: dict):
+    async def restart_kernel(self, kernel_id: str, new_config: dict):
         log.info('rpc::restart_kernel(k:{0})', kernel_id)
         async with self.handle_rpc_exception():
-            return await self.agent.restart_kernel(kernel_id, cast(KernelCreationConfig, new_config))
+            return await self.agent.restart_kernel(
+                KernelId(UUID(kernel_id)), cast(KernelCreationConfig, new_config))
 
     @aiozmq.rpc.method
     @update_last_used
     async def execute(self,
                       api_version,        # type: int
-                      kernel_id,          # type: KernelId
+                      kernel_id,          # type: str
                       run_id,             # type: str
                       mode,               # type: str
                       code,               # type: str
@@ -269,7 +272,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
              code[:20] + '...' if len(code) > 20 else code)
         async with self.handle_rpc_exception():
             result = await self.agent.execute(
-                kernel_id,
+                KernelId(UUID(kernel_id)),
                 run_id, mode, code,
                 opts=opts,
                 api_version=api_version,
@@ -280,39 +283,39 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
     @aiozmq.rpc.method
     @update_last_used
     async def start_service(self,
-                            kernel_id,   # type: KernelId
+                            kernel_id,   # type: str
                             service,     # type: str
                             opts         # type: Dict[str, Any]
                             ):
         # type: (...) -> Dict[str, Any]
         log.info('rpc::start_service(k:{0}, app:{1})', kernel_id, service)
         async with self.handle_rpc_exception():
-            return await self.agent.start_service(kernel_id, service, opts)
+            return await self.agent.start_service(KernelId(UUID(kernel_id)), service, opts)
 
     @aiozmq.rpc.method
     @update_last_used
-    async def upload_file(self, kernel_id: KernelId, filename: str, filedata: bytes):
+    async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
         log.info('rpc::upload_file(k:{0}, fn:{1})', kernel_id, filename)
         async with self.handle_rpc_exception():
-            await self.agent.accept_file(kernel_id, filename, filedata)
+            await self.agent.accept_file(KernelId(UUID(kernel_id)), filename, filedata)
 
     @aiozmq.rpc.method
     @update_last_used
-    async def download_file(self, kernel_id: KernelId, filepath: str):
+    async def download_file(self, kernel_id: str, filepath: str):
         log.info('rpc::download_file(k:{0}, fn:{1})', kernel_id, filepath)
         async with self.handle_rpc_exception():
-            return await self.agent.download_file(kernel_id, filepath)
+            return await self.agent.download_file(KernelId(UUID(kernel_id)), filepath)
 
     @aiozmq.rpc.method
     @update_last_used
-    async def list_files(self, kernel_id: KernelId, path: str):
+    async def list_files(self, kernel_id: str, path: str):
         log.info('rpc::list_files(k:{0}, fn:{1})', kernel_id, path)
         async with self.handle_rpc_exception():
-            return await self.agent.list_files(kernel_id, path)
+            return await self.agent.list_files(KernelId(UUID(kernel_id)), path)
 
     @aiozmq.rpc.method
     @update_last_used
-    async def refresh_idle(self, kernel_id: KernelId):
+    async def refresh_idle(self, kernel_id: str):
         # update_last_used decorator already implements this. :)
         log.debug('rpc::refresh_idle(k:{})', kernel_id)
         pass

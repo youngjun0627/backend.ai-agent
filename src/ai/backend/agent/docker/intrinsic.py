@@ -363,7 +363,7 @@ class MemoryPlugin(AbstractComputePlugin):
                     break
             else:
                 return 0
-            work_dir = ctx.agent.config['container']['scratch-root'] / kernel_id / 'work'
+            work_dir = ctx.agent.config['container']['scratch-root'] / str(kernel_id) / 'work'
             total_size = 0
             for path in work_dir.rglob('*'):
                 if path.is_symlink():

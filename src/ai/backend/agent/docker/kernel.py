@@ -20,7 +20,7 @@ from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
 from ..resources import KernelResourceSpec
 from ..kernel import AbstractKernel, AbstractCodeRunner
-from ..utils import current_loop
+from ..utils import current_loop, read_tail
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 

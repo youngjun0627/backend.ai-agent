@@ -167,11 +167,12 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         # Start container stats collector for existing containers.
         for kernel_id, kernel_obj in self.kernel_registry.items():
             cid = kernel_obj['container_id']
-            self.stat_sync_states[cid] = StatSyncState(kernel_id)
+            stat_sync_state = StatSyncState(kernel_id)
+            self.stat_sync_states[cid] = stat_sync_state
             async with spawn_stat_synchronizer(self.config['_src'],
                                                 self.stat_sync_sockpath,
-                                                self.stat_ctx.mode, cid):
-                pass
+                                                self.stat_ctx.mode, cid) as proc:
+                stat_sync_state.sync_proc = proc
 
         # Prepare heartbeats.
         self.timer_tasks.append(aiotools.create_timer(self.heartbeat, 3.0))
@@ -282,30 +283,44 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             pass
 
     async def sync_container_stats(self):
+        stat_sync_sock = self.zmq_ctx.socket(zmq.REP)
+        stat_sync_sock.setsockopt(zmq.LINGER, 1000)
+        stat_sync_sock.bind('ipc://' + str(self.stat_sync_sockpath))
         try:
-            stat_sync_sock = self.zmq_ctx.socket(zmq.REP)
-            stat_sync_sock.setsockopt(zmq.LINGER, 1000)
-            stat_sync_sock.bind('ipc://' + str(self.stat_sync_sockpath))
             log.info('opened stat-sync socket at {}', self.stat_sync_sockpath)
             recv = aiotools.apartial(stat_sync_sock.recv_serialized,
                                      lambda frames: [*map(msgpack.unpackb, frames)])
             send = aiotools.apartial(stat_sync_sock.send_serialized,
                                      serialize=lambda msgs: [*map(msgpack.packb, msgs)])
-            async for msg in aiotools.aiter(lambda: recv(), None):
-                cid = ContainerId(msg[0]['cid'])
-                status = msg[0]['status']
-                await send([{'ack': True}])
-                if status == 'terminated':
-                    self.stat_sync_states[cid].terminated.set()
-                elif status == 'collect-stat':
-                    cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
-                    self.stat_sync_states[cid].last_stat = cstat
-                else:
-                    log.warning('unrecognized stat sync status: {}', status)
-        except asyncio.CancelledError:
-            pass
-        except zmq.ZMQError:
-            log.exception('zmq socket error with {}', self.stat_sync_sockpath)
+            while True:
+                try:
+                    async for msg in aiotools.aiter(lambda: recv(), None):
+                        cid = ContainerId(msg[0]['cid'])
+                        status = msg[0]['status']
+                        await send([{'ack': True}])
+                        if status == 'terminated':
+                            self.stat_sync_states[cid].terminated.set()
+                        elif status == 'collect-stat':
+                            cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
+                            s = self.stat_sync_states[cid]
+                            for kernel_id, kernel_obj in self.kernel_registry.items():
+                                if kernel_obj['container_id'] == cid:
+                                    break
+                            else:
+                                continue
+                            now = time.monotonic()
+                            if now - s.last_sync > 10.0:
+                                await self.produce_event('kernel_stat_sync', str(kernel_id))
+                            s.last_stat = cstat
+                            s.last_sync = now
+                        else:
+                            log.warning('unrecognized stat sync status: {}', status)
+                except asyncio.CancelledError:
+                    break
+                except zmq.ZMQError:
+                    log.exception('zmq socket error with {}', self.stat_sync_sockpath)
+                except Exception:
+                    log.exception('unexpected-error')
         finally:
             stat_sync_sock.close()
             try:
@@ -393,6 +408,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         * Create and start the kernel (e.g., container, process, etc.) with statistics synchronizer.
         * Create the kernel object (derived from AbstractKernel) and add it to ``self.kernel_registry``.
         * ``await self.produce_event('kernel_started', kernel_id)``
+        * Execute the startup command if the sessino type is batch.
         * Return the kernel creation result.
         '''
 
@@ -493,7 +509,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 api_version=api_version)
         except KeyError:
             await self.produce_event('kernel_terminated',
-                                     kernel_id, 'self-terminated',
+                                     str(kernel_id), 'self-terminated',
                                      None)
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
                                 '(might be terminated--try it again)') from None

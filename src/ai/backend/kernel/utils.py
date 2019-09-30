@@ -4,10 +4,17 @@ from pathlib import Path
 from async_timeout import timeout
 
 __all__ = (
+    'current_loop',
     'find_executable',
     'safe_close_task',
     'wait_local_port_open',
 )
+
+
+if hasattr(asyncio, 'get_running_loop'):
+    current_loop = asyncio.get_running_loop  # type: ignore  # noqa
+else:
+    current_loop = asyncio.get_event_loop    # type: ignore  # noqa
 
 
 def find_executable(*paths):

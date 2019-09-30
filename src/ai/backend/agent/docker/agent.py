@@ -42,6 +42,7 @@ from ai.backend.common.types import (
     MountTypes,
     ResourceSlot,
     ServicePort,
+    SessionTypes,
 )
 from .kernel import DockerKernel
 from .resources import detect_resources
@@ -199,7 +200,7 @@ class DockerAgent(AbstractAgent):
                     })
             elif status in {'exited', 'dead', 'removing'}:
                 log.info('detected terminated kernel: {0}', kernel_id)
-                await self.produce_event('kernel_terminated', kernel_id,
+                await self.produce_event('kernel_terminated', str(kernel_id),
                                          'self-terminated', None)
 
         log.info('starting with resource allocations')
@@ -301,7 +302,7 @@ class DockerAgent(AbstractAgent):
     async def create_kernel(self, kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
                             restarting: bool = False) -> KernelCreationResult:
 
-        await self.produce_event('kernel_preparing', kernel_id)
+        await self.produce_event('kernel_preparing', str(kernel_id))
 
         # Read image-specific labels and settings
         image_ref = ImageRef(
@@ -318,7 +319,7 @@ class DockerAgent(AbstractAgent):
         except DockerError as e:
             if e.status == 404:
                 await self.produce_event('kernel_pulling',
-                                         kernel_id, image_ref.canonical)
+                                         str(kernel_id), image_ref.canonical)
                 auth_config = None
                 dreg_user = kernel_config['image']['registry'].get('username')
                 dreg_passwd = kernel_config['image']['registry'].get('password')
@@ -341,7 +342,7 @@ class DockerAgent(AbstractAgent):
                         auth=auth_config)
             else:
                 raise
-        await self.produce_event('kernel_creating', kernel_id)
+        await self.produce_event('kernel_creating', str(kernel_id))
         image_labels = kernel_config['image']['labels']
 
         version = int(image_labels.get('ai.backend.kernelspec', '1'))
@@ -349,7 +350,7 @@ class DockerAgent(AbstractAgent):
         envs_corecount = label_envs_corecount.split(',') if label_envs_corecount else []
         kernel_features = set(image_labels.get('ai.backend.features', '').split())
 
-        scratch_dir = (self.config['container']['scratch-root'] / kernel_id).resolve()
+        scratch_dir = (self.config['container']['scratch-root'] / str(kernel_id)).resolve()
         tmp_dir = (self.config['container']['scratch-root'] / f'{kernel_id}_tmp').resolve()
         config_dir = scratch_dir / 'config'
         work_dir = scratch_dir / 'work'
@@ -387,7 +388,7 @@ class DockerAgent(AbstractAgent):
         mounts: List[Mount] = [
             Mount(MountTypes.BIND, config_dir, '/home/config',
                   MountPermission.READ_ONLY),
-            Mount(MountTypes.BIND, work_dir, '/home/work/',
+            Mount(MountTypes.BIND, work_dir, '/home/work',
                   MountPermission.READ_WRITE),
         ]
         if (sys.platform.startswith('linux') and
@@ -597,6 +598,8 @@ class DockerAgent(AbstractAgent):
                         await computer_ctx.klass.generate_resource_data(device_alloc)
                     for k, v in kvpairs.items():
                         f.write(f'{k}={v}\n')
+            with open(config_dir / 'kernel_id.txt', 'w') as f:
+                f.write(kernel_id.hex)
 
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
@@ -665,6 +668,9 @@ class DockerAgent(AbstractAgent):
             'Cmd': cmdargs,
             'Env': [f'{k}={v}' for k, v in environ.items()],
             'WorkingDir': '/home/work',
+            'Labels': {
+                'ai.backend.kernel_id': str(kernel_id),
+            },
             'HostConfig': {
                 'Init': True,
                 'Mounts': [
@@ -717,10 +723,12 @@ class DockerAgent(AbstractAgent):
                     for k, v in kvpairs.items():
                         f.write(f'{k}={v}\n')
 
-            self.stat_sync_states[cid] = StatSyncState(kernel_id)
+            stat_sync_state = StatSyncState(kernel_id)
+            self.stat_sync_states[cid] = stat_sync_state
             async with spawn_stat_synchronizer(self.config['_src'],
                                                self.stat_sync_sockpath,
-                                               self.stat_ctx.mode, cid):
+                                               self.stat_ctx.mode, cid) as proc:
+                stat_sync_state.sync_proc = proc
                 await container.start()
 
             # Get attached devices information (including model_name).
@@ -760,7 +768,7 @@ class DockerAgent(AbstractAgent):
             elif port == 2003:  # legacy
                 stdout_port = host_port
 
-        self.kernel_registry[kernel_id] = await DockerKernel.new(
+        kernel_obj = await DockerKernel.new(
             kernel_id,
             image_ref,
             version,
@@ -776,13 +784,59 @@ class DockerAgent(AbstractAgent):
                 'stdout_port': stdout_port,  # legacy
                 'host_ports': host_ports,
             })
+        self.kernel_registry[kernel_id] = kernel_obj
         log.debug('kernel repl-in address: {0}:{1}', kernel_host, repl_in_port)
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
         for service_port in service_ports.values():
             log.debug('service port: {!r}', service_port)
-        await self.produce_event('kernel_started', kernel_id)
+        await self.produce_event('kernel_started', str(kernel_id))
+
+        # Execute the startup command if the session type is batch.
+        if SessionTypes(kernel_config['session_type']) == SessionTypes.BATCH:
+            log.debug('startup command: {!r}',
+                      (kernel_config['startup_command'] or '')[:60])
+
+            # TODO: make this working after agent restarts
+            async def execute_batch():
+                opts = {
+                    'exec': kernel_config['startup_command'],
+                }
+                while True:
+                    try:
+                        result = await self.execute(
+                            kernel_id,
+                            'batch-job', 'batch', '',
+                            opts=opts,
+                            flush_timeout=1.0,
+                            api_version=3)
+                    except KeyError:
+                        await self.produce_event(
+                            'kernel_terminated',
+                            str(kernel_id), 'self-terminated',
+                            None)
+                        break
+
+                    if result['status'] == 'finished':
+                        if result['exitCode'] == 0:
+                            await self.produce_event(
+                                'kernel_success',
+                                str(kernel_id), 0)
+                        else:
+                            await self.produce_event(
+                                'kernel_failure',
+                                str(kernel_id), result['exitCode'])
+                        break
+                    if result['status'] == 'exec-timeout':
+                        await self.produce_event(
+                            'kernel_failure', str(kernel_id), -2)
+                        break
+                # TODO: store last_stat?
+                await self.destroy_kernel(kernel_id, 'task-finished')
+
+            self.loop.create_task(execute_batch())
+
         return {
-            'id': kernel_id,
+            'id': str(kernel_id),
             'kernel_host': str(kernel_host),
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
@@ -807,7 +861,7 @@ class DockerAgent(AbstractAgent):
             async def force_cleanup():
                 await self.clean_kernel(kernel_id)
                 await self.produce_event('kernel_terminated',
-                                         kernel_id, reason,
+                                         str(kernel_id), reason,
                                          None)
 
             self.orphan_tasks.discard(asyncio.Task.current_task())
@@ -825,9 +879,11 @@ class DockerAgent(AbstractAgent):
                 try:
                     with timeout(5):
                         await s.terminated.wait()
+                        if s.sync_proc is not None:
+                            await s.sync_proc.wait()
+                            s.sync_proc = None
                 except asyncio.TimeoutError:
                     log.warning('stat-collector shutdown sync timeout.')
-                self.stat_sync_states.pop(cid, None)
                 last_stat: MutableMapping[MetricKey, MetricValue] = {
                     key: metric.to_serializable_dict()
                     for key, metric in s.last_stat.items()
@@ -871,13 +927,19 @@ class DockerAgent(AbstractAgent):
         try:
             if found:
                 await self.produce_event(
-                    'kernel_terminated', kernel_id,
+                    'kernel_terminated', str(kernel_id),
                     kernel_obj.termination_reason or 'self-terminated',
                     exit_code)
                 container_id = kernel_obj['container_id']
                 container = self.docker.containers.container(container_id)
                 if kernel_obj.runner is not None:
                     await kernel_obj.runner.close()
+                stat_sync_state = self.stat_sync_states.pop(kernel_obj['container_id'], None)
+                if stat_sync_state:
+                    sync_proc = stat_sync_state.sync_proc
+                    if sync_proc is not None:
+                        sync_proc.kill()
+                        await sync_proc.wait()
 
                 # When the agent restarts with a different port range, existing
                 # containers' host ports may not belong to the new port range.
@@ -909,7 +971,7 @@ class DockerAgent(AbstractAgent):
 
             if found:
                 scratch_root = self.config['container']['scratch-root']
-                scratch_dir = scratch_root / kernel_id
+                scratch_dir = scratch_root / str(kernel_id)
                 tmp_dir = scratch_root / f'{kernel_id}_tmp'
                 try:
                     if (sys.platform.startswith('linux') and

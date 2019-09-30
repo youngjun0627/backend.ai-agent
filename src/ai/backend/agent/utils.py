@@ -1,5 +1,6 @@
 import asyncio
 from decimal import Decimal
+import io
 import ipaddress
 import logging
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import (
     Type, overload,
 )
 from typing_extensions import Final
+from uuid import UUID
 
 from aiodocker.docker import DockerContainer
 import netifaces
@@ -128,6 +130,18 @@ def read_sysfs(path: Union[str, Path], type_: Type[Any], default: Any = None) ->
         return default
 
 
+async def read_tail(path: Path, nbytes: int) -> bytes:
+    file_size = path.stat().st_size
+
+    def _read_tail() -> bytes:
+        with open(path, 'rb') as f:
+            f.seek(max(file_size - nbytes, 0), io.SEEK_SET)
+            return f.read(nbytes)
+
+    loop = current_loop()
+    return await loop.run_in_executor(None, _read_tail)
+
+
 async def get_kernel_id_from_container(val: Union[str, DockerContainer]) -> Optional[KernelId]:
     if isinstance(val, DockerContainer):
         if 'Name' not in val._container:
@@ -139,7 +153,7 @@ async def get_kernel_id_from_container(val: Union[str, DockerContainer]) -> Opti
     if not name.startswith('kernel.'):
         return None
     try:
-        return name.rsplit('.', 2)[-1]
+        return KernelId(UUID(name.rsplit('.', 2)[-1]))
     except (IndexError, ValueError):
         return None
 

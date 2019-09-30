@@ -25,17 +25,22 @@ from .utils import wait_local_port_open
 log = BraceStyleAdapter(logging.getLogger())
 
 
-async def pipe_output(stream, outsock, target):
+async def pipe_output(stream, outsock, target, log_fd):
     assert target in ('stdout', 'stderr')
     target = target.encode('ascii')
-    fd = sys.stdout.fileno() if target == 'stdout' else sys.stderr.fileno()
+    console_fd = sys.stdout.fileno() if target == 'stdout' else sys.stderr.fileno()
+    loop = current_loop()
     try:
         while True:
             data = await stream.read(4096)
             if not data:
                 break
-            os.write(fd, data)
-            await outsock.send_multipart([target, data])
+            await asyncio.gather(
+                loop.run_in_executor(None, os.write, console_fd, data),
+                loop.run_in_executor(None, os.write, log_fd, data),
+                outsock.send_multipart([target, data]),
+                return_exceptions=True,
+            )
     except asyncio.CancelledError:
         pass
     except Exception:
@@ -67,7 +72,7 @@ class BaseRunner(metaclass=ABCMeta):
     kernel_client = None
 
     child_env: MutableMapping[str, str]
-    subproc: asyncio.subprocess.Process
+    subproc: Optional[asyncio.subprocess.Process]
     runtime_path: Optional[Path]
 
     def __init__(self, loop=None):
@@ -215,7 +220,7 @@ class BaseRunner(metaclass=ABCMeta):
     async def build_heuristic(self) -> int:
         """Process build step."""
 
-    async def _execute(self, exec_cmd):
+    async def _execute(self, exec_cmd: str):
         ret = 0
         try:
             if exec_cmd is None or exec_cmd == '':
@@ -444,9 +449,18 @@ class BaseRunner(metaclass=ABCMeta):
                 json.dumps(result).encode('utf8'),
             ])
 
-    async def run_subproc(self, cmd):
+    async def run_subproc(self, cmd: str):
         """A thin wrapper for an external command."""
         loop = current_loop()
+        if Path('/home/work/.logs').is_dir():
+            kernel_id = Path('/home/config/kernel_id.txt').read_text().strip()
+            log_path = Path(
+                '/home/work/.logs/task/'
+                f'{kernel_id[:2]}/{kernel_id[2:4]}/{kernel_id[4:]}.log'
+            )
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            log_path = Path(os.path.devnull)
         try:
             # errors like "command not found" is handled by the spawned shell.
             # (the subproc will terminate immediately with return code 127)
@@ -454,19 +468,26 @@ class BaseRunner(metaclass=ABCMeta):
                 exec_func = partial(asyncio.create_subprocess_exec, *cmd)
             else:
                 exec_func = partial(asyncio.create_subprocess_shell, cmd)
-            proc = await exec_func(
-                env=self.child_env,
-                stdin=None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            self.subproc = proc
-            pipe_tasks = [
-                loop.create_task(pipe_output(proc.stdout, self.outsock, 'stdout')),
-                loop.create_task(pipe_output(proc.stderr, self.outsock, 'stderr')),
-            ]
-            retcode = await proc.wait()
-            await asyncio.gather(*pipe_tasks)
+            pipe_opts = {}
+            pipe_opts['stdout'] = asyncio.subprocess.PIPE
+            pipe_opts['stderr'] = asyncio.subprocess.PIPE
+            with open(log_path, 'ab') as log_out:
+                proc = await exec_func(
+                    env=self.child_env,
+                    stdin=None,
+                    **pipe_opts,
+                )
+                self.subproc = proc
+                pipe_tasks = [
+                    loop.create_task(
+                        pipe_output(proc.stdout, self.outsock, 'stdout',
+                                    log_out.fileno())),
+                    loop.create_task(
+                        pipe_output(proc.stderr, self.outsock, 'stderr',
+                                    log_out.fileno())),
+                ]
+                retcode = await proc.wait()
+                await asyncio.gather(*pipe_tasks)
             return retcode
         except Exception:
             log.exception('unexpected error')
