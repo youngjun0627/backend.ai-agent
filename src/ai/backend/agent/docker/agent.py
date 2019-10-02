@@ -159,7 +159,7 @@ class DockerAgent(AbstractAgent):
                         container, computer_set.alloc_map)
                 kernel_host = self.config['container']['kernel-host']
                 config_dir = (self.config['container']['scratch-root'] /
-                              kernel_id / 'config').resolve()
+                              str(kernel_id) / 'config').resolve()
                 with open(config_dir / 'resource.txt', 'r') as f:
                     resource_spec = KernelResourceSpec.read_from_file(f)
                     # legacy handling
@@ -170,10 +170,16 @@ class DockerAgent(AbstractAgent):
                                 'Container ID from the container must match!'
                 service_ports: List[ServicePort] = []
                 service_ports.append({
+                    'name': 'sshd',
+                    'protocol': 'tcp',
+                    'container_port': 2200,
+                    'host_port': port_map.get(2200, None),
+                })
+                service_ports.append({
                     'name': 'ttyd',
                     'protocol': 'http',
                     'container_port': 7681,
-                    'host_port': port_map.get(7681, None)
+                    'host_port': port_map.get(7681, None),
                 })
                 for item in labels.get('ai.backend.service-ports', '').split(','):
                     if not item:
@@ -506,12 +512,23 @@ class DockerAgent(AbstractAgent):
         font_italic_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/roboto-italic.ttf'))
 
+        dropbear_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/dropbear.{arch}.bin'))
+        dropbearconv_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/dropbearconvert.{arch}.bin'))
+        dropbearkey_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/dropbearkey.{arch}.bin'))
+
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
         _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
         if self.config['container']['sandbox-type'] == 'jail':
             _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
+
+        _mount(MountTypes.BIND, dropbear_path.resolve(), '/opt/kernel/dropbear')
+        _mount(MountTypes.BIND, dropbearconv_path.resolve(), '/opt/kernel/dropbearconvert')
+        _mount(MountTypes.BIND, dropbearkey_path.resolve(), '/opt/kernel/dropbearkey')
 
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
@@ -610,8 +627,14 @@ class DockerAgent(AbstractAgent):
         #   - Refactor "/home/work" and "/opt/backend.ai" prefixes to be specified
         #     by the plugin implementation.
 
-        exposed_ports = [2000, 2001, 7681]
+        exposed_ports = [2000, 2001, 2200, 7681]
         service_ports: MutableMapping[int, ServicePort] = {}
+        service_ports[2200] = {
+            'name': 'sshd',
+            'protocol': 'tcp',
+            'container_port': 2200,
+            'host_port': None
+        }
         service_ports[7681] = {
             'name': 'ttyd',
             'protocol': 'http',

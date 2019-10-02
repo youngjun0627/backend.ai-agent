@@ -21,6 +21,10 @@ from .jupyter_client import aexecute_interactive
 from .logging import BraceStyleAdapter, setup_logger
 from .compat import asyncio_run_forever, current_loop
 from .utils import wait_local_port_open
+from .intrinsic import (
+    init_sshd_service, prepare_sshd_service,
+    prepare_ttyd_service,
+)
 
 log = BraceStyleAdapter(logging.getLogger())
 
@@ -121,6 +125,7 @@ class BaseRunner(metaclass=ABCMeta):
         except Exception:
             log.exception('unexpected error')
             return
+        await init_sshd_service()
         if self.init_done is not None:
             self.init_done.set()
 
@@ -409,12 +414,9 @@ class BaseRunner(metaclass=ABCMeta):
                 return
             print(f"starting service {service_info['name']}")
             if service_info['name'] == 'ttyd':
-                shell_path = '/bin/sh'
-                if Path('/bin/bash').exists():
-                    shell_path = '/bin/bash'
-                elif Path('/bin/ash').exists():
-                    shell_path = '/bin/ash'
-                cmdargs, env = ['/opt/backend.ai/bin/ttyd', shell_path], {}
+                cmdargs, env = await prepare_ttyd_service(service_info)
+            elif service_info['name'] == 'sshd':
+                cmdargs, env = await prepare_sshd_service(service_info)
             else:
                 cmdargs, env = await self.start_service(service_info)
             if cmdargs is None:
