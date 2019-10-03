@@ -9,7 +9,12 @@ from pathlib import Path
 import signal
 import sys
 import time
-from typing import ClassVar, MutableMapping, Optional
+from typing import (
+    ClassVar,
+    Optional, Union,
+    Sequence,
+    MutableMapping,
+)
 
 import janus
 from jupyter_client import KernelManager
@@ -451,7 +456,7 @@ class BaseRunner(metaclass=ABCMeta):
                 json.dumps(result).encode('utf8'),
             ])
 
-    async def run_subproc(self, cmd: str):
+    async def run_subproc(self, cmd: Union[str, Sequence[str]]):
         """A thin wrapper for an external command."""
         loop = current_loop()
         if Path('/home/work/.logs').is_dir():

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from decimal import Decimal
+import json
 import logging
 import os
 from pathlib import Path
@@ -28,6 +29,7 @@ import zmq
 
 from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
+import aiotools
 
 from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
@@ -57,6 +59,7 @@ from ..agent import (
     AbstractAgent,
     ipc_base_path,
 )
+from ..proxy import proxy_connection, DomainSocketProxy
 from ..resources import (
     AbstractComputePlugin,
 )
@@ -168,6 +171,8 @@ class DockerAgent(AbstractAgent):
                     else:
                         assert container._id == resource_spec.container_id, \
                                 'Container ID from the container must match!'
+                # TODO: restore internal_data
+                #       -> could we get this from the manager again?
                 service_ports: List[ServicePort] = []
                 service_ports.append({
                     'name': 'sshd',
@@ -314,6 +319,7 @@ class DockerAgent(AbstractAgent):
             [kernel_config['image']['registry']['name']])
         environ: MutableMapping[str, str] = {**kernel_config['environ']}
         extra_mount_list = await get_extra_volumes(self.docker, image_ref.short)
+        internal_data: Mapping[str, Any] = kernel_config.get('internal_data') or {}
 
         try:
             # Find the exact image using a digest reference
@@ -455,6 +461,12 @@ class DockerAgent(AbstractAgent):
                 else:
                     raise RuntimeError(
                         'Unexpected number of vfolder mount detail tuple size')
+                if internal_data.get('prevent_vfolder_mounts', False):
+                    # Only allow mount of ".logs" directory to prevent expose
+                    # internal-only information, such as Docker credentials to user's ".docker" vfolder
+                    # in image importer kernels.
+                    if folder_name != '.logs':
+                        continue
                 host_path = (self.config['vfolder']['mount'] / folder_host /
                              self.config['vfolder']['fsprefix'] / folder_id)
                 kernel_path = Path(f'/home/work/{folder_name}')
@@ -490,13 +502,19 @@ class DockerAgent(AbstractAgent):
         arch = platform.machine()
         entrypoint_sh_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/entrypoint.sh'))
-        suexec_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/su-exec.{matched_distro}.bin'))
+        if matched_distro == 'centos6.10':
+            suexec_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', f'../runner/su-exec.centos7.6.bin'))
+            hook_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', f'../runner/libbaihook.centos7.6.{arch}.so'))
+        else:
+            suexec_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', f'../runner/su-exec.{matched_distro}.bin'))
+            hook_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', f'../runner/libbaihook.{matched_distro}.{arch}.so'))
         if self.config['container']['sandbox-type'] == 'jail':
             jail_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent', f'../runner/jail.{matched_distro}.bin'))
-        hook_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/libbaihook.{matched_distro}.{arch}.so'))
         kernel_pkg_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../kernel'))
         helpers_pkg_path = Path(pkg_resources.resource_filename(
@@ -554,6 +572,21 @@ class DockerAgent(AbstractAgent):
             _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
                                     self.config['debug']['coredump']['core_path'],
                                     perm='rw')
+
+        domain_socket_proxies = []
+        for host_sock_path in internal_data.get('domain_socket_proxies', []):
+            (ipc_base_path / 'proxy').mkdir(parents=True, exist_ok=True)
+            host_proxy_path = ipc_base_path / 'proxy' / f'{secrets.token_hex(12)}.sock'
+            proxy_server = await asyncio.start_unix_server(
+                aiotools.apartial(proxy_connection, host_sock_path),
+                str(host_proxy_path))
+            host_proxy_path.chmod(0o666)
+            domain_socket_proxies.append(DomainSocketProxy(
+                Path(host_sock_path),
+                host_proxy_path,
+                proxy_server,
+            ))
+            _mount(MountTypes.BIND, host_proxy_path, host_sock_path, perm='rw')
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args: Dict[str, Any] = {}
@@ -615,6 +648,9 @@ class DockerAgent(AbstractAgent):
                         f.write(f'{k}={v}\n')
             with open(config_dir / 'kernel_id.txt', 'w') as f:
                 f.write(kernel_id.hex)
+            docker_creds = internal_data.get('docker_credentials')
+            if docker_creds:
+                (config_dir / 'docker-creds.json').write_text(json.dumps(docker_creds))
 
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
@@ -807,6 +843,7 @@ class DockerAgent(AbstractAgent):
                 'stdin_port': stdin_port,    # legacy
                 'stdout_port': stdout_port,  # legacy
                 'host_ports': host_ports,
+                'domain_socket_proxies': domain_socket_proxies,
             })
         self.kernel_registry[kernel_id] = kernel_obj
         log.debug('kernel repl-in address: {0}:{1}', kernel_host, repl_in_port)
@@ -964,6 +1001,14 @@ class DockerAgent(AbstractAgent):
                     if sync_proc is not None:
                         sync_proc.kill()
                         await sync_proc.wait()
+
+                for domain_socket_proxy in kernel_obj.get('domain_socket_proxies', []):
+                    domain_socket_proxy.proxy_server.close()
+                    await domain_socket_proxy.proxy_server.wait_closed()
+                    try:
+                        domain_socket_proxy.host_proxy_path.unlink()
+                    except IOError:
+                        pass
 
                 # When the agent restarts with a different port range, existing
                 # containers' host ports may not belong to the new port range.
