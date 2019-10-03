@@ -71,7 +71,7 @@ from ..utils import (
     get_kernel_id_from_container,
     host_pid_to_container_pid,
     container_pid_to_host_pid,
-    parse_service_port,
+    parse_service_ports,
 )
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
@@ -172,21 +172,19 @@ class DockerAgent(AbstractAgent):
                 service_ports.append({
                     'name': 'sshd',
                     'protocol': 'tcp',
-                    'container_port': 2200,
-                    'host_port': port_map.get(2200, None),
+                    'container_ports': (2200,),
+                    'host_ports': (port_map.get(2200, None),),
                 })
                 service_ports.append({
                     'name': 'ttyd',
                     'protocol': 'http',
-                    'container_port': 7681,
-                    'host_port': port_map.get(7681, None),
+                    'container_ports': (7681,),
+                    'host_ports': (port_map.get(7681, None),),
                 })
-                for item in labels.get('ai.backend.service-ports', '').split(','):
-                    if not item:
-                        continue
-                    service_port = parse_service_port(item)
-                    service_port['host_port'] = \
-                        port_map.get(service_port['container_port'], None)
+                for service_port in parse_service_ports(labels.get('ai.backend.service-ports', '')):
+                    service_port['host_ports'] = tuple(
+                        port_map.get(cport, None) for cport in service_port['container_ports']
+                    )
                     service_ports.append(service_port)
                 self.kernel_registry[kernel_id] = await DockerKernel.new(
                     kernel_id,
@@ -628,27 +626,25 @@ class DockerAgent(AbstractAgent):
         #     by the plugin implementation.
 
         exposed_ports = [2000, 2001, 2200, 7681]
-        service_ports: MutableMapping[int, ServicePort] = {}
-        service_ports[2200] = {
-            'name': 'sshd',
-            'protocol': 'tcp',
-            'container_port': 2200,
-            'host_port': None
-        }
-        service_ports[7681] = {
-            'name': 'ttyd',
-            'protocol': 'http',
-            'container_port': 7681,
-            'host_port': None
-        }
+        service_ports: List[ServicePort] = [
+            {
+                'name': 'sshd',
+                'protocol': 'tcp',
+                'container_ports': (2200,),
+                'host_ports': (None,),
+            },
+            {
+                'name': 'ttyd',
+                'protocol': 'http',
+                'container_ports': (7681,),
+                'host_ports': (None,),
+            },
+        ]
 
-        for item in image_labels.get('ai.backend.service-ports', '').split(','):
-            if not item:
-                continue
-            service_port = parse_service_port(item)
-            container_port = service_port['container_port']
-            service_ports[container_port] = service_port
-            exposed_ports.append(container_port)
+        for sport in parse_service_ports(image_labels.get('ai.backend.service-ports', '')):
+            service_ports.append(sport)
+            for cport in sport['container_ports']:
+                exposed_ports.append(cport)
         if 'git' in image_ref.name:  # legacy (TODO: remove it!)
             exposed_ports.append(2002)
             exposed_ports.append(2003)
@@ -775,28 +771,33 @@ class DockerAgent(AbstractAgent):
                 self.computers[dev_name].alloc_map.free(device_alloc)
             raise
 
+        ctnr_host_port_map: MutableMapping[int, int] = {}
         stdin_port = 0
         stdout_port = 0
         for idx, port in enumerate(exposed_ports):
             host_port = int((await container.port(port))[0]['HostPort'])
             assert host_port == host_ports[idx]
-            if port in service_ports:
-                service_ports[port]['host_port'] = host_port
-            elif port == 2000:     # intrinsic
+            if port == 2000:     # intrinsic
                 repl_in_port = host_port
-            elif port == 2001:     # intrinsic
+            elif port == 2001:   # intrinsic
                 repl_out_port = host_port
-            elif port == 2002:     # legacy
+            elif port == 2002:   # legacy
                 stdin_port = host_port
-            elif port == 2003:  # legacy
+            elif port == 2003:   # legacy
                 stdout_port = host_port
+            else:
+                ctnr_host_port_map[port] = host_port
+        for sport in service_ports:
+            sport['host_ports'] = tuple(
+                ctnr_host_port_map[cport] for cport in sport['container_ports']
+            )
 
         kernel_obj = await DockerKernel.new(
             kernel_id,
             image_ref,
             version,
             agent_config=self.config,
-            service_ports=list(service_ports.values()),
+            service_ports=service_ports,
             resource_spec=resource_spec,
             data={
                 'container_id': container._id,
@@ -810,7 +811,7 @@ class DockerAgent(AbstractAgent):
         self.kernel_registry[kernel_id] = kernel_obj
         log.debug('kernel repl-in address: {0}:{1}', kernel_host, repl_in_port)
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
-        for service_port in service_ports.values():
+        for service_port in service_ports:
             log.debug('service port: {!r}', service_port)
         await self.produce_event('kernel_started', str(kernel_id))
 
@@ -865,7 +866,7 @@ class DockerAgent(AbstractAgent):
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,    # legacy
             'stdout_port': stdout_port,  # legacy
-            'service_ports': list(service_ports.values()),
+            'service_ports': service_ports,
             'container_id': container._id,
             'resource_spec': resource_spec.to_json_serializable_dict(),
             'attached_devices': attached_devices,

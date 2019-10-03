@@ -85,7 +85,8 @@ class DockerKernel(AbstractKernel):
             return {'status': 'failed', 'error': 'invalid service name'}
         result = await self.runner.feed_start_service({
             'name': service,
-            'port': sport['container_port'],
+            'port': sport['container_ports'][0],  # primary port
+            'ports': sport['container_ports'],
             'protocol': sport['protocol'],
             'options': opts,
         })
