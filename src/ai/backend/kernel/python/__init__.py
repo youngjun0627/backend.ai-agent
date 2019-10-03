@@ -124,7 +124,7 @@ class Runner(BaseRunner):
                 self.runtime_path, '-m', 'tensorboard.main',
                 '--logdir', '/home/work/logs',
                 '--host', '0.0.0.0',
-                '--port', str(service_info['port'],
+                '--port', str(service_info['port']),
                 '--debugger_port', '6064',  # used by in-container TensorFlow
             ], {}
         elif service_info['name'] == 'sftp':
