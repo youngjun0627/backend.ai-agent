@@ -332,11 +332,10 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         now = time.monotonic()
         tasks = []
         for kernel_id, kernel_obj in self.kernel_registry.items():
-            last_used = kernel_obj.last_used
             idle_timeout = kernel_obj.resource_spec.idle_timeout
             if idle_timeout is None:
                 continue
-            if idle_timeout > 0 and now - last_used > idle_timeout:
+            if idle_timeout > 0 and now - kernel_obj.last_used > idle_timeout:
                 tasks.append(self.destroy_kernel(kernel_id, 'idle-timeout'))
         await asyncio.gather(*tasks, return_exceptions=True)
 

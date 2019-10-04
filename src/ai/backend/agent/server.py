@@ -85,13 +85,13 @@ async def get_extra_volumes(docker, lang):
 
 def update_last_used(meth):
     @functools.wraps(meth)
-    async def _inner(self, kernel_id: KernelId, *args, **kwargs):
+    async def _inner(self, raw_kernel_id: str, *args, **kwargs):
         try:
-            kernel_obj = self.agent.kernel_registry[kernel_id]
+            kernel_obj = self.agent.kernel_registry[KernelId(UUID(raw_kernel_id))]
             kernel_obj.last_used = time.monotonic()
         except KeyError:
             pass
-        return await meth(self, kernel_id, *args, **kwargs)
+        return await meth(self, raw_kernel_id, *args, **kwargs)
     return _inner
 
 
