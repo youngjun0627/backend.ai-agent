@@ -26,6 +26,7 @@ import aiohttp
 import attr
 from async_timeout import timeout
 import zmq
+import trafaret as t
 
 from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
@@ -191,6 +192,7 @@ class DockerAgent(AbstractAgent):
                         port_map.get(cport, None) for cport in service_port['container_ports']
                     )
                     service_ports.append(service_port)
+                block_service_ports = labels.get('ai.backend.internal.block-service-ports', '0')
                 self.kernel_registry[kernel_id] = await DockerKernel.new(
                     kernel_id,
                     ImageRef(image),
@@ -206,6 +208,7 @@ class DockerAgent(AbstractAgent):
                         'stdin_port': port_map.get(2002, 0),
                         'stdout_port': port_map.get(2003, 0),
                         'host_ports': [*port_map.values()],
+                        'block_service_ports': t.StrBool.check(block_service_ports),
                     })
             elif status in {'exited', 'dead', 'removing'}:
                 log.info('detected terminated kernel: {0}', kernel_id)
@@ -724,7 +727,9 @@ class DockerAgent(AbstractAgent):
             'Env': [f'{k}={v}' for k, v in environ.items()],
             'WorkingDir': '/home/work',
             'Labels': {
-                'ai.backend.kernel_id': str(kernel_id),
+                'ai.backend.kernel-id': str(kernel_id),
+                'ai.backend.internal.block-service-ports':
+                    '1' if internal_data.get('block_service_ports', False) else '0'
             },
             'HostConfig': {
                 'Init': True,
@@ -844,6 +849,7 @@ class DockerAgent(AbstractAgent):
                 'stdout_port': stdout_port,  # legacy
                 'host_ports': host_ports,
                 'domain_socket_proxies': domain_socket_proxies,
+                'block_service_ports': internal_data.get('block_service_ports', False)
             })
         self.kernel_registry[kernel_id] = kernel_obj
         log.debug('kernel repl-in address: {0}:{1}', kernel_host, repl_in_port)

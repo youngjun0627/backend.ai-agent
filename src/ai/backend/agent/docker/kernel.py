@@ -78,6 +78,11 @@ class DockerKernel(AbstractKernel):
         return {'status': 'finished'}
 
     async def start_service(self, service: str, opts: Mapping[str, Any]):
+        if self.data.get('block_service_ports', False):
+            return {
+                'status': 'failed',
+                'error': 'operation blocked',
+            }
         for sport in self.service_ports:
             if sport['name'] == service:
                 break
