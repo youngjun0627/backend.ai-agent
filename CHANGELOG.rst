@@ -1,6 +1,33 @@
 Changes
 =======
 
+19.09.0rc3 (2019-10-04)
+-----------------------
+
+This is the last preview, feature-freeze release for v19.09 series.
+Stability updates will follow in the v19.09.0 and possibly a few more v19.09.x releases.
+
+* NEW: Support batch tasks (#148, lablup/backend.ai#199)
+
+* NEW: Support image import tasks, with internal-purpose security flag implementations (#149,
+  lablup/backend.ai#171)
+
+* NEW: Intrinsic SSH support to any session, as "sshd" service port.
+  The host key and user keypair is randomly generated.  To pin your own SSH keypair, create a
+  ".ssh" user vfolder which will be automatically mounted to all your compute sessions.
+
+* NEW: Add support for a new service port: "sftp" for large-file transfers with vfolders using
+  a special dedicated kernel.
+
+* NEW: Add support for a new service port: "vscode" to access Visual Studio Code running as an
+  web application in the interactive sessions.  Note that the sessions running VSCode are recommended to
+  have more than 2 GiB of free main memory. (#147)
+
+* IMPROVE: Enable the debugger port in TensorBoard.  Note that this port is for private-use only
+  so that a TensorFlow process can send debug-logging data to it in the same container.
+
+* IMPROVE: Add support for multiple TCP ports to be mapped for a single service.
+
 19.09.0rc2 (2019-09-24)
 -----------------------
 
