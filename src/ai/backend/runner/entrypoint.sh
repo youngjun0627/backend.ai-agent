@@ -22,6 +22,15 @@ if [ -x "/opt/container/bootstrap.sh" ]; then
   /opt/container/bootstrap.sh
 fi
 
+cat /home/config/resource_base.txt >> /home/config/resource.txt
+for filename in /home/config/additional_resources/*; do 
+  cat $filename >> /home/config/resource.txt
+done
+cat /home/config/environ_base.txt >> /home/config/environ.txt
+for filename in /home/config/additional_environs/*; do 
+  cat $filename >> /home/config/environ.txt
+done
+
 # Correct the ownership of agent socket.
 chown work:work /opt/kernel/agent.sock
 

@@ -96,14 +96,13 @@ class PVCMountSpec(AbstractMountSpec):
 
 
 class KernelDeployment:
-    def __init__(self, kernel_id: str, image: str, distro: str, arch: str, gpu_enabled: bool,
+    def __init__(self, kernel_id: str, image: str, krunner_volume: str, arch: str,
                 ecr_url: str = '', name: str = 'deployment'):
         self.name = name
         self.image = image
-        self.distro = distro
+        self.krunner_volume = krunner_volume
         self.arch = arch
         self.ecr_url = ecr_url
-        self.gpu_enabled = gpu_enabled
 
         self.hostPathMounts: List[AbstractMountSpec] = []
         self.pvcMounts: List[AbstractMountSpec] = []
@@ -114,18 +113,19 @@ class KernelDeployment:
         self.gpu_count = 0
         self.labels = {'run': name, 'backend.ai/kernel_id': kernel_id}
         self.ports: List[int] = []
-        self.krunnerPath = ''
         self.baistatic_pvc = ''
         self.vfolder_pvc = ''
+
+        self.resource_def: Dict[str, Any] = {}
 
     def set_gpus(self, n: int):
         self.gpu_count = n
 
-    def resource_def(self) -> dict:
-        return {'limits': {'nvidia.com/gpu': str(self.gpu_count)}}
-
     def label(self, k: str, v: str):
         self.labels[k] = str(v)
+
+    def append_resource(self, slot, amount):
+        self.resource_def[slot] = amount
 
     def mount_pvc(self, mountSpec: PVCMountSpec):
         mountSpec.name = 'krunner'
@@ -169,7 +169,6 @@ class KernelDeployment:
             return []
 
     def as_dict(self) -> dict:
-        distro = self.distro
         base: Dict[str, Any] = {
             'apiVersion': 'apps/v1',
             'kind': 'Deployment',
@@ -192,26 +191,32 @@ class KernelDeployment:
                                 'args': self.cmd,
                                 'env': [{'name': k, 'value': v} for k, v in self.env.items()],
                                 'volumeMounts':    [{
-                                        'name': 'workdir',
-                                        'mountPath': '/home/work'
+                                    'name': 'workdir',
+                                    'mountPath': '/home/work'
                                 }, {
-                                        'name': 'jupyter',
-                                        'mountPath': '/home/work/.jupyter'
+                                    'name': 'configdir',
+                                    'mountPath': '/home/config'
                                 }, {
-                                        'name':    'krunner',
-                                        'mountPath': '/opt/backend.ai',
-                                        'subPath': f'backendai-krunner.{distro}',
-                                        'readOnly': True
+                                    'name': 'jupyter',
+                                    'mountPath': '/home/work/.jupyter'
+                                }, {
+                                    'name':    'krunner',
+                                    'mountPath': '/opt/backend.ai',
+                                    'subPath': self.krunner_volume,
+                                    'readOnly': True
                                 }] + [x.as_volume_mount_dict() for x in self.configMapMounts +
                                         self.hostPathMounts + self.pvcMounts],
                                 'ports': [{'containerPort': x} for x in self.ports],
-                                'imagePullSecrets': {
-                                    'name': 'backend-ai-registry-secret'
-                                } if len(self.ecr_url) == 0 else {}
-                            }
+                                }
                         ],
+                        'imagePullSecrets': [{
+                            'name': 'backend-ai-registry-secret'
+                        }] if len(self.ecr_url) == 0 else [{}],
                         'volumes': [{
                             'name': 'workdir',
+                            'emptyDir': {}
+                        }, {
+                            'name': 'configdir',
                             'emptyDir': {}
                         }, {
                             'name': 'jupyter',
@@ -224,14 +229,10 @@ class KernelDeployment:
             }
         }
 
-        if self.gpu_count > 0:
-            base['spec']['template']['spec']['containers'][0]['resources'] = self.resource_def()
-        if self.gpu_enabled:
-            base['spec']['template']['spec']['tolerations'] = [{
-                'key': 'nvidia.com/gpu',
-                'effect': 'NoSchedule',
-                'operator': 'Exists'
-            }]
+        if self.resource_def:
+            base['spec']['template']['spec']['containers'][0]['resources'] = {
+                'limits': self.resource_def
+            }
         return base
 
 

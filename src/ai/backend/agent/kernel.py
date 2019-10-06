@@ -374,6 +374,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             return []
 
     async def feed_start_service(self, service_info):
+        log.debug('Sending start-service with body {0}', service_info)
         await self.input_sock.send_multipart([
             b'start-service',
             json.dumps(service_info).encode('utf8'),
@@ -382,10 +383,13 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             with timeout(10):
                 result = await self.service_queue.get()
             self.service_queue.task_done()
+            log.debug('Received body {0}', result)
             return json.loads(result)
         except asyncio.CancelledError:
+            log.error('Operation cancelled')
             return {'status': 'failed', 'error': 'cancelled'}
         except asyncio.TimeoutError:
+            log.error('Operation timed out')
             return {'status': 'failed', 'error': 'timeout'}
 
     async def watchdog(self):

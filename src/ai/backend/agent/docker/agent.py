@@ -655,6 +655,9 @@ class DockerAgent(AbstractAgent):
             if docker_creds:
                 (config_dir / 'docker-creds.json').write_text(json.dumps(docker_creds))
 
+            shutil.copyfile(config_dir / 'environ.txt', config_dir / 'environ_base.txt')
+            shutil.copyfile(config_dir / 'resource.txt', config_dir / 'resource_base.txt')
+
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
                  pformat(attr.asdict(resource_spec)))

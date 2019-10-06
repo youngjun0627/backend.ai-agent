@@ -1,5 +1,6 @@
 from decimal import Decimal
 import logging
+import pkg_resources
 from typing import (
     Any, Dict, Mapping, MutableMapping,
     Type, Tuple
@@ -73,20 +74,30 @@ async def detect_resources(resource_configs: Mapping[str, Any]) \
     k8sAppsApi = K8sClient.AppsV1Api()
     slots: MutableMapping[SlotName, Decimal] = {}
 
-    from .intrinsic import CPUPlugin, MemoryPlugin, K8sCUDAPlugin
+    from .intrinsic import CPUPlugin, MemoryPlugin
 
     compute_device_types: MutableMapping[DeviceName, Type[AbstractComputePlugin]] = {}
     compute_device_types[CPUPlugin.key] = CPUPlugin
     compute_device_types[MemoryPlugin.key] = MemoryPlugin
 
-    try:
-        daemonsets = await k8sAppsApi.read_namespaced_daemon_set(
-            'nvidia-device-plugin-daemonset', 'kube-system'
-        )
-        if daemonsets.status.number_ready > 0:
-            compute_device_types[K8sCUDAPlugin.key] = K8sCUDAPlugin
-    except:
-        pass
+    entry_prefix = 'backendai_accelerator_v12'
+    for entrypoint in pkg_resources.iter_entry_points(entry_prefix):
+        log.info('loading accelerator plugin: {}', entrypoint.module_name)
+        plugin = entrypoint.load()
+        # TODO: scaling group-specific configs
+        accel_klass = await plugin.init()
+        if accel_klass is None:
+            # plugin init failed. skip!
+            continue
+        if not all(sname.startswith(f'{accel_klass.key}.') for sname, _ in accel_klass.slot_types):
+            raise InitializationError(
+                "Slot types defined by an accelerator plugin must be prefixed "
+                "by the plugin's key.")
+        if accel_klass.key in compute_device_types:
+            raise InitializationError(
+                f"A plugin defining the same key '{accel_klass.key}' already exists. "
+                "You may need to uninstall it first.")
+        compute_device_types[accel_klass.key] = accel_klass
 
     for key, klass in compute_device_types.items():
         known_slot_types.update(klass.slot_types)

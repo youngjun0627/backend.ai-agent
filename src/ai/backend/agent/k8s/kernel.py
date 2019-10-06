@@ -1,10 +1,12 @@
 import asyncio
 import logging
 import lzma
+import os
 from pathlib import Path
 import pkg_resources
 import platform
 import re
+import shutil
 from typing import (
     Any,
     Dict, Mapping,
@@ -33,41 +35,31 @@ class K8sKernel(AbstractKernel):
                  data: Dict[str, Any]) -> None:
         super().__init__(
             deployment_name, image, version,
-            config=config,
+            agent_config=config,
             resource_spec=resource_spec,
             service_ports=service_ports,
             data=data)
 
     async def __ainit__(self) -> None:
         await super().__ainit__()
-        
-        scale = await self.scale(1)
-        if scale.to_dict()['spec']['replicas'] == 0:
-            log.error('Scaling failed! Response body: {0}', scale)
-            raise K8sError(f'Scaling failed! Response body: {scale}')
-
-        if scale.to_dict()['status']['replicas'] == 0:
-            while not await self.runner.is_scaled():
-                asyncio.sleep(0.5)
-
 
     async def close(self) -> None:
-        await self.scale(0)
+        pass
 
     async def scale(self, num: int):
         await K8sConfig.load_kube_config()
         k8sAppsApi = K8sClient.AppsV1Api()
         return await k8sAppsApi.replace_namespaced_deployment_scale(
-            self.deployment_name, 'backend-ai',
+            self.kernel_id, 'backend-ai',
             body={
                 'apiVersion': 'autoscaling/v1',
                 'kind': 'Scale',
                 'metadata': {
-                    'name': self.deployment_name,
+                    'name': self.kernel_id,
                     'namespace': 'backend-ai',
                 },
                 'spec': {'replicas': num},
-                'status': {'replicas': num, 'selector': f'run={self.deployment_name}'}
+                'status': {'replicas': num, 'selector': f'run={self.kernel_id}'}
             }
         )
 
@@ -122,16 +114,29 @@ class K8sKernel(AbstractKernel):
             return {'status': 'failed', 'error': 'Deployment scaling failed: ' + str(scale)}
 
         if scale.to_dict()['status']['replicas'] == 0:
-            while not await self.runner.is_scaled():
+            while not await self.is_scaled():
                 asyncio.sleep(0.5)
 
+        log.debug('Session scaled to 1')
         result = await self.runner.feed_start_service({
             'name': service,
-            'port': sport['container_port'],
+            'port': sport['container_ports'][0],
             'protocol': sport['protocol'],
             'options': opts,
         })
         return result
+
+    async def is_scaled(self):
+        await K8sConfig.load_kube_config()
+        k8sAppsApi = K8sClient.AppsV1Api()
+        scale = await k8sAppsApi.read_namespaced_deployment(self.kernel_id, 'backend-ai')
+        if scale.to_dict()['status']['replicas'] == 0:
+            return False
+        for condition in scale.to_dict()['status']['conditions']:
+            if not condition['status']:
+                return False
+
+        return True
 
     async def accept_file(self, filename: str, filedata: bytes):
         raise K8sError('Not implemented for Kubernetes')
@@ -165,17 +170,38 @@ class K8sCodeRunner(AbstractCodeRunner):
     async def get_repl_out_addr(self) -> str:
         return f'tcp://{self.kernel_host}:{self.repl_out_port}'
 
-    async def is_scaled(self):
-        await K8sConfig.load_kube_config()
-        k8sAppsApi = K8sClient.AppsV1Api()
-        scale = await k8sAppsApi.read_namespaced_deployment(self.kernel_id, 'backend-ai')
-        if scale.to_dict()['status']['replicas'] == 0:
-            return False
-        for condition in scale.to_dict()['status']['conditions']:
-            if not condition['status']:
-                return False
 
-        return True
+async def prepare_runner_files(mount_path_str: str):
+    runner_path = Path(pkg_resources.resource_filename(
+        'ai.backend.agent', f'../runner')
+    )
+    mount_path = Path(mount_path_str)
+    
+    runner_files = [
+        'jupyter-custom.css', 'logo.svg',
+        'roboto.ttf', 'roboto-italic.ttf',
+        'entrypoint.sh'
+    ]
+    runner_files += [path.name for path in runner_path.glob('*.bin')]
+    runner_files += [path.name for path in runner_path.glob('*.so')]
+
+    kernel_pkg_path = Path(pkg_resources.resource_filename(
+        'ai.backend.agent', '../kernel'))
+    helpers_pkg_path = Path(pkg_resources.resource_filename(
+        'ai.backend.agent', '../helpers'))
+
+    for filename in runner_files:
+        if (mount_path / filename).exists():
+            os.remove(mount_path / filename)
+        shutil.copyfile(runner_path / filename, mount_path / filename)
+        (mount_path / filename).chmod(0o755)
+    
+    if (mount_path / 'kernel').exists():
+        shutil.rmtree(mount_path / 'kernel')
+    if (mount_path / 'helpers').exists():
+        shutil.rmtree(mount_path / 'helpers')
+    shutil.copytree(kernel_pkg_path, mount_path / 'kernel')
+    shutil.copytree(helpers_pkg_path, mount_path / 'helpers')
 
 
 async def prepare_krunner_env(distro: str, mount_path: str):
@@ -215,13 +241,9 @@ async def prepare_krunner_env(distro: str, mount_path: str):
                     raise RuntimeError('loading krunner extractor image has failed!')
 
         log.info('checking krunner-env for {}...', distro)
-        do_create = False
-        try:
-            vol = DockerVolume(docker, volume_name)
-            await vol.show()
-        except DockerError as e:
-            if e.status == 404:
-                do_create = True
+
+        krunner_path = Path(mount_path) / volume_name
+        do_create = not (krunner_path.exists() and os.path.isdir(krunner_path.absolute().as_posix()))
         if do_create:
             log.info('populating {} volume version {}',
                      volume_name, current_version)

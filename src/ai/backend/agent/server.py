@@ -378,6 +378,7 @@ async def server_main(loop, pidx, _args):
         if isinstance(result, Exception):
             log.error('Loading krunner for {} failed: {}', distro, result)
             raise click.Abort()
+        log.debug('Loaded krunner for {0}', distro)
     config['container']['krunner-volumes'] = krunner_volumes
 
     if not config['agent']['id']:
@@ -540,7 +541,8 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
 
     registry_local_config_iv = t.Dict({
         t.Key('type'): t.String,
-        t.Key('addr'): tx.HostPortPair()
+        t.Key('addr'): tx.HostPortPair(),
+        t.Key('projects'): t.List(t.String)
     })
 
     registry_ecr_config_iv = t.Dict({
