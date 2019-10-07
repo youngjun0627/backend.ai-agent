@@ -12,6 +12,7 @@ from typing import cast, TYPE_CHECKING
 from uuid import UUID
 
 import aiotools
+from aiotools import aclosing
 import aiozmq, aiozmq.rpc
 import click
 from setproctitle import setproctitle
@@ -149,10 +150,11 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         manager_id = await self.etcd.get('nodes/manager')
         if manager_id is None:
             log.warning('watching etcd to wait for the manager being available')
-            async for ev in self.etcd.watch('nodes/manager'):
-                if ev.event == 'put':
-                    manager_id = ev.value
-                    break
+            async with aclosing(self.etcd.watch('nodes/manager')) as agen:
+                async for ev in agen:
+                    if ev.event == 'put':
+                        manager_id = ev.value
+                        break
         log.info('detecting the manager: OK ({0})', manager_id)
 
     async def read_agent_config(self):
