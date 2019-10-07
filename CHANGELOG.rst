@@ -1,6 +1,14 @@
 Changes
 =======
 
+19.09.0 (2019-10-07)
+--------------------
+
+* FIX: In some kernels, git command has failed due to "undefined symbol: dlsym" error.
+  It's fixed by adding ``-ldl`` option to the linker flag of libbaihook.
+
+* FIX: Reconnection and cancellation of etcd watchers used for manager launch detection
+
 19.09.0rc3 (2019-10-04)
 -----------------------
 
