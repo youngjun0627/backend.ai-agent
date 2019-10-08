@@ -629,6 +629,12 @@ def main(args):
     context = zmq.Context.instance()
     mypid = os.getpid()
 
+    def handle_stop_signal(sig, frame):
+        raise SystemExit(-sig)
+
+    signal.signal(signal.SIGTERM, handle_stop_signal)
+    signal.signal(signal.SIGINT, handle_stop_signal)
+
     ipc_base_path = Path('/tmp/backend.ai/ipc')
     signal_sockpath = ipc_base_path / f'stat-start-{mypid}.sock'
     log.debug('creating signal socket at {}', signal_sockpath)
@@ -665,35 +671,30 @@ def main(args):
             stop_signals = {signal.SIGINT, signal.SIGTERM}
             signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
             loop = asyncio.get_event_loop()
-            with closing(sync_sock):
-                # Notify the agent to start the container.
-                signal_sock.send_multipart([b''])
-                # Wait for the container to be actually started.
-                signal_sock.recv_multipart()
-                signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
-                while True:
-                    is_running = loop.run_until_complete(is_container_running(args.cid))
-                    if is_running:
-                        ping_agent({'status': 'collect-stat', 'cid': args.cid})
-                    else:
-                        ping_agent({'status': 'terminated', 'cid': args.cid})
-                        break
-                    # Agent periodically collects container stats.
-                    time.sleep(1.0)
-            loop.close()
+            try:
+                with closing(sync_sock):
+                    # Notify the agent to start the container.
+                    signal_sock.send_multipart([b''])
+                    # Wait for the container to be actually started.
+                    signal_sock.recv_multipart()
+                    signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
+                    while True:
+                        is_running = loop.run_until_complete(is_container_running(args.cid))
+                        if is_running:
+                            ping_agent({'status': 'collect-stat', 'cid': args.cid})
+                        else:
+                            ping_agent({'status': 'terminated', 'cid': args.cid})
+                            break
+                        # Agent periodically collects container stats.
+                        time.sleep(1.0)
+            finally:
+                loop.stop()
 
-    except (KeyboardInterrupt, SystemExit):
-        exit_code = 1
-    else:
-        exit_code = 0
     finally:
         signal_sock.close()
         signal_sockpath.unlink()
         log.debug('terminated statistics collection for {}', args.cid)
         context.term()
-
-    time.sleep(0.05)
-    sys.exit(exit_code)
 
 
 if __name__ == '__main__':
