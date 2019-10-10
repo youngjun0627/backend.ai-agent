@@ -1,6 +1,7 @@
 #! /bin/bash
 set -e
 
+arch=$(uname -m)
 distros=("ubuntu16.04" "centos7.6" "alpine3.8")
 
 ubuntu_builder_dockerfile=$(cat <<'EOF'
@@ -32,7 +33,7 @@ cd openssh-portable
 autoreconf
 ./configure
 make sftp-server
-cp sftp-server ../sftp-server.$X_DISTRO.bin
+cp sftp-server ../sftp-server.$X_DISTRO.$X_ARCH.bin
 make clean
 EOF
 )
@@ -52,11 +53,12 @@ for distro in "${distros[@]}"; do
 done
 
 cd "$temp_dir"
-git clone https://github.com/openssh/openssh-portable openssh-portable
+git clone -c advice.detachedHead=false --branch "V_8_1_P1" https://github.com/openssh/openssh-portable openssh-portable
 
 for distro in "${distros[@]}"; do
   docker run --rm -it \
     -e X_DISTRO=$distro \
+    -e X_ARCH=$arch \
     -u $(id -u):$(id -g) \
     -w /workspace \
     -v $temp_dir:/workspace \

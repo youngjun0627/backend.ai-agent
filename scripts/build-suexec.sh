@@ -1,6 +1,7 @@
 #! /bin/bash
 set -e
 
+arch=$(uname -m)
 distros=("ubuntu16.04" "centos7.6" "alpine3.8")
 
 ubuntu_builder_dockerfile=$(cat <<'EOF'
@@ -27,7 +28,7 @@ build_script=$(cat <<'EOF'
 set -e
 cd su-exec
 make
-cp su-exec ../su-exec.$X_DISTRO.bin
+cp su-exec ../su-exec.$X_DISTRO.$X_ARCH.bin
 make clean
 EOF
 )
@@ -47,11 +48,12 @@ for distro in "${distros[@]}"; do
 done
 
 cd "$temp_dir"
-git clone https://github.com/ncopa/su-exec su-exec
+git clone -c advice.detachedHead=false https://github.com/ncopa/su-exec su-exec
 
 for distro in "${distros[@]}"; do
   docker run --rm -it \
     -e X_DISTRO=$distro \
+    -e X_ARCH=$arch \
     -u $(id -u):$(id -g) \
     -w /workspace \
     -v $temp_dir:/workspace \
