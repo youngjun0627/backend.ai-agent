@@ -11,8 +11,8 @@ async def init_sshd_service():
         proc = await asyncio.create_subprocess_exec(
             *[
                 '/opt/kernel/dropbearkey',
-                '-t', 'ecdsa',
-                '-s', '384',
+                '-t', 'rsa',
+                '-s', '2048',
                 '-f', '/tmp/dropbear/id_dropbear',
             ],
             stdout=asyncio.subprocess.PIPE,
@@ -29,7 +29,7 @@ async def init_sshd_service():
             *[
                 '/opt/kernel/dropbearconvert',
                 'dropbear', 'openssh',
-                '/tmp/dropbear/id_dropbear', '/home/work/id_ecdsa',
+                '/tmp/dropbear/id_dropbear', '/home/work/id_container',
             ],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)
@@ -42,9 +42,9 @@ async def init_sshd_service():
     proc = await asyncio.create_subprocess_exec(
         *[
             '/opt/kernel/dropbearkey',
-            '-t', 'ecdsa',
-            '-s', '384',
-            '-f', '/tmp/dropbear/dropbear_ecdsa_host_key',
+            '-t', 'rsa',
+            '-s', '2048',
+            '-f', '/tmp/dropbear/dropbear_rsa_host_key',
         ],
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE)
@@ -56,7 +56,7 @@ async def init_sshd_service():
 async def prepare_sshd_service(service_info):
     cmdargs = [
         '/opt/kernel/dropbear',
-        '-r', '/tmp/dropbear/dropbear_ecdsa_host_key',
+        '-r', '/tmp/dropbear/dropbear_rsa_host_key',
         '-F',
         '-p', f"0.0.0.0:{service_info['port']}",
     ]

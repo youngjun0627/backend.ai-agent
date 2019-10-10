@@ -500,21 +500,32 @@ class DockerAgent(AbstractAgent):
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         matched_distro, krunner_volume = match_krunner_volume(
             self.config['container']['krunner-volumes'], distro)
+        matched_libc_style = 'glibc'
+        if matched_distro.startswith('alpine'):
+            matched_libc_style = 'musl'
         log.debug('selected krunner: {}', matched_distro)
+        log.debug('selected libc style: {}', matched_libc_style)
         log.debug('krunner volume: {}', krunner_volume)
         arch = platform.machine()
         entrypoint_sh_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/entrypoint.sh'))
         if matched_distro == 'centos6.10':
+            # special case for image importer kernel (manylinux2010 is based on CentOS 6)
             suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/su-exec.centos7.6.bin'))
+                'ai.backend.agent', f'../runner/su-exec.centos7.6.{arch}.bin'))
             hook_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent', f'../runner/libbaihook.centos7.6.{arch}.so'))
+            sftp_server_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/sftp-server.centos7.6.{arch}.bin'))
         else:
             suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/su-exec.{matched_distro}.bin'))
+                'ai.backend.agent', f'../runner/su-exec.{matched_distro}.{arch}.bin'))
             hook_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent', f'../runner/libbaihook.{matched_distro}.{arch}.so'))
+            sftp_server_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/sftp-server.{matched_distro}.{arch}.bin'))
         if self.config['container']['sandbox-type'] == 'jail':
             jail_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent', f'../runner/jail.{matched_distro}.bin'))
@@ -532,11 +543,14 @@ class DockerAgent(AbstractAgent):
             'ai.backend.agent', '../runner/roboto-italic.ttf'))
 
         dropbear_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/dropbear.{arch}.bin'))
+            'ai.backend.agent',
+            f'../runner/dropbear.{matched_libc_style}.{arch}.bin'))
         dropbearconv_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/dropbearconvert.{arch}.bin'))
+            'ai.backend.agent',
+            f'../runner/dropbearconvert.{matched_libc_style}.{arch}.bin'))
         dropbearkey_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/dropbearkey.{arch}.bin'))
+            'ai.backend.agent',
+            f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
 
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
@@ -548,6 +562,7 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, dropbear_path.resolve(), '/opt/kernel/dropbear')
         _mount(MountTypes.BIND, dropbearconv_path.resolve(), '/opt/kernel/dropbearconvert')
         _mount(MountTypes.BIND, dropbearkey_path.resolve(), '/opt/kernel/dropbearkey')
+        _mount(MountTypes.BIND, sftp_server_path.resolve(), '/usr/libexec/sftp-server')
 
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
@@ -949,6 +964,8 @@ class DockerAgent(AbstractAgent):
                         if s.sync_proc is not None:
                             await s.sync_proc.wait()
                             s.sync_proc = None
+                except ProcessLookupError:
+                    pass
                 except asyncio.TimeoutError:
                     log.warning('stat-collector shutdown sync timeout.')
                 last_stat: MutableMapping[MetricKey, MetricValue] = {
@@ -1004,14 +1021,17 @@ class DockerAgent(AbstractAgent):
                 stat_sync_state = self.stat_sync_states.pop(container_id, None)
                 if stat_sync_state:
                     sync_proc = stat_sync_state.sync_proc
-                    if sync_proc is not None:
-                        sync_proc.terminate()
-                        try:
-                            with timeout(2.0):
+                    try:
+                        if sync_proc is not None:
+                            sync_proc.terminate()
+                            try:
+                                with timeout(2.0):
+                                    await sync_proc.wait()
+                            except asyncio.TimeoutError:
+                                sync_proc.kill()
                                 await sync_proc.wait()
-                        except asyncio.TimeoutError:
-                            sync_proc.kill()
-                            await sync_proc.wait()
+                    except ProcessLookupError:
+                        pass
 
                 for domain_socket_proxy in kernel_obj.get('domain_socket_proxies', []):
                     domain_socket_proxy.proxy_server.close()

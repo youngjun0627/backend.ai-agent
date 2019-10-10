@@ -76,3 +76,6 @@ scratches/
 
 # Local config
 agent.toml
+
+# auto-generated files
+scripts/*.dockerfile
