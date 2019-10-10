@@ -1,6 +1,19 @@
 Changes
 =======
 
+19.09.2 (2019-10-11)
+--------------------
+
+* FIX: SSH and SFTP support now works as expected in all types of kernels, including Alpine-based ones.
+  The auto-generated keypair name is changed to "id_container" and now it uses RSA instead of ECDSA for
+  better compatibility.
+
+* FIX: Handle rarely happened ProcessLookupError when cleaning up kernels and stat synchronizers
+  which has caused infinitely repeated warning "cannot read stats: sysfs unreadable for container xxxx".
+
+* FIX: Use the canonical, normalized version number for the backend.ai-common setup dependency to silence
+  pip warnings during installation.
+
 19.09.1 (2019-10-10)
 --------------------
 
