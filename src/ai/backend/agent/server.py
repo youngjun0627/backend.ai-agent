@@ -259,8 +259,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
     @aiozmq.rpc.method
     @update_last_used
     async def execute(self,
-                      api_version,        # type: int
                       kernel_id,          # type: str
+                      api_version,        # type: int
                       run_id,             # type: str
                       mode,               # type: str
                       code,               # type: str
