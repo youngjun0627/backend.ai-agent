@@ -964,6 +964,8 @@ class DockerAgent(AbstractAgent):
                         if s.sync_proc is not None:
                             await s.sync_proc.wait()
                             s.sync_proc = None
+                except ProcessLookupError:
+                    pass
                 except asyncio.TimeoutError:
                     log.warning('stat-collector shutdown sync timeout.')
                 last_stat: MutableMapping[MetricKey, MetricValue] = {
@@ -1019,14 +1021,17 @@ class DockerAgent(AbstractAgent):
                 stat_sync_state = self.stat_sync_states.pop(container_id, None)
                 if stat_sync_state:
                     sync_proc = stat_sync_state.sync_proc
-                    if sync_proc is not None:
-                        sync_proc.terminate()
-                        try:
-                            with timeout(2.0):
+                    try:
+                        if sync_proc is not None:
+                            sync_proc.terminate()
+                            try:
+                                with timeout(2.0):
+                                    await sync_proc.wait()
+                            except asyncio.TimeoutError:
+                                sync_proc.kill()
                                 await sync_proc.wait()
-                        except asyncio.TimeoutError:
-                            sync_proc.kill()
-                            await sync_proc.wait()
+                    except ProcessLookupError:
+                        pass
 
                 for domain_socket_proxy in kernel_obj.get('domain_socket_proxies', []):
                     domain_socket_proxy.proxy_server.close()
