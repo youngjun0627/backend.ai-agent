@@ -1,6 +1,14 @@
 Changes
 =======
 
+19.09.1 (2019-10-10)
+--------------------
+
+* FIX: Regression of code execution due to wrong-ordered arguments of code execution RPC call.
+
+* FIX: Potential memory leak and PID exhaustion due to improper termination of stat synchronizer
+  and its logger processes.
+
 19.09.0 (2019-10-07)
 --------------------
 
