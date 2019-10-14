@@ -1,6 +1,14 @@
 Changes
 =======
 
+19.09.3 (2019-10-14)
+--------------------
+
+* FIX: entrypoint.sh for kernel containers did not work properly when the container image has an user ID
+  or group ID that overlaps with the given values or when the agent is configured to use root for
+  containers.  This fixes kernel launches in macOS where the default user's group "staff" has the group
+  ID 20 which overlaps with the group "dialout" in Ubuntu or "games" in CentOS.
+
 19.09.2 (2019-10-11)
 --------------------
 
