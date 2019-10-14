@@ -302,6 +302,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                             self.stat_sync_states[cid].terminated.set()
                         elif status == 'collect-stat':
                             cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
+                            if cid not in self.stat_sync_states:
+                                continue
                             s = self.stat_sync_states[cid]
                             for kernel_id, kernel_obj in self.kernel_registry.items():
                                 if kernel_obj['container_id'] == cid:
