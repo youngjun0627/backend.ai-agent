@@ -25,15 +25,20 @@ else
 
   USER_NAME=work
   echo "Setting up user/group: $USER_NAME ($USER_ID:$GROUP_ID)"
-  getent group $GROUP_ID > /dev/null 2> /dev/null
-  if [ $? -ne 0 ]; then
-    addgroup -g $GROUP_ID $USER_NAME
-  fi
-  if [ -f /bin/ash ]; then  # for alpine
-    adduser -s /bin/ash -h "/home/$USER_NAME" -H -D -u $USER_ID -G $GROUP_ID -g "User" $USER_NAME
+  GROUP_NAME=$(getent group $GROUP_ID | cut -d: -f1)
+  if [ -f /bin/ash ]; then  # for alpine (busybox)
+    if [ -z "$GROUP_NAME" ]; then
+      GROUP_NAME=work
+      addgroup -g $GROUP_ID $GROUP_NAME
+    fi
+    adduser -s /bin/ash -h "/home/$USER_NAME" -H -D -u $USER_ID -G $GROUP_NAME -g "User" $USER_NAME
     export SHELL=/bin/ash
   else
-    useradd -s /bin/bash -d "/home/$USER_NAME" -M -r -u $USER_ID -g $GROUP_ID -o -c "User" $USER_NAME
+    if [ -z "$GROUP_NAME" ]; then
+      GROUP_NAME=work
+      groupadd -g $GROUP_ID $GROUP_NAME
+    fi
+    useradd -s /bin/bash -d "/home/$USER_NAME" -M -r -u $USER_ID -g $GROUP_NAME -o -c "User" $USER_NAME
     export SHELL=/bin/bash
   fi
   export LD_LIBRARY_PATH="/opt/backend.ai/lib:$LD_LIBRARY_PATH"
