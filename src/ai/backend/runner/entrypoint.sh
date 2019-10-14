@@ -1,4 +1,4 @@
-#!/bin/sh
+#! /bin/sh
 
 USER_ID=${LOCAL_USER_ID:-9001}
 GROUP_ID=${LOCAL_GROUP_ID:-9001}
@@ -25,7 +25,8 @@ else
 
   USER_NAME=work
   echo "Setting up user/group: $USER_NAME ($USER_ID:$GROUP_ID)"
-  if [ "$(getent group $GROUP_ID)" -ne 0 ]; then
+  getent group $GROUP_ID > /dev/null 2> /dev/null
+  if [ $? -ne 0 ]; then
     addgroup -g $GROUP_ID $USER_NAME
   fi
   if [ -f /bin/ash ]; then  # for alpine
