@@ -27,7 +27,7 @@ else
   echo "Setting up user/group: $USER_NAME ($USER_ID:$GROUP_ID)"
   getent group $GROUP_ID > /dev/null 2> /dev/null
   if [ $? -ne 0 ]; then
-    addgroup -g $GROUP_ID $USER_NAME
+    addgroup --gid $GROUP_ID $USER_NAME
   fi
   if [ -f /bin/ash ]; then  # for alpine
     adduser -s /bin/ash -h "/home/$USER_NAME" -H -D -u $USER_ID -G $GROUP_ID -g "User" $USER_NAME

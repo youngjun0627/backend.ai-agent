@@ -20,7 +20,7 @@ from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
 from ..resources import KernelResourceSpec
 from ..kernel import AbstractKernel, AbstractCodeRunner
-from ..utils import current_loop, read_tail
+from ..utils import current_loop
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
@@ -130,7 +130,8 @@ class DockerKernel(AbstractKernel):
             with await container.get_archive(abspath) as tarobj:
                 tarobj.fileobj.seek(0, 2)
                 fsize = tarobj.fileobj.tell()
-                assert fsize < 1 * 1048576, 'too large file.'
+                if fsize > 1048576:
+                    raise ValueError('too large file')
                 tarbytes = tarobj.fileobj.getvalue()
         except DockerError:
             log.warning('Could not found the file: {0}', abspath)
