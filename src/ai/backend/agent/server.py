@@ -17,7 +17,6 @@ import aiozmq, aiozmq.rpc
 import click
 from setproctitle import setproctitle
 import trafaret as t
-import uvloop
 import zmq
 import zmq.asyncio
 
@@ -644,6 +643,7 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
                     log_config.debug('debug mode enabled.')
 
                 if cfg['agent']['event-loop'] == 'uvloop':
+                    import uvloop
                     uvloop.install()
                     log.info('Using uvloop as the event loop backend')
                 aiotools.start_server(server_main, num_workers=1,
