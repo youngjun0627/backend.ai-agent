@@ -1,6 +1,12 @@
 Changes
 =======
 
+19.09.5 (2019-10-16)
+--------------------
+
+* FIX: SFTP/SCP should work consistently in all images, even without ``/usr/bin/scp`` and ``libcrypto``.
+  Applied static builds of OpenSSH utilities with OpenSSL and zlib included.
+
 19.09.4 (2019-10-15)
 --------------------
 
