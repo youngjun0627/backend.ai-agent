@@ -518,6 +518,9 @@ class DockerAgent(AbstractAgent):
             sftp_server_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
                 f'../runner/sftp-server.centos7.6.{arch}.bin'))
+            scp_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/scp.centos7.6.{arch}.bin'))
         else:
             suexec_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent', f'../runner/su-exec.{matched_distro}.{arch}.bin'))
@@ -526,6 +529,9 @@ class DockerAgent(AbstractAgent):
             sftp_server_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
                 f'../runner/sftp-server.{matched_distro}.{arch}.bin'))
+            scp_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/scp.{matched_distro}.{arch}.bin'))
         if self.config['container']['sandbox-type'] == 'jail':
             jail_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent', f'../runner/jail.{matched_distro}.bin'))
@@ -563,6 +569,7 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, dropbearconv_path.resolve(), '/opt/kernel/dropbearconvert')
         _mount(MountTypes.BIND, dropbearkey_path.resolve(), '/opt/kernel/dropbearkey')
         _mount(MountTypes.BIND, sftp_server_path.resolve(), '/usr/libexec/sftp-server')
+        _mount(MountTypes.BIND, scp_path.resolve(), '/usr/bin/scp')
 
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
