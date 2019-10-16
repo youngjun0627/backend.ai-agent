@@ -1,6 +1,21 @@
 Changes
 =======
 
+19.09.5 (2019-10-16)
+--------------------
+
+* FIX: SFTP/SCP should work consistently in all images, even without ``/usr/bin/scp`` and ``libcrypto``.
+  Applied static builds of OpenSSH utilities with OpenSSL and zlib included.
+
+19.09.4 (2019-10-15)
+--------------------
+
+* OPTIMIZE: SFTP file transfers are now 3x faster by increasing the network buffer sizes used by
+  dropbear.
+
+* FIX: Regression of entrypoint.sh that caused failure of user/group creation, which resulted in
+  inability to use the SSH service port due to missing username.
+
 19.09.3 (2019-10-14)
 --------------------
 

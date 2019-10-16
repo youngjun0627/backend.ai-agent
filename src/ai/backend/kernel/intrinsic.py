@@ -57,7 +57,11 @@ async def prepare_sshd_service(service_info):
     cmdargs = [
         '/opt/kernel/dropbear',
         '-r', '/tmp/dropbear/dropbear_rsa_host_key',
-        '-F',
+        '-E',  # show logs in stderr
+        '-F',  # run in foreground
+        '-s',  # disable password logins
+        # '-W', str(256 * 1024),  # recv buffer size (256 KiB) -> built-in during compilation
+        '-K', '30',               # keepalive interval
         '-p', f"0.0.0.0:{service_info['port']}",
     ]
     env = {}
