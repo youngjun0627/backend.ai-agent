@@ -99,7 +99,7 @@ class DockerKernel(AbstractKernel):
 
     async def accept_file(self, filename: str, filedata: bytes):
         loop = current_loop()
-        work_dir = self.agent_config['container']['scratch-root'] / self.kernel_id / 'work'
+        work_dir = self.agent_config['container']['scratch-root'] / str(self.kernel_id) / 'work'
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
