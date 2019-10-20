@@ -127,6 +127,12 @@ class Runner(BaseRunner):
                 '--port', str(service_info['port']),
                 '--debugger_port', '6064',  # used by in-container TensorFlow
             ], {}
+        elif service_info['name'] == 'spectralvis':
+            return [
+                self.runtime_path, '-m', 'http.server',
+                '-d', '/home/work/spectralvis',
+                '8000', 
+            ], {}
         elif service_info['name'] == 'sftp':
             return [
                 self.runtime_path, '-m', 'sftpserver', '--port', str(service_info['port'])
