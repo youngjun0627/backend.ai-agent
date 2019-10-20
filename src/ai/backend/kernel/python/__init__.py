@@ -130,9 +130,8 @@ class Runner(BaseRunner):
         elif service_info['name'] == 'spectravis':
             return [
                 self.runtime_path, '-m', 'http.server',
-                '-d', '/home/work/spectravis',
-                '8000', 
-            ], {}
+                '8000',
+            ], {}, '/home/work/spectravis'
         elif service_info['name'] == 'sftp':
             return [
                 self.runtime_path, '-m', 'sftpserver', '--port', str(service_info['port'])

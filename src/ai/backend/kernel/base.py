@@ -418,12 +418,17 @@ class BaseRunner(metaclass=ABCMeta):
                 result = {'status': 'running'}
                 return
             print(f"starting service {service_info['name']}")
+            cwd = Path.cwd()
             if service_info['name'] == 'ttyd':
                 cmdargs, env = await prepare_ttyd_service(service_info)
             elif service_info['name'] == 'sshd':
                 cmdargs, env = await prepare_sshd_service(service_info)
             else:
-                cmdargs, env = await self.start_service(service_info)
+                start_info = await self.start_service(service_info)
+                if len(start_info) == 3:
+                    cmdargs, env, cwd = start_info
+                elif len(start_info) == 2:
+                    cmdargs, env = start_info
             if cmdargs is None:
                 log.warning('The service {0} is not supported.',
                             service_info['name'])
@@ -442,6 +447,7 @@ class BaseRunner(metaclass=ABCMeta):
                 proc = await asyncio.create_subprocess_exec(
                     *cmdargs,
                     env=service_env,
+                    cwd=str(cwd),
                 )
                 self.service_processes.append(proc)
             self.services_running.add(service_info['name'])
