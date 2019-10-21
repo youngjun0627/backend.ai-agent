@@ -46,8 +46,10 @@ else
       useradd -s /bin/bash -d "/home/$USER_NAME" -M -r -u $USER_ID -g $GROUP_NAME -o -c "User" $USER_NAME
     else
       cp -R "/home/$USER_NAME/*" /home/work/
+      cp -R "/home/$USER_NAME/.*" /home/work/
       usermod -s /bin/bash -d /home/work -l work -g $GROUP_NAME $USER_NAME
       USER_NAME=work
+      chown -R $USER_NAME:$GROUP_NAME /home/work
     fi
     export SHELL=/bin/bash
   fi
@@ -56,6 +58,8 @@ else
 
   # Invoke image-specific bootstrap hook.
   if [ -x "/opt/container/bootstrap.sh" ]; then
+    export LOCAL_USER_ID=$USER_ID
+    export LOCAL_GROUP_ID=$GROUP_ID
     /opt/container/bootstrap.sh
   fi
 
