@@ -30,6 +30,7 @@ class Runner(BaseRunner):
             '/usr/local/cuda/bin',
             '/usr/local/sbin',
             '/usr/local/bin',
+            '/opt/conda/bin',
             '/usr/sbin',
             '/usr/bin',
             '/sbin',
