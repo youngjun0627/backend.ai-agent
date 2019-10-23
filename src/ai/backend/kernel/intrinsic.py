@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 
-async def init_sshd_service():
+async def init_sshd_service(child_env):
     Path('/tmp/dropbear').mkdir(parents=True, exist_ok=True)
     auth_path = Path('/home/work/.ssh/authorized_keys')
     if not auth_path.is_file():
@@ -16,7 +16,8 @@ async def init_sshd_service():
                 '-f', '/tmp/dropbear/id_dropbear',
             ],
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE)
+            stderr=asyncio.subprocess.PIPE,
+            env=child_env)
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(f"sshd init error: {stderr.decode('utf8')}")
@@ -32,7 +33,8 @@ async def init_sshd_service():
                 '/tmp/dropbear/id_dropbear', '/home/work/id_container',
             ],
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE)
+            stderr=asyncio.subprocess.PIPE,
+            env=child_env)
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(f"sshd init error: {stderr.decode('utf8')}")
@@ -47,7 +49,8 @@ async def init_sshd_service():
             '-f', '/tmp/dropbear/dropbear_rsa_host_key',
         ],
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE)
+        stderr=asyncio.subprocess.PIPE,
+        env=child_env)
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise RuntimeError(f"sshd init error: {stderr.decode('utf8')}")

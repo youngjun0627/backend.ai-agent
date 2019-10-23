@@ -3,6 +3,10 @@
 USER_ID=${LOCAL_USER_ID:-9001}
 GROUP_ID=${LOCAL_GROUP_ID:-9001}
 
+# for sshd service
+echo -e "\n" >> /etc/profile
+export -p | grep -v 'PWD\|OLDPWD\|HOME\|USER\|LOGNAME\|SHELL\|SHLVL' >> /etc/profile
+
 if [ $USER_ID -eq 0 ]; then
 
   echo "WARNING: Running the user codes as root is not recommended."
