@@ -64,7 +64,8 @@ async def prepare_sshd_service(service_info):
         '-F',  # run in foreground
         '-s',  # disable password logins
         # '-W', str(256 * 1024),  # recv buffer size (256 KiB) -> built-in during compilation
-        '-K', '30',               # keepalive interval
+        '-K', '15',               # keepalive interval
+        '-I', '0',                # idle timeout
         '-p', f"0.0.0.0:{service_info['port']}",
     ]
     env = {}
