@@ -130,7 +130,7 @@ class BaseRunner(metaclass=ABCMeta):
         except Exception:
             log.exception('unexpected error')
             return
-        await init_sshd_service()
+        await init_sshd_service(self.child_env)
         if self.init_done is not None:
             self.init_done.set()
 
