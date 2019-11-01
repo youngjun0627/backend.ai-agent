@@ -3,10 +3,6 @@
 USER_ID=${LOCAL_USER_ID:-9001}
 GROUP_ID=${LOCAL_GROUP_ID:-9001}
 
-# for sshd service
-echo -e "\n" >> /etc/profile
-export -p | grep -v 'PWD\|OLDPWD\|HOME\|USER\|LOGNAME\|SHELL\|SHLVL' >> /etc/profile
-
 if [ $USER_ID -eq 0 ]; then
 
   echo "WARNING: Running the user codes as root is not recommended."
@@ -14,6 +10,8 @@ if [ $USER_ID -eq 0 ]; then
     export SHELL=/bin/ash
   else
     export SHELL=/bin/bash
+    echo "$LD_PRELOAD" | tr ':' '\n' > /etc/ld.so.preload
+    unset LD_PRELOAD
   fi
   export LD_LIBRARY_PATH="/opt/backend.ai/lib:$LD_LIBRARY_PATH"
   export HOME="/home/work"
@@ -41,6 +39,8 @@ else
     fi
     export SHELL=/bin/ash
   else
+    echo "$LD_PRELOAD" | tr ':' '\n' > /etc/ld.so.preload
+    unset LD_PRELOAD
     if [ -z "$GROUP_NAME" ]; then
       GROUP_NAME=work
       groupadd -g $GROUP_ID $GROUP_NAME
