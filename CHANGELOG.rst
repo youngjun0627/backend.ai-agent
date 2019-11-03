@@ -1,6 +1,29 @@
 Changes
 =======
 
+19.09.6 (2019-11-04)
+--------------------
+
+* FIX/IMPROVE: entrypoint.sh for kernel containers startup
+
+  - Handle UID overlap (not only GID) correctly by renaming the image's existing account
+
+  - Allow execution as root if the agent is configured to do so.
+
+  - FIX: Ensure library preloads not modifiable by the user accounts in kernels even when they unset
+    "LD_PRELOAD" environment variable, by writing "/etc/ld.so.preload" file as root.
+
+    NOTE: Alpine-based images does not support this because musl-libc do not use /etc/ld* configurations
+    but only depend on environment variables with a few hard-coded defaults.
+
+* FIX: Ensure dropbear (our intrinsic SSH daemon) to keep environment variables when users either open a
+  new SSH session or execute a remote command.
+
+* FIX: Regression of the batch-mode execution API.
+
+* MAINTENANCE: Update dependencies and pin Trafaret to v1.x because Trafraet v2.0 release breaks the
+  backward compatibility.
+
 19.09.5 (2019-10-16)
 --------------------
 
