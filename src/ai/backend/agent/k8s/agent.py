@@ -326,7 +326,7 @@ class K8sAgent(AbstractAgent):
 
         for deployment in deployments.items:
             kernel_id = deployment.metadata.labels['backend.ai/kernel_id']
-            
+            _kernel_id = KernelId(kernel_id)
             try:
                 registry_cm = await k8sCoreApi.read_namespaced_config_map(
                     f'{kernel_id}-registry', 'backend-ai'
@@ -335,7 +335,7 @@ class K8sAgent(AbstractAgent):
                 log.error('ConfigMap for kernel {0} not found, skipping restoration', kernel_id)
                 continue
             registry = json.loads(registry_cm.data['registry'])
-            self.kernel_registry[UUID(kernel_id)] = await K8sKernel.new(
+            self.kernel_registry[_kernel_id] = await K8sKernel.new(
                 deployment.metadata.name, 
                 ImageRef(registry['lang']['canonical'], registry['lang']['registry']),
                 registry['version'],
@@ -548,8 +548,8 @@ class K8sAgent(AbstractAgent):
                 name=f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-')
             )
 
-        def _mount(kernel_id: KernelId, hostPath: str, mountPath: str, mountType: str, perm='ro'):
-            name = (str(kernel_id) + '-' + mountPath.split('/')[-1]).replace('.', '-')
+        def _mount(kernel_id: str, hostPath: str, mountPath: str, mountType: str, perm='ro'):
+            name = (kernel_id + '-' + mountPath.split('/')[-1]).replace('.', '-')
             deployment.mount_hostpath(HostPathMountSpec(name, hostPath, mountPath, mountType, perm))
 
         # Check if NFS PVC for static files exists and bound
@@ -852,12 +852,11 @@ class K8sAgent(AbstractAgent):
 
         # Settings validation
         if repl_in_port == 0:
-            await self.destroy_kernel(kernel_id, 'nodeport-assign-error')
+            await self.destroy_kernel(_kernel_id, 'nodeport-assign-error')
             raise K8sError('REPL in port not assigned')
         if repl_out_port == 0:
-            await self.destroy_kernel(kernel_id, 'elb-assign-error')
+            await self.destroy_kernel(_kernel_id, 'elb-assign-error')
             raise K8sError('REPL out port not assigned')
-
 
         self.kernel_registry[_kernel_id] = await K8sKernel.new(
             deployment.name,
@@ -905,7 +904,7 @@ class K8sAgent(AbstractAgent):
 
 
         return {
-            'id': kernel_id,
+            'id': _kernel_id,
             'kernel_host': target_node_ip,
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
@@ -913,7 +912,7 @@ class K8sAgent(AbstractAgent):
             'stdout_port': stdout_port,  # legacy
             'service_ports': list(service_ports.values()),
             'container_id': '#',
-            'resource_spec': resource_spec.to_json(),
+            'resource_spec': resource_spec.to_json_serializable_dict(),
             'attached_devices': attached_devices
         }
 
