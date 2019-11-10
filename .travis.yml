@@ -1,10 +1,9 @@
 language: python
 dist: xenial
-sudo: required
 cache: pip
 services:
   - docker
-  - redis-server
+  - redis
 addons:
   apt:
     packages:
@@ -92,8 +91,8 @@ jobs:
           tags: true
         provider: pypi
         distributions: sdist bdist_wheel
-        skip_upload_docs: true
-        user: "@token"
+        upload_docs: false
+        username: "@token"
         password:
           secure: "ZwSiRwStxuj/s7p6aaj6mfO8sfRs+ZkuCiwejAQFQoiM6BdSCgXLunRduIHOI2Xb1CRuwV8i0uAK44dWJ2z3p1i+hnIoau++93e9vxKN+uWHei5fsKpPnLG18a8aeIU98lwVY0AHOyeoWdtyShjaT0b1+6SryNNjqeFDmpJaJpKxzOCPNASyxHjJcal/nS54Kn3KVUeqk2wPsltzQ4Guu4sx/O7f8O6BS77TM1NFODqSrDtu0nSiXv8M3io2gfM+swmWM3vPPUdLpke5/YQQIZruPhJq6ix9aklKc/Nic8zP1ddG+/mrDaIQulBWPn6ckI2WZP27hKUVQ7F4R+jgLBUBZ3mkZELblTTDP61/JyGO5BxXxBjFGxjYAB3Aqi/ruw4pRXIiuBxMs06nsadGixa4CkCcJ1o5lAIEl4dmNRO52pD35lS7oLMz9A0xyM/rpTKNK2q3Hsu+tmiExFr9m4TufbTZqgbEMMy8L9ypWlgKrQsVAxZRp7PuwH65KsfUquMkmhqIzdaTDHe5/Cc9gjKSVKMBUHYBxJsuXZjf/U6NuHuOLr4txBgtcqAQsZBp+79/KvkPYrxUvx9xB5aKPrmljAYxuZjLtpVXItF31c9bOvaTZzHEVLy0r2ciwJi6GpqKAjosRyokk6cUaAc99V75/uDpHf9ugHdvRVnvgZQ="
 
