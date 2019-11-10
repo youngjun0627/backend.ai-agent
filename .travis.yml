@@ -71,7 +71,8 @@ after_script:
 # stage def.
 jobs:
   include:
-    # test stage is implicitly included.
+    - stage: test
+      python: "3.8"
     - stage: deploy
       python: "3.8"
       before_install: skip
