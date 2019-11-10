@@ -30,7 +30,7 @@ install:
   - |
     _AIOZMQ_PATCH_FILE="/home/travis/virtualenv/python3.8.0/lib/python3.8/site-packages/aiozmq/rpc/base.py"
     if [ -f "${_AIOZMQ_PATCH_FILE}" ]; then
-      sed -i 's/asyncio.async(\([^,]\+\), loop=[^,]\+))/asyncio.create_task(\1)/g' "${_AIOZMQ_PATCH_FILE}"
+      sed -i 's/asyncio.async(\([^,]\+\), loop=[^,]\+)/asyncio.create_task(\1)/g' "${_AIOZMQ_PATCH_FILE}"
     fi
   - mkdir -p ~/.config/backend.ai
   - cp config/ci.toml ~/.config/backend.ai/agent.toml
