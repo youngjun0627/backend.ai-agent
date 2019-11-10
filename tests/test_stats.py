@@ -37,12 +37,6 @@ pipe_opts: Mapping[str, Union[None, int]] = {
     'stderr': None,
     'stdin': asyncio.subprocess.DEVNULL,
 }
-if 'TRAVIS' in os.environ:
-    pipe_opts = {
-        'stdout': asyncio.subprocess.DEVNULL,
-        'stderr': asyncio.subprocess.DEVNULL,
-        'stdin': asyncio.subprocess.DEVNULL,
-    }
 
 
 async def recv_deserialized(sock):
@@ -127,6 +121,7 @@ async def test_synchronizer(event_loop,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stat_mode', active_stat_modes)
+@pytest.mark.skipif('TRAVIS' in os.environ, 'This test hangs in the Travis CI env.')
 async def test_synchronizer_immediate_death(event_loop,
                                             create_container,
                                             stats_server,
