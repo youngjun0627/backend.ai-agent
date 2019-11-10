@@ -29,7 +29,7 @@ def stats_server():
 
 
 active_stat_modes = [stats.StatModes.DOCKER]
-if sys.platform.startswith('linux'):
+if sys.platform.startswith('linux') and os.geteuid() == 0:
     active_stat_modes.append(stats.StatModes.CGROUP)
 
 pipe_opts: Mapping[str, Union[None, int]] = {

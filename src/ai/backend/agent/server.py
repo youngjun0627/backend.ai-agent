@@ -32,8 +32,13 @@ from ai.backend.common.types import (
 )
 from . import __version__ as VERSION
 from .agent import AbstractAgent, VolumeInfo
+from .config import (
+    initial_config_iv,
+    k8s_extra_config_iv,
+    registry_local_config_iv,
+    registry_ecr_config_iv,
+)
 from .exception import InitializationError
-from .stats import StatModes
 from .utils import current_loop, get_subnet_ip
 
 if TYPE_CHECKING:
@@ -175,7 +180,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         log.info('configured vfolder mount base: {0}', self.config['vfolder']['mount'])
         log.info('configured vfolder fs prefix: {0}', self.config['vfolder']['fsprefix'])
 
-    async def shutdown(self, stop_signal):
+    async def shutdown(self, stop_signal: signal.Signals):
         # Stop receiving further requests.
         if self.rpc_server is not None:
             self.rpc_server.close()
@@ -459,94 +464,6 @@ async def server_main(loop, pidx, _args):
               help='Enable the debug mode and override the global log level to DEBUG.')
 @click.pass_context
 def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
-
-    coredump_defaults = {
-        'enabled': False,
-        'path': './coredumps',
-        'backup-count': 10,
-        'size-limit': '64M',
-    }
-
-    initial_config_iv = t.Dict({
-        t.Key('agent'): t.Dict({
-            t.Key('mode'): t.Enum('docker', 'k8s'),
-            t.Key('rpc-listen-addr', default=('', 6001)):
-                tx.HostPortPair(allow_blank_host=True),
-            t.Key('id', default=None): t.Null | t.String,
-            t.Key('region', default=None): t.Null | t.String,
-            t.Key('instance-type', default=None): t.Null | t.String,
-            t.Key('scaling-group', default='default'): t.String,
-            t.Key('pid-file', default=os.devnull): tx.Path(type='file',
-                                                           allow_nonexisting=True,
-                                                           allow_devnull=True),
-            t.Key('event-loop', default='asyncio'): t.Enum('asyncio', 'uvloop'),
-        }).allow_extra('*'),
-        t.Key('container'): t.Dict({
-            t.Key('kernel-uid', default=-1): tx.UserID,
-            t.Key('kernel-gid', default=-1): tx.GroupID,
-            t.Key('kernel-host', default=''): t.String(allow_blank=True),
-            t.Key('port-range', default=(30000, 31000)): tx.PortRange,
-            t.Key('stats-type', default='docker'):
-                t.Null | t.Enum(*[e.value for e in StatModes]),
-            t.Key('sandbox-type', default='docker'): t.Enum('docker', 'jail'),
-            t.Key('jail-args', default=[]): t.List(t.String),
-            t.Key('scratch-type'): t.Enum('hostdir', 'memory'),
-            t.Key('scratch-root', default='./scratches'):
-                tx.Path(type='dir', auto_create=True),
-            t.Key('scratch-size', default='0'): tx.BinarySize,
-        }).allow_extra('*'),
-        t.Key('logging'): t.Any,  # checked in ai.backend.common.logging
-        t.Key('resource'): t.Dict({
-            t.Key('reserved-cpu', default=1): t.Int,
-            t.Key('reserved-mem', default="1G"): tx.BinarySize,
-            t.Key('reserved-disk', default="8G"): tx.BinarySize,
-        }).allow_extra('*'),
-        t.Key('debug'): t.Dict({
-            t.Key('enabled', default=False): t.Bool,
-            t.Key('skip-container-deletion', default=False): t.Bool,
-            t.Key('log-stats', default=False): t.Bool,
-            t.Key('log-docker-events', default=False): t.Bool,
-            t.Key('coredump', default=coredump_defaults): t.Dict({
-                t.Key('enabled', default=coredump_defaults['enabled']): t.Bool,
-                t.Key('path', default=coredump_defaults['path']):
-                    tx.Path(type='dir', auto_create=True),
-                t.Key('backup-count', default=coredump_defaults['backup-count']):
-                    t.Int[1:],
-                t.Key('size-limit', default=coredump_defaults['size-limit']):
-                    tx.BinarySize,
-            }).allow_extra('*'),
-        }).allow_extra('*'),
-    }).merge(config.etcd_config_iv).allow_extra('*')
-
-    k8s_extra_config_iv = t.Dict({
-        t.Key('registry'): t.Dict({
-            t.Key('type'): t.String
-        }).allow_extra('*'),
-        t.Key('baistatic'): t.Null | t.Dict({
-            t.Key('nfs-addr'): t.String,
-            t.Key('path'): t.String,
-            t.Key('capacity'): tx.BinarySize,
-            t.Key('options'): t.Null | t.String,
-            t.Key('mounted-at'): t.String
-        }),
-        t.Key('vfolder-pv'): t.Null | t.Dict({
-            t.Key('nfs-addr'): t.String,
-            t.Key('path'): t.String,
-            t.Key('capacity'): tx.BinarySize,
-            t.Key('options'): t.Null | t.String
-        }),
-    }).merge(initial_config_iv).allow_extra('*')
-
-    registry_local_config_iv = t.Dict({
-        t.Key('type'): t.String,
-        t.Key('addr'): tx.HostPortPair()
-    })
-
-    registry_ecr_config_iv = t.Dict({
-        t.Key('type'): t.String,
-        t.Key('profile'): t.String,
-        t.Key('registry-id'): t.String
-    })
 
     # Determine where to read configuration.
     raw_cfg, cfg_src_path = config.read_from_file(config_path, 'agent')

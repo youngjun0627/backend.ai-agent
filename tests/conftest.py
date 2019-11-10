@@ -1,95 +1,103 @@
-import aiodocker
 import asyncio
+import secrets
+
+from ai.backend.common.types import HostPortPair
+
+import aiodocker
 import pytest
 
 
-@pytest.fixture
-def loop(event_loop):
-    # naming shortcut
-    return event_loop
-
-
-@pytest.fixture
-def docker(loop):
-    docker = None
-
-    async def get_docker():
-        nonlocal docker
-        docker = aiodocker.Docker()
-
-    async def cleanup():
-        await docker.close()
-
-    loop.run_until_complete(get_docker())
-    yield docker
-    loop.run_until_complete(cleanup())
+@pytest.fixture(scope='session')
+def backend_type():
+    # TODO: change by environment/tox?
+    return 'docker'
 
 
 @pytest.fixture(scope='session')
-def prepare_docker_images():
-    event_loop = asyncio.get_event_loop()
+def test_id():
+    return f'testing-{secrets.token_urlsafe(8)}'
+
+
+@pytest.fixture(scope='session')
+def prepare_images(backend_type):
 
     async def pull():
-        docker = aiodocker.Docker()
-        images_to_pull = [
-            'alpine:3.8',
-            'nginx:1.17-alpine',
-            'lablup/kernel-lua:5.3-alpine3.8',
-        ]
-        for img in images_to_pull:
-            try:
-                await docker.images.inspect(img)
-            except aiodocker.exceptions.DockerError as e:
-                assert e.status == 404
-                print(f'Pulling image "{img}" for testing...')
-                await docker.pull(img)
+        if backend_type == 'docker':
+            docker = aiodocker.Docker()
+            images_to_pull = [
+                'alpine:3.8',
+                'nginx:1.17-alpine',
+                'redis:5.0.5-alpine',
+            ]
+            for img in images_to_pull:
+                try:
+                    await docker.images.inspect(img)
+                except aiodocker.exceptions.DockerError as e:
+                    assert e.status == 404
+                    print(f'Pulling image "{img}" for testing...')
+                    await docker.pull(img)
+            await docker.close()
+        elif backend_type == 'k8s':
+            raise NotImplementedError
+
+    asyncio.run(pull())
+
+
+@pytest.fixture
+async def docker():
+    docker = aiodocker.Docker()
+    try:
+        yield docker
+    finally:
         await docker.close()
 
-    event_loop.run_until_complete(pull())
-
 
 @pytest.fixture
-def container(event_loop, docker):
-    container = None
-    config = {
-        'Cmd': ['-c', 'echo hello'],
-        'Entrypoint': 'sh',
-        'Image': 'alpine:3.8',
-    }
-
-    async def spawn():
-        nonlocal container
+async def redis_container(test_id, backend_type, prepare_images, docker):
+    if backend_type == 'docker':
         container = await docker.containers.create_or_replace(
-            config=config,
-            name='kernel.test-container'
+            config={
+                'Image': 'redis:5.0.5-alpine',
+                'Privileged': False,
+                'HostConfig': {
+                    'PublishAllPorts': True,
+                },
+            },
+            name=f'{test_id}.redis',
         )
         await container.start()
+        host_port = int((await container.port(6379))[0]['HostPort'])
+    elif backend_type == 'k8s':
+        raise NotImplementedError
 
-    event_loop.run_until_complete(spawn())
-
-    yield container
-
-    async def finalize():
-        nonlocal container
-        if container:
-            await container.delete(force=True)
-
-    event_loop.run_until_complete(finalize())
+    try:
+        yield {
+            'addr': HostPortPair('localhost', host_port),
+            'password': None,
+        }
+    finally:
+        await container.kill()
+        await container.delete(force=True)
 
 
 @pytest.fixture
-async def create_container(event_loop, docker):
+async def create_container(test_id, backend_type, docker):
     container = None
+    cont_id = secrets.token_urlsafe(4)
 
-    async def _create_container(config):
-        nonlocal container
-        container = await docker.containers.create_or_replace(
-            config=config,
-            name='kernel.test-container'
-        )
-        return container
+    if backend_type == 'docker':
+        async def _create_container(config):
+            nonlocal container
+            container = await docker.containers.create_or_replace(
+                config=config,
+                name=f'kernel.{test_id}-{cont_id}',
+            )
+            return container
+    elif backend_type == 'k8s':
+        raise NotImplementedError
 
-    yield _create_container
-
-    if container:
-        await container.delete(force=True)
+    try:
+        yield _create_container
+    finally:
+        if container is not None:
+            await container.delete(force=True)
