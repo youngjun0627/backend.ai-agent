@@ -72,7 +72,7 @@ async def test_synchronizer(event_loop,
 
     # Create the container but don't start it.
     container = await create_container({
-        'Image': 'nginx:latest',
+        'Image': 'nginx:1.17-alpine',
         'ExposedPorts': {
             '80/tcp': {},
         },
@@ -119,9 +119,9 @@ async def test_synchronizer(event_loop,
     assert msg_list[-1]['status'] == 'terminated'
 
 
+@pytest.mark.skipif('TRAVIS' in os.environ, 'This test hangs in the Travis CI env.')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stat_mode', active_stat_modes)
-@pytest.mark.skipif('TRAVIS' in os.environ, 'This test hangs in the Travis CI env.')
 async def test_synchronizer_immediate_death(event_loop,
                                             create_container,
                                             stats_server,
