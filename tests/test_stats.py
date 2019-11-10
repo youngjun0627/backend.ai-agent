@@ -63,6 +63,7 @@ def test_numeric_list():
     assert ret == [123, 456]
 
 
+@pytest.mark.skipif('TRAVIS' in os.environ, reason='This test hangs in the Travis CI env.')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stat_mode', active_stat_modes)
 async def test_synchronizer(event_loop,
@@ -119,7 +120,7 @@ async def test_synchronizer(event_loop,
     assert msg_list[-1]['status'] == 'terminated'
 
 
-@pytest.mark.skipif('TRAVIS' in os.environ, 'This test hangs in the Travis CI env.')
+@pytest.mark.skipif('TRAVIS' in os.environ, reason='This test hangs in the Travis CI env.')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stat_mode', active_stat_modes)
 async def test_synchronizer_immediate_death(event_loop,
