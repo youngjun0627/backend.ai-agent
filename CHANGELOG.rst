@@ -1,6 +1,16 @@
 Changes
 =======
 
+19.09.7 (2019-11-11)
+--------------------
+
+* ROLLBACK: SFTP throughput optimization. It has caused PyCharm's helper upload failures for its
+  remote interpreter and debugging support, while all other tested SFTP clients (Cyberduck, FileZilla)
+  have worked flawlessly.
+
+  - While we are investigating both the SSHJ library and dropbear part to find the root cause,
+    the optimization is hold back since working is better than fast.
+
 19.09.6 (2019-11-04)
 --------------------
 
