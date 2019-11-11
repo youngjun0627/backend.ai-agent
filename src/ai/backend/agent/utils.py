@@ -26,6 +26,7 @@ from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import (
     PID, HostPID, ContainerPID, KernelId,
     ServicePort,
+    ServicePortProtocols,
 )
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.utils'))
@@ -77,7 +78,7 @@ def parse_service_ports(s: str) -> Sequence[ServicePort]:
             if not name:
                 raise ValueError('Service port name must be not empty.')
             protocol = match.group('proto')
-            if protocol not in ('tcp', 'pty', 'http'):
+            if protocol not in ('tcp', 'http'):
                 raise ValueError(f'Unsupported service port protocol: {protocol}')
             ports = tuple(map(int, match.group('ports').strip('[]').split(',')))
             for p in ports:
@@ -90,7 +91,7 @@ def parse_service_ports(s: str) -> Sequence[ServicePort]:
                 used_ports.add(p)
             items.append({
                 'name': name,
-                'protocol': protocol,
+                'protocol': ServicePortProtocols(protocol),
                 'container_ports': ports,
                 'host_ports': (None,) * len(ports),
             })

@@ -46,6 +46,7 @@ from ai.backend.common.types import (
     ResourceSlot,
     ServicePort,
     SessionTypes,
+    ServicePortProtocols,
 )
 from .kernel import DockerKernel
 from .resources import detect_resources
@@ -177,13 +178,13 @@ class DockerAgent(AbstractAgent):
                 service_ports: List[ServicePort] = []
                 service_ports.append({
                     'name': 'sshd',
-                    'protocol': 'tcp',
+                    'protocol': ServicePortProtocols('tcp'),
                     'container_ports': (2200,),
                     'host_ports': (port_map.get(2200, None),),
                 })
                 service_ports.append({
                     'name': 'ttyd',
-                    'protocol': 'http',
+                    'protocol': ServicePortProtocols('http'),
                     'container_ports': (7681,),
                     'host_ports': (port_map.get(7681, None),),
                 })
@@ -690,13 +691,13 @@ class DockerAgent(AbstractAgent):
         service_ports: List[ServicePort] = [
             {
                 'name': 'sshd',
-                'protocol': 'tcp',
+                'protocol': ServicePortProtocols('tcp'),
                 'container_ports': (2200,),
                 'host_ports': (None,),
             },
             {
                 'name': 'ttyd',
-                'protocol': 'http',
+                'protocol': ServicePortProtocols('http'),
                 'container_ports': (7681,),
                 'host_ports': (None,),
             },
@@ -925,7 +926,7 @@ class DockerAgent(AbstractAgent):
             self.loop.create_task(execute_batch())
 
         return {
-            'id': str(kernel_id),
+            'id': str(kernel_id),  # type: ignore  # to make it msgpack-serializable
             'kernel_host': str(kernel_host),
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,

@@ -35,7 +35,7 @@ class Runner(BaseRunner):
 
     async def execute_heuristic(self) -> int:
         if Path('main.js').is_file():
-            cmd = [self.runtime_path, 'main.m']
+            cmd = [str(self.runtime_path), 'main.m']
             return await self.run_subproc(cmd)
         else:
             log.error('cannot find executable ("main.m").')
@@ -46,7 +46,7 @@ class Runner(BaseRunner):
             tmpf.write(code_text.encode('utf8'))
             tmpf.flush()
             # TODO: support graphics output to display
-            cmd = [self.runtime_path, tmpf.name]
+            cmd = [str(self.runtime_path), tmpf.name]
             return await self.run_subproc(cmd)
 
     async def complete(self, data):

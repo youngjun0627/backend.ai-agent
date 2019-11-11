@@ -12,7 +12,7 @@ import time
 from typing import (
     ClassVar,
     Optional, Union,
-    Sequence,
+    List,
     MutableMapping,
 )
 
@@ -462,7 +462,7 @@ class BaseRunner(metaclass=ABCMeta):
                 json.dumps(result).encode('utf8'),
             ])
 
-    async def run_subproc(self, cmd: Union[str, Sequence[str]]):
+    async def run_subproc(self, cmd: Union[str, List[str]]):
         """A thin wrapper for an external command."""
         loop = current_loop()
         if Path('/home/work/.logs').is_dir():
