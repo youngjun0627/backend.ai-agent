@@ -26,8 +26,9 @@ install:
   - pip install -U pip setuptools
   - |
     # Use the same branch (if exists) for the backend.ai-common installation
-    if [ $(git ls-remote --heads 'https://github.com/lablup/backend.ai-common' | grep -q "refs/heads/${TRAVIS_BRANCH}") -eq 0 ]; then
-      sed -i "s/@master/@${TRAVIS_BRANCH}" requirements-ci.txt
+    git ls-remote --heads 'https://github.com/lablup/backend.ai-common' | grep -q "refs/heads/${TRAVIS_BRANCH}"
+    if [ $? -eq 0 ]; then
+      sed -i "s%backend.ai-common@master%@backend.ai-common@${TRAVIS_BRANCH}%" requirements-ci.txt
     fi
   - pip install -U -r requirements-ci.txt
   - |
