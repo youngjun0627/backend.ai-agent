@@ -24,6 +24,7 @@ import snappy
 import zmq, zmq.asyncio
 
 from ai.backend.common import msgpack, redis
+from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
 from ai.backend.common.plugin import install_plugins
@@ -32,6 +33,7 @@ from ai.backend.common.types import (
     # TODO: eliminate use of ContainerId
     ContainerId, KernelId,
     DeviceName, SlotName,
+    AutoPullBehavior, ImageRegistry,
     KernelCreationConfig,
     KernelCreationResult,
     MetricKey, MetricValue,
@@ -97,7 +99,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
     stat_sync_states: MutableMapping[ContainerId, StatSyncState]
     stat_sync_task: asyncio.Task
 
-    def __init__(self, config: Mapping[str, Any]) -> None:
+    def __init__(self, config: Mapping[str, Any], *, skip_initial_scan: bool = False) -> None:
+        self._skip_initial_scan = skip_initial_scan
         self.loop = current_loop()
         self.config = config
         self.agent_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()[:12]
@@ -153,9 +156,10 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             alloc_map = await klass.create_alloc_map()
             self.computers[name] = ComputerContext(klass, devices, alloc_map)
 
-        await self.scan_images(None)
-        self.timer_tasks.append(aiotools.create_timer(self.scan_images, 60.0))
-        await self.scan_running_kernels()
+        if not self._skip_initial_scan:
+            await self.scan_images(None)
+            self.timer_tasks.append(aiotools.create_timer(self.scan_images, 60.0))
+            await self.scan_running_kernels()
 
         self.timer_tasks.append(aiotools.create_timer(self.collect_node_stat, 2.0))
 
@@ -387,7 +391,20 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         Scan currently running kernels and recreate the kernel objects in
         ``self.kernel_registry`` if any missing.
         '''
-        pass
+
+    @abstractmethod
+    async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry) -> None:
+        '''
+        Pull the given image from the given registry.
+        '''
+
+    @abstractmethod
+    async def check_image(self, image_ref: ImageRef, image_id: str, auto_pull: AutoPullBehavior) -> bool:
+        '''
+        Check the availability of the image and return a boolean flag that indicates whether
+        the agent should try pulling the image from a registry.
+        '''
+        return False
 
     @abstractmethod
     async def create_kernel(self, kernel_id: KernelId, config: KernelCreationConfig, *,
@@ -397,9 +414,10 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
 
         Things to do:
         * ``await self.produce_event('kernel_preparing', kernel_id)``
-        * Check availability of kernel image.
-        * ``await self.produce_event('kernel_pulling', kernel_id)``
-        * Pull the kernel image if image is not ready in the agent. (optional; may return error)
+        * Check availability of kernel image using ``await self.check_image(...)``.
+          - If it returns True:
+          - ``await self.produce_event('kernel_pulling', kernel_id)``
+          - Pull the kernel image using ``await self.pull_image(...)``.
         * ``await self.produce_event('kernel_creating', kernel_id)``
         * Create KernelResourceSpec object or read it from kernel's internal configuration cache.
           Use *restarting* argument to detect if the kernel is being created or restarted.

@@ -33,8 +33,11 @@ from aiodocker.exceptions import DockerError
 import aiotools
 
 from ai.backend.common.docker import ImageRef
+from ai.backend.common.exception import ImageNotAvailable
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import (
+    AutoPullBehavior,
+    ImageRegistry,
     KernelCreationConfig,
     KernelCreationResult,
     KernelId,
@@ -91,14 +94,15 @@ class DockerAgent(AbstractAgent):
     agent_sock_task: asyncio.Task
     scan_images_timer: asyncio.Task
 
-    def __init__(self, config) -> None:
-        super().__init__(config)
+    def __init__(self, config, *, skip_initial_scan: bool = False) -> None:
+        super().__init__(config, skip_initial_scan=skip_initial_scan)
 
     async def __ainit__(self) -> None:
         self.docker = Docker()
-        docker_version = await self.docker.version()
-        log.info('running with Docker {0} with API {1}',
-                 docker_version['Version'], docker_version['ApiVersion'])
+        if not self._skip_initial_scan:
+            docker_version = await self.docker.version()
+            log.info('running with Docker {0} with API {1}',
+                     docker_version['Version'], docker_version['ApiVersion'])
         await super().__ainit__()
         self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
         self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
@@ -312,6 +316,41 @@ class DockerAgent(AbstractAgent):
         finally:
             agent_sock.close()
 
+    async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry) -> None:
+        auth_config = None
+        reg_user = registry_conf.get('username')
+        reg_passwd = registry_conf.get('password')
+        if reg_user and reg_passwd:
+            encoded_creds = base64.b64encode(
+                f'{reg_user}:{reg_passwd}'.encode('utf-8')) \
+                .decode('ascii')
+            auth_config = {
+                'auth': encoded_creds,
+            }
+        log.info('pulling image {} from registry', image_ref.canonical)
+        await self.docker.images.pull(
+            image_ref.canonical,
+            auth=auth_config)
+
+    async def check_image(self, image_ref: ImageRef, image_id: str, auto_pull: AutoPullBehavior) -> bool:
+        try:
+            image_info = await self.docker.images.inspect(image_ref.canonical)
+            if auto_pull == AutoPullBehavior.DIGEST:
+                if image_info['Id'] != image_id:
+                    return True
+            log.info('found the local up-to-date image for {}', image_ref.canonical)
+        except DockerError as e:
+            if e.status == 404:
+                if auto_pull == AutoPullBehavior.DIGEST:
+                    return True
+                elif auto_pull == AutoPullBehavior.TAG:
+                    return True
+                elif auto_pull == AutoPullBehavior.NONE:
+                    raise ImageNotAvailable(image_ref)
+            else:
+                raise
+        return False
+
     async def create_kernel(self, kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
                             restarting: bool = False) -> KernelCreationResult:
 
@@ -325,40 +364,18 @@ class DockerAgent(AbstractAgent):
         extra_mount_list = await get_extra_volumes(self.docker, image_ref.short)
         internal_data: Mapping[str, Any] = kernel_config.get('internal_data') or {}
 
-        try:
-            # Find the exact image using a digest reference
-            digest_ref = f"{kernel_config['image']['digest']}"
-            await self.docker.images.inspect(digest_ref)
-            log.info('found the local up-to-date image for {}', image_ref.canonical)
-        except DockerError as e:
-            if e.status == 404:
-                await self.produce_event('kernel_pulling',
-                                         str(kernel_id), image_ref.canonical)
-                auth_config = None
-                dreg_user = kernel_config['image']['registry'].get('username')
-                dreg_passwd = kernel_config['image']['registry'].get('password')
-                if dreg_user and dreg_passwd:
-                    encoded_creds = base64.b64encode(
-                        f'{dreg_user}:{dreg_passwd}'.encode('utf-8')) \
-                        .decode('ascii')
-                    auth_config = {
-                        'auth': encoded_creds,
-                    }
-                log.info('pulling image {} from registry', image_ref.canonical)
-                repo_digest = kernel_config['image'].get('repo_digest')
-                if repo_digest is not None:
-                    await self.docker.images.pull(
-                        f'{image_ref.short}@{repo_digest}',
-                        auth=auth_config)
-                else:
-                    await self.docker.images.pull(
-                        image_ref.canonical,
-                        auth=auth_config)
-            else:
-                raise
+        do_pull = await self.check_image(
+            image_ref,
+            kernel_config['image']['digest'],
+            AutoPullBehavior(kernel_config.get('auto_pull', 'digest')),
+        )
+        if do_pull:
+            await self.produce_event('kernel_pulling',
+                                     str(kernel_id), image_ref.canonical)
+            await self.pull_image(image_ref, kernel_config['image']['registry'])
+
         await self.produce_event('kernel_creating', str(kernel_id))
         image_labels = kernel_config['image']['labels']
-
         version = int(image_labels.get('ai.backend.kernelspec', '1'))
         label_envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
         envs_corecount = label_envs_corecount.split(',') if label_envs_corecount else []

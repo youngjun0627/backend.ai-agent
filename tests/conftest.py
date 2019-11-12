@@ -1,5 +1,7 @@
 import asyncio
+import json
 import secrets
+import subprocess
 
 from ai.backend.common.types import HostPortPair
 
@@ -52,21 +54,22 @@ async def docker():
         await docker.close()
 
 
-@pytest.fixture
-async def redis_container(test_id, backend_type, prepare_images, docker):
+@pytest.fixture(scope='session')
+def redis_container(test_id, backend_type, prepare_images):
     if backend_type == 'docker':
-        container = await docker.containers.create_or_replace(
-            config={
-                'Image': 'redis:5.0.5-alpine',
-                'Privileged': False,
-                'HostConfig': {
-                    'PublishAllPorts': True,
-                },
-            },
-            name=f'{test_id}.redis',
-        )
-        await container.start()
-        host_port = int((await container.port(6379))[0]['HostPort'])
+        subprocess.run([
+            'docker', 'run',
+            '-d',
+            '-P',
+            '--name', f'{test_id}.redis',
+            'redis:5.0.5-alpine',
+        ], capture_output=True)
+        proc = subprocess.run([
+            'docker', 'inspect',
+            f'{test_id}.redis',
+        ], capture_output=True)
+        container_info = json.loads(proc.stdout)
+        host_port = int(container_info[0]['NetworkSettings']['Ports']['6379/tcp'][0]['HostPort'])
     elif backend_type == 'k8s':
         raise NotImplementedError
 
@@ -76,8 +79,14 @@ async def redis_container(test_id, backend_type, prepare_images, docker):
             'password': None,
         }
     finally:
-        await container.kill()
-        await container.delete(force=True)
+        if backend_type == 'docker':
+            subprocess.run([
+                'docker', 'rm',
+                '-f',
+                f'{test_id}.redis',
+            ], capture_output=True)
+        elif backend_type == 'k8s':
+            raise NotImplementedError
 
 
 @pytest.fixture

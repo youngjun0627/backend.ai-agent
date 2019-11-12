@@ -78,6 +78,9 @@ def parse_service_ports(s: str) -> Sequence[ServicePort]:
             if not name:
                 raise ValueError('Service port name must be not empty.')
             protocol = match.group('proto')
+            if protocol == 'pty':
+                # unsupported, skip
+                continue
             if protocol not in ('tcp', 'http'):
                 raise ValueError(f'Unsupported service port protocol: {protocol}')
             ports = tuple(map(int, match.group('ports').strip('[]').split(',')))
