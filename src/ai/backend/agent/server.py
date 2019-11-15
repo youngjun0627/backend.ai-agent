@@ -350,6 +350,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
 
 
 @aiotools.server
+async def server_main_logwrapper(loop, pidx, _args):
+    setproctitle(f"backend.ai: agent worker-{pidx}")
+    log_port = _args[1]
+    logger = Logger(_args[0]['logging'], is_master=False, log_port=log_port)
+    with logger:
+        async with server_main(loop, pidx, _args):
+            yield
+
+
+@aiotools.server
 async def server_main(loop, pidx, _args):
     config = _args[0]
 
@@ -433,16 +443,7 @@ async def server_main(loop, pidx, _args):
     config['plugins'] = await etcd.get_prefix_dict('config/plugins')
 
     # Start RPC server.
-    try:
-        agent = await AgentRPCServer.new(etcd, config)
-    except InitializationError as e:
-        log.error('Agent initialization failed: {}', e)
-        os.kill(0, signal.SIGINT)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        log.exception('unexpected error during AgentRPCServer.init()!')
-        os.kill(0, signal.SIGINT)
+    agent = await AgentRPCServer.new(etcd, config)
 
     # Run!
     try:
@@ -547,8 +548,9 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
             cfg['debug']['coredump']['core_path'] = Path(core_pattern).parent
 
         cfg['agent']['pid-file'].write_text(str(os.getpid()))
+        log_port = utils.find_free_port()
         try:
-            logger = Logger(cfg['logging'])
+            logger = Logger(cfg['logging'], is_master=True, log_port=log_port)
             with logger:
                 ns = cfg['etcd']['namespace']
                 setproctitle(f"backend.ai: agent {ns}")
@@ -563,8 +565,9 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
                     import uvloop
                     uvloop.install()
                     log.info('Using uvloop as the event loop backend')
-                aiotools.start_server(server_main, num_workers=1,
-                                      use_threading=True, args=(cfg, ))
+                aiotools.start_server(server_main_logwrapper,
+                                      num_workers=1,
+                                      use_threading=True, args=(cfg, log_port))
                 log.info('exit.')
         finally:
             if cfg['agent']['pid-file'].is_file():
