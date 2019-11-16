@@ -827,7 +827,8 @@ class DockerAgent(AbstractAgent):
             self.stat_sync_states[cid] = stat_sync_state
             async with spawn_stat_synchronizer(self.config['_src'],
                                                self.stat_sync_sockpath,
-                                               self.stat_ctx.mode, cid) as proc:
+                                               self.stat_ctx.mode, cid,
+                                               self.stat_ctx.log_endpoint) as proc:
                 stat_sync_state.sync_proc = proc
                 await container.start()
 

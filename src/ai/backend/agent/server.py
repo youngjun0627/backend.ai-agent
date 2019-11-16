@@ -38,7 +38,6 @@ from .config import (
     registry_local_config_iv,
     registry_ecr_config_iv,
 )
-from .exception import InitializationError
 from .utils import current_loop, get_subnet_ip
 
 if TYPE_CHECKING:
@@ -352,8 +351,8 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
 @aiotools.server
 async def server_main_logwrapper(loop, pidx, _args):
     setproctitle(f"backend.ai: agent worker-{pidx}")
-    log_port = _args[1]
-    logger = Logger(_args[0]['logging'], is_master=False, log_port=log_port)
+    log_endpoint = _args[1]
+    logger = Logger(_args[0]['logging'], is_master=False, log_endpoint=log_endpoint)
     with logger:
         async with server_main(loop, pidx, _args):
             yield
@@ -548,9 +547,10 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
             cfg['debug']['coredump']['core_path'] = Path(core_pattern).parent
 
         cfg['agent']['pid-file'].write_text(str(os.getpid()))
-        log_port = utils.find_free_port()
+        log_endpoint = f'tcp://127.0.0.1:{utils.find_free_port()}'
+        cfg['logging']['endpoint'] = log_endpoint
         try:
-            logger = Logger(cfg['logging'], is_master=True, log_port=log_port)
+            logger = Logger(cfg['logging'], is_master=True, log_endpoint=log_endpoint)
             with logger:
                 ns = cfg['etcd']['namespace']
                 setproctitle(f"backend.ai: agent {ns}")
@@ -567,7 +567,7 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
                     log.info('Using uvloop as the event loop backend')
                 aiotools.start_server(server_main_logwrapper,
                                       num_workers=1,
-                                      use_threading=True, args=(cfg, log_port))
+                                      use_threading=True, args=(cfg, log_endpoint))
                 log.info('exit.')
         finally:
             if cfg['agent']['pid-file'].is_file():

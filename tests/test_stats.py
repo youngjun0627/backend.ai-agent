@@ -8,6 +8,7 @@ import zmq
 import zmq.asyncio
 
 from ai.backend.common import msgpack
+from ai.backend.common.config import find_config_file
 from ai.backend.agent.agent import ipc_base_path
 from ai.backend.agent import stats
 
@@ -87,11 +88,13 @@ async def test_synchronizer(event_loop,
 
     # Initialize the agent-side.
     stat_sync_sock, stat_sync_sockpath = stats_server
-    config_path = 'agent.toml'
+    config_path = find_config_file('agent')
+    log_endpoint = ''
 
     proc = None
     async with stats.spawn_stat_synchronizer(config_path, stat_sync_sockpath,
                                              stat_mode, cid,
+                                             log_endpoint,
                                              exec_opts=pipe_opts) as p:
         proc = p
         await container.start()
@@ -137,11 +140,13 @@ async def test_synchronizer_immediate_death(event_loop,
 
     # Initialize the agent-side.
     stat_sync_sock, stat_sync_sockpath = stats_server
-    config_path = 'agent.toml'
+    config_path = find_config_file('agent')
+    log_endpoint = ''
 
     proc = None
     async with stats.spawn_stat_synchronizer(config_path, stat_sync_sockpath,
                                              stat_mode, cid,
+                                             log_endpoint,
                                              exec_opts=pipe_opts) as p:
         proc = p
         await container.start()

@@ -109,7 +109,9 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.images = {}  # repoTag -> digest
         self.restarting_kernels = {}
         self.blocking_cleans = {}
-        self.stat_ctx = StatContext(self, mode=StatModes(config['container']['stats-type']))
+        self.stat_ctx = StatContext(
+            self, mode=StatModes(config['container']['stats-type']),
+            log_endpoint=config['logging'].get('endpoint', ''))
         self.timer_tasks = []
         self.orphan_tasks = set()
         self.port_pool = set(range(
@@ -174,8 +176,9 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             stat_sync_state = StatSyncState(kernel_id)
             self.stat_sync_states[cid] = stat_sync_state
             async with spawn_stat_synchronizer(self.config['_src'],
-                                                self.stat_sync_sockpath,
-                                                self.stat_ctx.mode, cid) as proc:
+                                               self.stat_sync_sockpath,
+                                               self.stat_ctx.mode, cid,
+                                               self.stat_ctx.log_endpoint) as proc:
                 stat_sync_state.sync_proc = proc
 
         # Prepare heartbeats.
