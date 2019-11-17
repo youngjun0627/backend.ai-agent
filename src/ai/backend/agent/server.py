@@ -547,7 +547,9 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
             cfg['debug']['coredump']['core_path'] = Path(core_pattern).parent
 
         cfg['agent']['pid-file'].write_text(str(os.getpid()))
-        log_endpoint = f'tcp://127.0.0.1:{utils.find_free_port()}'
+        log_sockpath = Path(f'/tmp/backend.ai/ipc/agent-logger-{os.getpid()}.sock')
+        log_sockpath.parent.mkdir(parents=True, exist_ok=True)
+        log_endpoint = f'ipc://{log_sockpath}'
         cfg['logging']['endpoint'] = log_endpoint
         try:
             logger = Logger(cfg['logging'], is_master=True, log_endpoint=log_endpoint)
@@ -573,6 +575,7 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
             if cfg['agent']['pid-file'].is_file():
                 # check is_file() to prevent deleting /dev/null!
                 cfg['agent']['pid-file'].unlink()
+            os.unlink(log_sockpath)
     else:
         # Click is going to invoke a subcommand.
         pass
