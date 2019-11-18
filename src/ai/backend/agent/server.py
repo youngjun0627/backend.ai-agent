@@ -572,7 +572,8 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
                     log.info('Using uvloop as the event loop backend')
                 aiotools.start_server(server_main_logwrapper,
                                       num_workers=1,
-                                      use_threading=True, args=(cfg, log_endpoint))
+                                      use_threading=False,
+                                      args=(cfg, log_endpoint))
                 log.info('exit.')
         finally:
             if cfg['agent']['pid-file'].is_file():
