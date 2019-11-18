@@ -2,6 +2,7 @@ import asyncio
 import functools
 from ipaddress import ip_network, _BaseAddress as BaseIPAddress
 import logging, logging.config
+import multiprocessing
 import os, os.path
 from pathlib import Path
 from pprint import pformat, pprint
@@ -528,6 +529,8 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
         print('Cannot use cgroup statistics collection mode unless the agent runs as root.',
               file=sys.stderr)
         raise click.Abort()
+
+    multiprocessing.set_start_method('spawn')
 
     if cli_ctx.invoked_subcommand is None:
 
