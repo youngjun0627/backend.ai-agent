@@ -396,6 +396,9 @@ class DockerAgent(AbstractAgent):
             # resource_slots is already sanitized by the manager.
             slots = ResourceSlot.from_json(kernel_config['resource_slots'])
             vfolders = kernel_config['mounts']
+            vfolder_mount_map: Mapping[str, str] = {}
+            if 'mount_map' in kernel_config.keys():
+                vfolder_mount_map = kernel_config['mount_map']
             resource_spec = KernelResourceSpec(
                 container_id='',
                 allocations={},
@@ -490,7 +493,15 @@ class DockerAgent(AbstractAgent):
                         continue
                 host_path = (self.config['vfolder']['mount'] / folder_host /
                              self.config['vfolder']['fsprefix'] / folder_id)
-                kernel_path = Path(f'/home/work/{folder_name}')
+                if folder_name in vfolder_mount_map.keys():
+                    kernel_path_raw = vfolder_mount_map[folder_name]
+                    if not kernel_path_raw.startswith('/home/work/'):
+                        raise ValueError(
+                            f'Error while mounting {folder_name} to {kernel_path_raw}: '
+                            'all vfolder mounts should be under /home/work')
+                    kernel_path = Path(kernel_path_raw)
+                else:
+                    kernel_path = Path(f'/home/work/{folder_name}')
                 folder_perm = MountPermission(folder_perm)
                 if folder_perm == MountPermission.RW_DELETE:
                     # TODO: enforce readable/writable but not deletable
