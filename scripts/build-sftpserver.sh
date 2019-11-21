@@ -68,6 +68,7 @@ export LIBS="-ldl"
 sed -i "s/-lcrypto/-l:libcrypto.a/" ./configure
 sed -i "s/-lz/-l:libz.a/" ./configure
 ./configure --prefix=/usr/local
+sed -i 's/\(SFTP_MAX_MSG_LENGTH\)[ \t]+\\([0-9 \*]*\\)/\1 327800/' sftp-common.h
 make sftp-server scp
 cp sftp-server ../sftp-server.$X_DISTRO.$X_ARCH.bin
 cp scp ../scp.$X_DISTRO.$X_ARCH.bin

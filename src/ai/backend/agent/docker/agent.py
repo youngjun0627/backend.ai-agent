@@ -351,6 +351,10 @@ class DockerAgent(AbstractAgent):
                 raise
         return False
 
+    async def get_service_ports_from_label(self, image_ref: ImageRef) -> str:
+        image_info = await self.docker.images.inspect(image_ref.canonical)
+        return image_info['Config']['Labels']['ai.backend.service-ports']
+
     async def create_kernel(self, kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
                             restarting: bool = False) -> KernelCreationResult:
 
@@ -715,29 +719,32 @@ class DockerAgent(AbstractAgent):
         #   - Refactor "/home/work" and "/opt/backend.ai" prefixes to be specified
         #     by the plugin implementation.
 
-        exposed_ports = [2000, 2001, 2200, 7681]
-        service_ports: List[ServicePort] = [
-            {
-                'name': 'sshd',
-                'protocol': ServicePortProtocols('tcp'),
-                'container_ports': (2200,),
-                'host_ports': (None,),
-            },
-            {
-                'name': 'ttyd',
-                'protocol': ServicePortProtocols('http'),
-                'container_ports': (7681,),
-                'host_ports': (None,),
-            },
-        ]
+        exposed_ports = [2000, 2001]
+        service_ports = []
+        port_map = {}
 
+        for sport in parse_service_ports(await self.get_service_ports_from_label(image_ref)):
+            port_map[sport['name']] = sport
         for sport in parse_service_ports(image_labels.get('ai.backend.service-ports', '')):
+            port_map[sport['name']] = sport
+        port_map['sshd'] = {
+            'name': 'sshd',
+            'protocol': ServicePortProtocols('tcp'),
+            'container_ports': (2200,),
+            'host_ports': (None,),
+        }
+
+        port_map['ttyd'] = {
+            'name': 'ttyd',
+            'protocol': ServicePortProtocols('http'),
+            'container_ports': (7681,),
+            'host_ports': (None,),
+        }
+        for sport in port_map.values():
             service_ports.append(sport)
             for cport in sport['container_ports']:
                 exposed_ports.append(cport)
-        if 'git' in image_ref.name:  # legacy (TODO: remove it!)
-            exposed_ports.append(2002)
-            exposed_ports.append(2003)
+
         log.debug('exposed ports: {!r}', exposed_ports)
 
         kernel_host = self.config['container']['kernel-host']
@@ -908,6 +915,16 @@ class DockerAgent(AbstractAgent):
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
         for service_port in service_ports:
             log.debug('service port: {!r}', service_port)
+
+        live_services = await kernel_obj.get_service_apps()
+        if live_services['status'] != 'failed':
+            for live_service in live_services['data']:
+                for service_port in service_ports:
+                    if live_service['name'] == service_port['name']:
+                        service_port.update(live_service)
+                        break
+
+        # Finally we are done.
         await self.produce_event('kernel_started', str(kernel_id))
 
         # Execute the startup command if the session type is batch.

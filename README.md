@@ -45,6 +45,7 @@ user soft nproc 65536
 **sysctl**
 ```
 fs.file-max=2048000
+fs.inotify.max_user_watches=524288
 net.core.somaxconn=1024
 net.ipv4.tcp_max_syn_backlog=1024
 net.ipv4.tcp_slow_start_after_idle=0

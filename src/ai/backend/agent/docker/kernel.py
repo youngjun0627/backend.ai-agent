@@ -97,6 +97,10 @@ class DockerKernel(AbstractKernel):
         })
         return result
 
+    async def get_service_apps(self):
+        result = await self.runner.feed_service_apps()
+        return result
+
     async def accept_file(self, filename: str, filedata: bytes):
         loop = current_loop()
         work_dir = self.agent_config['container']['scratch-root'] / str(self.kernel_id) / 'work'
