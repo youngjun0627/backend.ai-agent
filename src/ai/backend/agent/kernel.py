@@ -442,7 +442,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             result['media'] = media_items
             result['html'] = html_items
 
-        elif api_ver in (2, 3):
+        elif api_ver >= 2:
 
             console_items = []
             last_stdout = io.StringIO()
