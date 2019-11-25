@@ -143,7 +143,7 @@ def read_sysfs(path: Union[str, Path], type_: Type[Any], default: Any = None) ->
     try:
         raw_str = Path(path).read_text().strip()
         if type_ is bool:
-            return t.StrBool().check(raw_str)
+            return t.ToBool().check(raw_str)
         else:
             return type_(raw_str)
     except IOError:

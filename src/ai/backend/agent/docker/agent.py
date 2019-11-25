@@ -213,7 +213,7 @@ class DockerAgent(AbstractAgent):
                         'stdin_port': port_map.get(2002, 0),
                         'stdout_port': port_map.get(2003, 0),
                         'host_ports': [*port_map.values()],
-                        'block_service_ports': t.StrBool().check(block_service_ports),
+                        'block_service_ports': t.ToBool().check(block_service_ports),
                     })
             elif status in {'exited', 'dead', 'removing'}:
                 log.info('detected terminated kernel: {0}', kernel_id)
