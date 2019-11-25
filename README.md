@@ -270,3 +270,10 @@ should be able to access the public Internet (maybe via some corporate firewalls
 | redis:6379               | Redis API access |
 | docker-registry:{80,443} | HTTP watcher API |
 | (Other hosts)            | Depending on user program requirements |
+
+
+LICENSES
+--------
+
+[GNU Lesser General Public License](https://github.com/lablup/backend.ai-agent/blob/master/LICENSE)
+[Dependencies](https://github.com/lablup/backend.ai-manager/blob/agent/DEPENDENCIES.md)
