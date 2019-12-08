@@ -34,7 +34,7 @@ async def upload_output_files_to_s3(initial_file_stats,
         return [
             {
                 'name': str(relpath(fname, base_dir)),
-                'url': f'#dummy-upload',
+                'url': '#dummy-upload',
             } for fname in diff_files
         ]
     if diff_files:

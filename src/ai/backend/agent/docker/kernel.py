@@ -270,7 +270,7 @@ async def prepare_krunner_env(distro: str):
                 f'./krunner-env.{distro}.{arch}.tar.xz')).resolve()
             extractor_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
-                f'../runner/krunner-extractor.sh')).resolve()
+                '../runner/krunner-extractor.sh')).resolve()
             proc = await asyncio.create_subprocess_exec(*[
                 'docker', 'run', '--rm', '-i',
                 '-v', f'{archive_path}:/root/archive.tar.xz',

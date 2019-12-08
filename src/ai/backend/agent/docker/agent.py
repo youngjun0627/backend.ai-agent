@@ -481,11 +481,22 @@ class DockerAgent(AbstractAgent):
 
             # Realize vfolder mounts.
             for vfolder in vfolders:
-                if len(vfolder) == 4:
+                if len(vfolder) == 5:
+                    folder_name, folder_host, folder_id, folder_perm, host_path_raw = vfolder
+                    if host_path_raw:
+                        host_path = Path(host_path_raw)
+                    else:
+                        host_path = (self.config['vfolder']['mount'] / folder_host /
+                                     self.config['vfolder']['fsprefix'] / folder_id)
+                elif len(vfolder) == 4:  # for backward compatibility
                     folder_name, folder_host, folder_id, folder_perm = vfolder
+                    host_path = (self.config['vfolder']['mount'] / folder_host /
+                                 self.config['vfolder']['fsprefix'] / folder_id)
                 elif len(vfolder) == 3:  # legacy managers
                     folder_name, folder_host, folder_id = vfolder
                     folder_perm = 'rw'
+                    host_path = (self.config['vfolder']['mount'] / folder_host /
+                                 self.config['vfolder']['fsprefix'] / folder_id)
                 else:
                     raise RuntimeError(
                         'Unexpected number of vfolder mount detail tuple size')
@@ -495,15 +506,16 @@ class DockerAgent(AbstractAgent):
                     # in image importer kernels.
                     if folder_name != '.logs':
                         continue
-                host_path = (self.config['vfolder']['mount'] / folder_host /
-                             self.config['vfolder']['fsprefix'] / folder_id)
-                if folder_name in vfolder_mount_map.keys():
-                    kernel_path_raw = vfolder_mount_map[folder_name]
-                    if not kernel_path_raw.startswith('/home/work/'):
+                # TODO: Remove `type: ignore` when mypy supports type inference for walrus operator
+                # Check https://github.com/python/mypy/issues/7316
+                # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
+                # Check https://gitlab.com/pycqa/flake8/issues/599
+                if kernel_path_raw := vfolder_mount_map.get(folder_name):  # noqa
+                    if not kernel_path_raw.startswith('/home/work/'):  # type: ignore
                         raise ValueError(
                             f'Error while mounting {folder_name} to {kernel_path_raw}: '
                             'all vfolder mounts should be under /home/work')
-                    kernel_path = Path(kernel_path_raw)
+                    kernel_path = Path(kernel_path_raw)  # type: ignore
                 else:
                     kernel_path = Path(f'/home/work/{folder_name}')
                 folder_perm = MountPermission(folder_perm)
