@@ -558,6 +558,11 @@ class DockerAgent(AbstractAgent):
             'ai.backend.agent',
             f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
 
+        bashrc_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/.bashrc'))
+        vimrc_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/.vimrc'))
+
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
         _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
@@ -592,6 +597,8 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, font_path.resolve(), '/home/work/.jupyter/custom/roboto.ttf')
         _mount(MountTypes.BIND, font_italic_path.resolve(),
                                 '/home/work/.jupyter/custom/roboto-italic.ttf')
+        _mount(MountTypes.BIND, bashrc_path.resolve(), '/home/work/.bashrc')
+        _mount(MountTypes.BIND, vimrc_path.resolve(), '/home/work/.vimrc')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
         if self.config['debug']['coredump']['enabled']:
             _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
