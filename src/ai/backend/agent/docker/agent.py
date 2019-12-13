@@ -636,6 +636,22 @@ class DockerAgent(AbstractAgent):
                     _mount(MountTypes.BIND, hook_path, container_hook_path)
                     environ['LD_PRELOAD'] += ':' + container_hook_path
 
+        # Create SSH keypair only if ssh_keypair internal_data exists and
+        # /home/work/.ssh folder is not mounted.
+        if internal_data.get('ssh_keypair'):
+            for m in mounts:
+                container_path = str(m).split(':')[1]
+                if container_path == '/home/work/.ssh':
+                    break
+            else:
+                pubkey = internal_data['ssh_keypair']['public_key'].encode('ascii')
+                privkey = internal_data['ssh_keypair']['private_key'].encode('ascii')
+                (work_dir / '.ssh').mkdir(parents=True, exist_ok=True)
+                (work_dir / '.ssh' / 'authorized_keys').write_bytes(pubkey)
+                (work_dir / '.ssh' / 'authorized_keys').chmod(0o600)
+                (work_dir / 'id_container').write_bytes(privkey)
+                (work_dir / 'id_container').chmod(0o600)
+
         # PHASE 3: Store the resource spec.
 
         if restarting:
