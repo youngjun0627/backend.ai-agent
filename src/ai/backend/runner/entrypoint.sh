@@ -20,6 +20,13 @@ if [ $USER_ID -eq 0 ]; then
   if [ -x "/opt/container/bootstrap.sh" ]; then
     /opt/container/bootstrap.sh
   fi
+
+  # Invoke user-specific bootstrap hook.
+  if [ -f "/home/work/bootstrap.sh" ]; then
+    chmod +x /home/work/bootstrap.sh
+    /home/work/bootstrap.sh
+  fi
+
   echo "Executing the main program..."
   exec "$@"
 
@@ -69,6 +76,12 @@ else
 
   # Correct the ownership of agent socket.
   chown $USER_ID:$GROUP_ID /opt/kernel/agent.sock
+
+  # Invoke user-specific bootstrap hook.
+  if [ -f "/home/work/bootstrap.sh" ]; then
+    chmod +x /home/work/bootstrap.sh
+    /opt/kernel/su-exec $USER_ID:$GROUP_ID /home/work/bootstrap.sh
+  fi
 
   echo "Executing the main program..."
   exec /opt/kernel/su-exec $USER_ID:$GROUP_ID "$@"
