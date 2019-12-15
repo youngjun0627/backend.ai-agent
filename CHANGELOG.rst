@@ -6,6 +6,15 @@ Changes
 
 * MAINTENANCE: Now it runs on Python 3.8 or higher.
 
+19.09.8 (2019-12-16)
+--------------------
+
+* NEW: Provide some minimal basic dotfiles in kernel containers by default (.bashrc and .vimrc) (#160)
+
+  - Make the "ls" command always colorized using an alias.
+
+* NEW: Add support for keypair-specific SSH private key setup (#158)
+
 19.09.7 (2019-11-11)
 --------------------
 

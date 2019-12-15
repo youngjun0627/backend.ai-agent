@@ -603,6 +603,11 @@ class DockerAgent(AbstractAgent):
             'ai.backend.agent',
             f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
 
+        bashrc_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/.bashrc'))
+        vimrc_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/.vimrc'))
+
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
         _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
@@ -637,6 +642,8 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, font_path.resolve(), '/home/work/.jupyter/custom/roboto.ttf')
         _mount(MountTypes.BIND, font_italic_path.resolve(),
                                 '/home/work/.jupyter/custom/roboto-italic.ttf')
+        _mount(MountTypes.BIND, bashrc_path.resolve(), '/home/work/.bashrc')
+        _mount(MountTypes.BIND, vimrc_path.resolve(), '/home/work/.vimrc')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
         if self.config['debug']['coredump']['enabled']:
             _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
@@ -680,6 +687,22 @@ class DockerAgent(AbstractAgent):
                     )
                     _mount(MountTypes.BIND, hook_path, container_hook_path)
                     environ['LD_PRELOAD'] += ':' + container_hook_path
+
+        # Create SSH keypair only if ssh_keypair internal_data exists and
+        # /home/work/.ssh folder is not mounted.
+        if internal_data.get('ssh_keypair'):
+            for m in mounts:
+                container_path = str(m).split(':')[1]
+                if container_path == '/home/work/.ssh':
+                    break
+            else:
+                pubkey = internal_data['ssh_keypair']['public_key'].encode('ascii')
+                privkey = internal_data['ssh_keypair']['private_key'].encode('ascii')
+                (work_dir / '.ssh').mkdir(parents=True, exist_ok=True)
+                (work_dir / '.ssh' / 'authorized_keys').write_bytes(pubkey)
+                (work_dir / '.ssh' / 'authorized_keys').chmod(0o600)
+                (work_dir / 'id_container').write_bytes(privkey)
+                (work_dir / 'id_container').chmod(0o600)
 
         # PHASE 3: Store the resource spec.
 
