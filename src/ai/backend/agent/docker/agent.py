@@ -32,7 +32,11 @@ from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
 import aiotools
 
-from ai.backend.common.docker import ImageRef
+from ai.backend.common.docker import (
+    ImageRef,
+    MIN_KERNELSPEC,
+    MAX_KERNELSPEC,
+)
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import (
     KernelCreationConfig,
@@ -148,6 +152,9 @@ class DockerAgent(AbstractAgent):
                 await container.show()
                 image = container['Config']['Image']
                 labels = container['Config']['Labels']
+                kernelspec = int(labels.get('ai.backend.kernelspec', '1'))
+                if not (MIN_KERNELSPEC <= kernelspec <= MAX_KERNELSPEC):
+                    continue
                 ports = container['NetworkSettings']['Ports']
                 port_map = {}
                 for private_port, host_ports in ports.items():
@@ -196,7 +203,7 @@ class DockerAgent(AbstractAgent):
                 self.kernel_registry[kernel_id] = await DockerKernel.new(
                     kernel_id,
                     ImageRef(image),
-                    int(labels.get('ai.backend.kernelspec', '1')),
+                    kernelspec,
                     agent_config=self.config,
                     resource_spec=resource_spec,
                     service_ports=service_ports,
@@ -231,7 +238,10 @@ class DockerAgent(AbstractAgent):
                     continue
                 img_detail = await self.docker.images.inspect(repo_tag)
                 labels = img_detail['Config']['Labels']
-                if labels and 'ai.backend.kernelspec' in labels:
+                if labels is None or 'ai.backend.kernelspec' not in labels:
+                    continue
+                kernelspec = int(labels['ai.backend.kernelspec'])
+                if MIN_KERNELSPEC <= kernelspec <= MAX_KERNELSPEC:
                     updated_images[repo_tag] = img_detail['Id']
         for added_image in (updated_images.keys() - self.images.keys()):
             log.debug('found kernel image: {0}', added_image)
