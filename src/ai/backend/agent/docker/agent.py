@@ -370,6 +370,7 @@ class DockerAgent(AbstractAgent):
 
         await self.produce_event('kernel_preparing', str(kernel_id))
 
+        log.debug('Kernel Creation Config: {0}', json.dumps(kernel_config))
         # Read image-specific labels and settings
         image_ref = ImageRef(
             kernel_config['image']['canonical'],
@@ -614,9 +615,9 @@ class DockerAgent(AbstractAgent):
             f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
 
         bashrc_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/.bashrc'))
+            'ai.backend.agent', '../runner/.bashrc'))
         vimrc_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/.vimrc'))
+            'ai.backend.agent', '../runner/.vimrc'))
 
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
@@ -733,6 +734,14 @@ class DockerAgent(AbstractAgent):
                 if os.geteuid() == 0:  # only possible when I am root.
                     os.chown(work_dir, uid, gid)
                     os.chown(work_dir / '.jupyter', uid, gid)
+            # Create bootstrap.sh into workdir if needed
+            # TODO: Remove `type: ignore` when mypy supports type inference for walrus operator
+            # Check https://github.com/python/mypy/issues/7316
+            # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
+            # Check https://gitlab.com/pycqa/flake8/issues/599
+            if bootstrap := kernel_config['bootstrap_script']:  # noqa
+                with open(work_dir / 'bootstrap.sh', 'wb') as fw:
+                    fw.write(base64.b64decode(bootstrap))  # type: ignore
             os.makedirs(config_dir, exist_ok=True)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
