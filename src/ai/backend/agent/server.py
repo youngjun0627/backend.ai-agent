@@ -440,7 +440,7 @@ async def server_main(loop, pidx, _args):
              rpc_addr.host)
 
     # Pre-load compute plugin configurations.
-    config['plugins'] = await etcd.get_prefix_dict('config/plugins')
+    config['plugins'] = await etcd.get_prefix_dict('config/accelerator/plugins')
 
     # Start RPC server.
     agent = await AgentRPCServer.new(etcd, config)
