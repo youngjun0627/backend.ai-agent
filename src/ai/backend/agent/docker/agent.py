@@ -739,7 +739,7 @@ class DockerAgent(AbstractAgent):
             # Check https://github.com/python/mypy/issues/7316
             # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
             # Check https://gitlab.com/pycqa/flake8/issues/599
-            if bootstrap := kernel_config['bootstrap_script']:  # noqa
+            if bootstrap := kernel_config.get('bootstrap_script'):  # noqa
                 with open(work_dir / 'bootstrap.sh', 'wb') as fw:
                     fw.write(base64.b64decode(bootstrap))  # type: ignore
             os.makedirs(config_dir, exist_ok=True)
