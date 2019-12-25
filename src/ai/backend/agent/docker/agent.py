@@ -653,22 +653,6 @@ class DockerAgent(AbstractAgent):
                     _mount(MountTypes.BIND, hook_path, container_hook_path)
                     environ['LD_PRELOAD'] += ':' + container_hook_path
 
-        # Create SSH keypair only if ssh_keypair internal_data exists and
-        # /home/work/.ssh folder is not mounted.
-        if internal_data.get('ssh_keypair'):
-            for m in mounts:
-                container_path = str(m).split(':')[1]
-                if container_path == '/home/work/.ssh':
-                    break
-            else:
-                pubkey = internal_data['ssh_keypair']['public_key'].encode('ascii')
-                privkey = internal_data['ssh_keypair']['private_key'].encode('ascii')
-                (work_dir / '.ssh').mkdir(parents=True, exist_ok=True)
-                (work_dir / '.ssh' / 'authorized_keys').write_bytes(pubkey)
-                (work_dir / '.ssh' / 'authorized_keys').chmod(0o600)
-                (work_dir / 'id_container').write_bytes(privkey)
-                (work_dir / 'id_container').chmod(0o600)
-
         # PHASE 3: Store the resource spec.
 
         if restarting:
@@ -688,6 +672,9 @@ class DockerAgent(AbstractAgent):
                 if os.geteuid() == 0:  # only possible when I am root.
                     os.chown(work_dir, uid, gid)
                     os.chown(work_dir / '.jupyter', uid, gid)
+                    os.chown(work_dir / '.jupyter' / 'custom', uid, gid)
+                    os.chown(bashrc_path, uid, gid)
+                    os.chown(vimrc_path, uid, gid)
             os.makedirs(config_dir, exist_ok=True)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
@@ -709,6 +696,29 @@ class DockerAgent(AbstractAgent):
             docker_creds = internal_data.get('docker_credentials')
             if docker_creds:
                 (config_dir / 'docker-creds.json').write_text(json.dumps(docker_creds))
+
+        # Create SSH keypair only if ssh_keypair internal_data exists and
+        # /home/work/.ssh folder is not mounted.
+        if internal_data.get('ssh_keypair'):
+            for m in mounts:
+                container_path = str(m).split(':')[1]
+                if container_path == '/home/work/.ssh':
+                    break
+            else:
+                pubkey = internal_data['ssh_keypair']['public_key'].encode('ascii')
+                privkey = internal_data['ssh_keypair']['private_key'].encode('ascii')
+                os.makedirs(work_dir / '.ssh', exist_ok=True)
+                (work_dir / '.ssh' / 'authorized_keys').write_bytes(pubkey)
+                (work_dir / '.ssh' / 'authorized_keys').chmod(0o600)
+                (work_dir / 'id_container').write_bytes(privkey)
+                (work_dir / 'id_container').chmod(0o600)
+                if KernelFeatures.UID_MATCH in kernel_features:
+                    uid = self.config['container']['kernel-uid']
+                    gid = self.config['container']['kernel-gid']
+                    if os.geteuid() == 0:
+                        os.chown(work_dir / '.ssh', uid, gid)
+                        os.chown(work_dir / '.ssh' / 'authorized_keys', uid, gid)
+                        os.chown(work_dir / 'id_container', uid, gid)
 
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
