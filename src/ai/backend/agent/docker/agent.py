@@ -54,10 +54,11 @@ from ai.backend.common.types import (
     ServicePort,
     SessionTypes,
     ServicePortProtocols,
+    current_resource_slots,
 )
 from .kernel import DockerKernel
 from .resources import detect_resources
-from ..exception import InsufficientResource
+from ..exception import UnsupportedResource, InsufficientResource
 from ..fs import create_scratch_filesystem, destroy_scratch_filesystem
 from ..kernel import match_krunner_volume, KernelFeatures
 from ..resources import (
@@ -71,6 +72,7 @@ from ..agent import (
 from ..proxy import proxy_connection, DomainSocketProxy
 from ..resources import (
     AbstractComputePlugin,
+    known_slot_types,
 )
 from ..server import (
     get_extra_volumes,
@@ -408,8 +410,15 @@ class DockerAgent(AbstractAgent):
                 resource_spec = KernelResourceSpec.read_from_file(f)
             resource_opts = None
         else:
-            # resource_slots is already sanitized by the manager.
             slots = ResourceSlot.from_json(kernel_config['resource_slots'])
+            # accept unknown slot type with zero values
+            # but reject if they have non-zero values.
+            for st, sv in slots.items():
+                if st not in known_slot_types and sv != Decimal(0):
+                    raise UnsupportedResource(st)
+            # sanitize the slots
+            current_resource_slots.set(known_slot_types)
+            slots = slots.normalize_slots(ignore_unknown=True)
             vfolders = kernel_config['mounts']
             vfolder_mount_map: Mapping[str, str] = {}
             if 'mount_map' in kernel_config.keys():
@@ -521,7 +530,7 @@ class DockerAgent(AbstractAgent):
                 # Check https://github.com/python/mypy/issues/7316
                 # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
                 # Check https://gitlab.com/pycqa/flake8/issues/599
-                if kernel_path_raw := vfolder_mount_map.get(folder_name):  # noqa
+                if kernel_path_raw := vfolder_mount_map.get(folder_name):
                     if not kernel_path_raw.startswith('/home/work/'):  # type: ignore
                         raise ValueError(
                             f'Error while mounting {folder_name} to {kernel_path_raw}: '
@@ -739,7 +748,7 @@ class DockerAgent(AbstractAgent):
             # Check https://github.com/python/mypy/issues/7316
             # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
             # Check https://gitlab.com/pycqa/flake8/issues/599
-            if bootstrap := kernel_config.get('bootstrap_script'):  # noqa
+            if bootstrap := kernel_config.get('bootstrap_script'):
                 with open(work_dir / 'bootstrap.sh', 'wb') as fw:
                     fw.write(base64.b64decode(bootstrap))  # type: ignore
             os.makedirs(config_dir, exist_ok=True)

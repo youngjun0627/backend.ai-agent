@@ -83,7 +83,7 @@ class KernelResourceSpec(metaclass=ABCMeta):
                                      f'slot_name ({slot_name})')
                 pieces = []
                 for dev_id, alloc in per_device_alloc.items():
-                    if known_slot_types[slot_name] == 'bytes':
+                    if known_slot_types.get(slot_name, 'count') == 'bytes':
                         pieces.append(f'{dev_id}:{BinarySize(alloc):s}')
                     else:
                         pieces.append(f'{dev_id}:{alloc}')
@@ -118,7 +118,7 @@ class KernelResourceSpec(metaclass=ABCMeta):
                         continue
                     dev_id = DeviceId(raw_dev_id)
                     try:
-                        if known_slot_types[slot_name] == 'bytes':
+                        if known_slot_types.get(slot_name, 'count') == 'bytes':
                             alloc = Decimal(BinarySize.from_str(raw_alloc))
                         else:
                             alloc = Decimal(raw_alloc)
@@ -147,14 +147,14 @@ class KernelResourceSpec(metaclass=ABCMeta):
     def to_json_serializable_dict(self) -> Mapping[str, Any]:
         o = attr.asdict(self)
         for slot_name, alloc in o['slots'].items():
-            if known_slot_types[slot_name] == 'bytes':
+            if known_slot_types.get(slot_name, 'count') == 'bytes':
                 o['slots'] = f'{BinarySize(alloc):s}'
             else:
                 o['slots'] = str(alloc)
         for dev_name, dev_alloc in o['allocations'].items():
             for slot_name, per_device_alloc in dev_alloc.items():
                 for dev_id, alloc in per_device_alloc.items():
-                    if known_slot_types[slot_name] == 'bytes':
+                    if known_slot_types.get(slot_name, 'count') == 'bytes':
                         alloc = f'{BinarySize(alloc):s}'
                     else:
                         alloc = str(alloc)
