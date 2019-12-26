@@ -1,10 +1,15 @@
 Changes
 =======
 
-19.12.0a1 (xxxx-xx-xx)
+19.12.0a1 (2019-12-26)
 ----------------------
 
 * MAINTENANCE: Now it runs on Python 3.8 or higher.
+
+* NEW: support for user-defined bootstrap script (e.g., this can be used to clone a git repo) (#161)
+
+* IMPROVE: ResourceSlots are now more permissive. Agent still checks the validity of known slots
+  but also allows zero-valued unknown slots as well. (#162)
 
 19.09.9 (2019-12-18)
 --------------------
