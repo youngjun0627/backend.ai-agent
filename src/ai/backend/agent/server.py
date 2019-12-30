@@ -151,15 +151,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
 
     async def detect_manager(self):
         log.info('detecting the manager...')
-        manager_id = await self.etcd.get('nodes/manager')
-        if manager_id is None:
+        manager_instances = await self.etcd.get_prefix('nodes/manager')
+        if not manager_instances:
             log.warning('watching etcd to wait for the manager being available')
-            async with aclosing(self.etcd.watch('nodes/manager')) as agen:
+            async with aclosing(self.etcd.watch_prefix('nodes/manager')) as agen:
                 async for ev in agen:
-                    if ev.event == 'put':
-                        manager_id = ev.value
+                    if ev.event == 'put' and ev.value == 'up':
                         break
-        log.info('detecting the manager: OK ({0})', manager_id)
+        log.info('detected at least one manager running')
 
     async def read_agent_config(self):
         # Fill up runtime configurations from etcd.
