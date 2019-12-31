@@ -1,6 +1,11 @@
 Changes
 =======
 
+19.12.0a3 (2019-12-31)
+----------------------
+
+* FIX: Reconcile a bugfix related to /home/work permissions from the 19.09 branch.
+
 19.12.0a2 (2019-12-31)
 ----------------------
 
