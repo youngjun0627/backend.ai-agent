@@ -1,5 +1,10 @@
 import asyncio
+import logging
 from pathlib import Path
+
+from .logging import BraceStyleAdapter
+
+log = BraceStyleAdapter(logging.getLogger())
 
 
 async def init_sshd_service(child_env):
@@ -39,8 +44,13 @@ async def init_sshd_service(child_env):
         if proc.returncode != 0:
             raise RuntimeError(f"sshd init error: {stderr.decode('utf8')}")
     else:
-        auth_path.parent.chmod(0o700)
-        auth_path.chmod(0o600)
+        try:
+            if (auth_path.parent.stat().st_mode & 0o077) != 0:
+                auth_path.parent.chmod(0o700)
+            if (auth_path.stat().st_mode & 0o077) != 0:
+                auth_path.chmod(0o600)
+        except IOError:
+            log.warning('could not set the permission for /home/work/.ssh')
     proc = await asyncio.create_subprocess_exec(
         *[
             '/opt/kernel/dropbearkey',

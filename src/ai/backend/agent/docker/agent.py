@@ -716,13 +716,21 @@ class DockerAgent(AbstractAgent):
                 if container_path == '/home/work/.ssh':
                     break
             else:
+                uid = self.config['container']['kernel-uid']
+                gid = self.config['container']['kernel-gid']
                 pubkey = internal_data['ssh_keypair']['public_key'].encode('ascii')
                 privkey = internal_data['ssh_keypair']['private_key'].encode('ascii')
-                (work_dir / '.ssh').mkdir(parents=True, exist_ok=True)
-                (work_dir / '.ssh' / 'authorized_keys').write_bytes(pubkey)
-                (work_dir / '.ssh' / 'authorized_keys').chmod(0o600)
+                ssh_dir = work_dir / '.ssh'
+                ssh_dir.mkdir(parents=True, exist_ok=True)
+                ssh_dir.chmod(0o700)
+                (ssh_dir / 'authorized_keys').write_bytes(pubkey)
+                (ssh_dir / 'authorized_keys').chmod(0o600)
                 (work_dir / 'id_container').write_bytes(privkey)
                 (work_dir / 'id_container').chmod(0o600)
+                if os.geteuid() == 0:  # only possible when I am root.
+                    os.chown(ssh_dir, uid, gid)
+                    os.chown(ssh_dir / 'authorized_keys', uid, gid)
+                    os.chown(work_dir / 'id_container', uid, gid)
 
         # PHASE 3: Store the resource spec.
 

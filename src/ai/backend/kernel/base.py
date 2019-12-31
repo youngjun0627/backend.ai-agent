@@ -130,10 +130,11 @@ class BaseRunner(metaclass=ABCMeta):
             self.init_done.clear()
         try:
             await self.init_with_loop()
+            await init_sshd_service(self.child_env)
         except Exception:
-            log.exception('unexpected error')
+            log.exception('Unexpected error!')
+            log.warning('We are skipping the error but the container may not work as expected.')
             return
-        await init_sshd_service(self.child_env)
 
         service_def_folder = Path('/etc/backend.ai/service-defs')
         if service_def_folder.is_dir():
