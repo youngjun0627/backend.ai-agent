@@ -4,6 +4,9 @@ Changes
 19.12.0a2 (2019-12-31)
 ----------------------
 
+* NEW-PREVIEW: Now we support ROCM (Radeon Open Compute) accelerators via ``backend.ai-accelerator-rocm``
+  plugin.
+
 * FIX: Update manager detection routine for HA setup (lablup/backend.ai-manager#125)
 
 * FIX: Wrong ownership of .ssh and keypair files when the SSH keypair is set via the ``internal_data``
