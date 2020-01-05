@@ -1,6 +1,15 @@
 Changes
 =======
 
+19.12.0b1 (2020-01-xx)
+----------------------
+
+* IMPROVE: Now our manager-to-agent RPC uses `Callosum <https://github.com/lablup/callosum>_` instead of
+  aiozmq, supporting Python 3.8 natively. (#157, #63)
+
+* FIX: Detection for manager now works for HA setup seamlessly. (It now determines if at least one
+  manager is running.) (lablup/backend.ai#125)
+
 19.12.0a3 (2019-12-31)
 ----------------------
 
