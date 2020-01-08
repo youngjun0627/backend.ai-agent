@@ -10,7 +10,7 @@ from typing import (
     Any, Optional,
     Callable, Iterable,
     Mapping, MutableMapping,
-    List, Sequence, Union,
+    List, Sequence, Tuple, Union,
     Type, overload,
     Set,
 )
@@ -202,8 +202,8 @@ async def get_subnet_ip(etcd: AsyncEtcd, network: str, fallback_addr: str = '0.0
 async def host_pid_to_container_pid(container_id: str, host_pid: HostPID) -> ContainerPID:
     kernel_ver = Path('/proc/version').read_text()
     if m := re.match(r'Linux version (\d+)\.(\d+)\..*', kernel_ver):
-        kernel_ver = m.groups()
-        if kernel_ver < ('4', '1'):
+        kernel_ver_tuple: Tuple[str, str] = m.groups()  # type: ignore
+        if kernel_ver_tuple < ('4', '1'):
             # TODO: this should be deprecated when the minimun supported Linux kernel will be 4.1.
             #
             # In CentOs 7, NSPid is not accesible since it is supported from Linux kernel >=4.1.
@@ -288,7 +288,7 @@ async def host_pid_to_container_pid(container_id: str, host_pid: HostPID) -> Con
                     raise IndexError
                 container_pid = int(container_table[process_idx][pid_idx])
                 log.debug('host pid {} is mapped to container pid {}', host_pid, container_pid)
-                return container_pid
+                return ContainerPID(PID(container_pid))
             except asyncio.CancelledError:
                 raise
             except (IndexError, KeyError, aiodocker.exceptions.DockerError):
