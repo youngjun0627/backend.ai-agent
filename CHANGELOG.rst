@@ -1,6 +1,17 @@
 Changes
 =======
 
+19.09.10 (2020-01-09)
+---------------------
+
+* FIX: Support host-to-container PID mapping in older Linux kernels (lower than 4.1) which does not
+  provide NSPid field in /proc task status.
+
+* FIX: Invalid ownership of several runtime-generated files in the container working directory such as
+  SSH keypair and basic dotfiles, which may prevent containers from working properly.
+
+* MAINTENANCE: Update aiodocker to 0.17
+
 19.09.9 (2019-12-18)
 --------------------
 
