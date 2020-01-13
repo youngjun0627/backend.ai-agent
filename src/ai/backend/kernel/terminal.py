@@ -100,11 +100,7 @@ class Terminal:
             await self.sock_out.send_multipart([b'stderr', ''.join(traces).encode()])
             return 1
         finally:
-            opts = {
-                'upload_output_files': False,
-            }
-            body = json.dumps(opts).encode()
-            await self.sock_out.send_multipart([b'finished', body])
+            await self.sock_out.send_multipart([b'finished', b'{}'])
 
     async def start(self):
         assert not self.accept_term_input
