@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import fcntl
-import json
 import logging
 import os
 import pty
