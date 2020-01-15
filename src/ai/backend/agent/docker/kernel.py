@@ -20,7 +20,7 @@ from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
 from ..resources import KernelResourceSpec
 from ..kernel import AbstractKernel, AbstractCodeRunner
-from ..utils import current_loop, read_tail
+from ..utils import current_loop
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
@@ -97,9 +97,13 @@ class DockerKernel(AbstractKernel):
         })
         return result
 
+    async def get_service_apps(self):
+        result = await self.runner.feed_service_apps()
+        return result
+
     async def accept_file(self, filename: str, filedata: bytes):
         loop = current_loop()
-        work_dir = self.agent_config['container']['scratch-root'] / self.kernel_id / 'work'
+        work_dir = self.agent_config['container']['scratch-root'] / str(self.kernel_id) / 'work'
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
@@ -130,7 +134,8 @@ class DockerKernel(AbstractKernel):
             with await container.get_archive(abspath) as tarobj:
                 tarobj.fileobj.seek(0, 2)
                 fsize = tarobj.fileobj.tell()
-                assert fsize < 1 * 1048576, 'too large file.'
+                if fsize > 1048576:
+                    raise ValueError('too large file')
                 tarbytes = tarobj.fileobj.getvalue()
         except DockerError:
             log.warning('Could not found the file: {0}', abspath)
@@ -265,7 +270,7 @@ async def prepare_krunner_env(distro: str):
                 f'./krunner-env.{distro}.{arch}.tar.xz')).resolve()
             extractor_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
-                f'../runner/krunner-extractor.sh')).resolve()
+                '../runner/krunner-extractor.sh')).resolve()
             proc = await asyncio.create_subprocess_exec(*[
                 'docker', 'run', '--rm', '-i',
                 '-v', f'{archive_path}:/root/archive.tar.xz',

@@ -8,6 +8,7 @@ import zmq
 import zmq.asyncio
 
 from ai.backend.common import msgpack
+from ai.backend.common.config import find_config_file
 from ai.backend.agent.agent import ipc_base_path
 from ai.backend.agent import stats
 
@@ -29,7 +30,7 @@ def stats_server():
 
 
 active_stat_modes = [stats.StatModes.DOCKER]
-if sys.platform.startswith('linux'):
+if sys.platform.startswith('linux') and os.geteuid() == 0:
     active_stat_modes.append(stats.StatModes.CGROUP)
 
 pipe_opts: Mapping[str, Union[None, int]] = {
@@ -37,12 +38,6 @@ pipe_opts: Mapping[str, Union[None, int]] = {
     'stderr': None,
     'stdin': asyncio.subprocess.DEVNULL,
 }
-if 'TRAVIS' in os.environ:
-    pipe_opts = {
-        'stdout': asyncio.subprocess.DEVNULL,
-        'stderr': asyncio.subprocess.DEVNULL,
-        'stdin': asyncio.subprocess.DEVNULL,
-    }
 
 
 async def recv_deserialized(sock):
@@ -69,6 +64,7 @@ def test_numeric_list():
     assert ret == [123, 456]
 
 
+@pytest.mark.skipif('TRAVIS' in os.environ, reason='This test hangs in the Travis CI env.')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stat_mode', active_stat_modes)
 async def test_synchronizer(event_loop,
@@ -78,7 +74,7 @@ async def test_synchronizer(event_loop,
 
     # Create the container but don't start it.
     container = await create_container({
-        'Image': 'nginx:latest',
+        'Image': 'nginx:1.17-alpine',
         'ExposedPorts': {
             '80/tcp': {},
         },
@@ -92,11 +88,13 @@ async def test_synchronizer(event_loop,
 
     # Initialize the agent-side.
     stat_sync_sock, stat_sync_sockpath = stats_server
-    config_path = 'agent.toml'
+    config_path = find_config_file('agent')
+    log_endpoint = ''
 
     proc = None
     async with stats.spawn_stat_synchronizer(config_path, stat_sync_sockpath,
                                              stat_mode, cid,
+                                             log_endpoint,
                                              exec_opts=pipe_opts) as p:
         proc = p
         await container.start()
@@ -125,6 +123,7 @@ async def test_synchronizer(event_loop,
     assert msg_list[-1]['status'] == 'terminated'
 
 
+@pytest.mark.skipif('TRAVIS' in os.environ, reason='This test hangs in the Travis CI env.')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stat_mode', active_stat_modes)
 async def test_synchronizer_immediate_death(event_loop,
@@ -141,11 +140,13 @@ async def test_synchronizer_immediate_death(event_loop,
 
     # Initialize the agent-side.
     stat_sync_sock, stat_sync_sockpath = stats_server
-    config_path = 'agent.toml'
+    config_path = find_config_file('agent')
+    log_endpoint = ''
 
     proc = None
     async with stats.spawn_stat_synchronizer(config_path, stat_sync_sockpath,
                                              stat_mode, cid,
+                                             log_endpoint,
                                              exec_opts=pipe_opts) as p:
         proc = p
         await container.start()

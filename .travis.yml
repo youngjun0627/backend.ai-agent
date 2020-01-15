@@ -1,10 +1,9 @@
 language: python
 dist: xenial
-sudo: required
 cache: pip
 services:
   - docker
-  - redis-server
+  - redis
 addons:
   apt:
     packages:
@@ -20,60 +19,44 @@ stages:
 os:
   - linux
 python:
-  - "3.6"
-  - "3.7"
+  - "3.8"
 
 # default test job
 install:
   - pip install -U pip setuptools
+  - |
+    # Use the same branch (if exists) for the backend.ai-common installation
+    export BRANCH=$(if [ "$TRAVIS_PULL_REQUEST" == "false" ]; then echo $TRAVIS_BRANCH; else echo $TRAVIS_PULL_REQUEST_BRANCH; fi)
+    git ls-remote --heads 'https://github.com/lablup/backend.ai-common' | grep -q "refs/heads/${BRANCH}"
+    if [ $? -eq 0 ]; then
+      sed -i "s%\(backend.ai-common\)@master%\1@${BRANCH}%" requirements-ci.txt
+    fi
   - pip install -U -r requirements-ci.txt
   - mkdir -p ~/.config/backend.ai
   - cp config/ci.toml ~/.config/backend.ai/agent.toml
   - mkdir -p /tmp/scratches
   - mkdir -p /tmp/vfroot/local
 before_script:
-  # load etcd server
-  - mkdir -p /tmp/etcd
-  - docker run -d -p 2379:2379 -p 2380:2380 --name backendai-etcd
-     -v /tmp/etcd:/etcd-data
-     quay.io/coreos/etcd:v3.4.1
-     /usr/local/bin/etcd
-     --name backendai-etcd
-     --data-dir /etcd-data
-     --listen-client-urls http://0.0.0.0:2379
-     --advertise-client-urls http://0.0.0.0:2379
-     --listen-peer-urls http://0.0.0.0:2380
-     --initial-advertise-peer-urls http://0.0.0.0:2380
-     --initial-cluster backendai-etcd=http://0.0.0.0:2380
-     --initial-cluster-token backendai-etcd-token
-     --initial-cluster-state new
-     --auto-compaction-retention 1
-  - docker exec -it backendai-etcd etcdctl put /sorna/testing/config/docker/registry/index.docker.io "https://registry-1.docker.io"
-  - docker exec -it backendai-etcd etcdctl put /sorna/testing/config/docker/registry/index.docker.io/username "lablup"
-  - docker exec -it backendai-etcd etcdctl put /sorna/testing/config/redis/addr "127.0.0.1:6379"
-  - docker exec -it backendai-etcd etcdctl put /sorna/testing/volumes/_mount "/tmp/vfroot"
-  - docker exec -it backendai-etcd etcdctl put /sorna/testing/volumes/_default_host "local"
-  # set capabilities to python binary
-  - sudo setcap cap_sys_ptrace,cap_sys_admin,cap_dac_override+eip $(readlink -f $(which python))
   # pull minimal kernel images and prepare krunner-env
   - docker pull alpine:3.8
   - docker pull nginx:1.17-alpine
+  - docker pull redis:5.0.5-alpine
   - docker pull lablup/lua:5.3-alpine3.8
 script:
   - python -m flake8 src tests
   - python -m mypy src/ai/backend
   - python -m pytest -v --cov=src
-after_success:
-  - codecov
 after_script:
   - killall -9 python
+  - codecov
 
 # stage def.
 jobs:
   include:
-    # test stage is implicitly included.
+    - stage: test
+      python: "3.8"
     - stage: deploy
-      python: "3.6"
+      python: "3.8"
       before_install: skip
       install: skip
       before_script: skip
@@ -85,12 +68,10 @@ jobs:
           tags: true
         provider: pypi
         distributions: sdist bdist_wheel
-        skip_upload_docs: true
-        user: "@token"
+        upload_docs: false
+        username: "__token__"
         password:
-          secure: "ZwSiRwStxuj/s7p6aaj6mfO8sfRs+ZkuCiwejAQFQoiM6BdSCgXLunRduIHOI2Xb1CRuwV8i0uAK44dWJ2z3p1i+hnIoau++93e9vxKN+uWHei5fsKpPnLG18a8aeIU98lwVY0AHOyeoWdtyShjaT0b1+6SryNNjqeFDmpJaJpKxzOCPNASyxHjJcal/nS54Kn3KVUeqk2wPsltzQ4Guu4sx/O7f8O6BS77TM1NFODqSrDtu0nSiXv8M3io2gfM+swmWM3vPPUdLpke5/YQQIZruPhJq6ix9aklKc/Nic8zP1ddG+/mrDaIQulBWPn6ckI2WZP27hKUVQ7F4R+jgLBUBZ3mkZELblTTDP61/JyGO5BxXxBjFGxjYAB3Aqi/ruw4pRXIiuBxMs06nsadGixa4CkCcJ1o5lAIEl4dmNRO52pD35lS7oLMz9A0xyM/rpTKNK2q3Hsu+tmiExFr9m4TufbTZqgbEMMy8L9ypWlgKrQsVAxZRp7PuwH65KsfUquMkmhqIzdaTDHe5/Cc9gjKSVKMBUHYBxJsuXZjf/U6NuHuOLr4txBgtcqAQsZBp+79/KvkPYrxUvx9xB5aKPrmljAYxuZjLtpVXItF31c9bOvaTZzHEVLy0r2ciwJi6GpqKAjosRyokk6cUaAc99V75/uDpHf9ugHdvRVnvgZQ="
-  allow_failures:
-    - python: "3.7"
+          secure: "KPPJgs7FMnJrs4RNiqR9c8qi0y6zlk/U1ec2pp4VAkE+GoVN8UtyX9jMd9NxFlXieaRTYWR5//WP3x3YKOJFBbt+lN4x5y5CZHG5e8R7Uu8JdDpJIVf+uHRTmauW3QjrKmrOZJKWZ0o35MjEkY2Wv2lTBqMdlNiYccgscN77wwtrmFNtnvHKmxt336o78sqSX9hh5kHKQO6MSxOc4jZgy/n8nNysIG7cFNunnVR/x3c410OOHg6Rgx+KoLx5COvURNiFP/khFEdyIYR0/sKgbepF4Hhd2H2eIhr7op1GCFNAvmHGa+bSLeqr93JdXcH6IxC2dy2M32/jlExESy56uKNoc5sCsrHo16n2iqBE7JpvcYrT0xdIf4nPeGZlavS5MtN0apNv8wQTOdYqRuXRAvM7NajNOatiINxfmg2zq3CrHMpXFHRIfYpZMFM2fGkd3hdaXmCmh9B2XGUDcZJzh42Wwjqz/jO+sN/P0jcF8g/3nwrLuGlCGg2LVUQre6B0kyChQxlkbjxEhApDuVtBeKTGuiu6NdxVLMG8BCGSvf4awCn+N2X8yEQbTz91MCDbmdDLKHMWu+z1fkIWYPWw01rxL1cBQoCpiBg5OZG6JYFmLz9vm7V7I9Xh5D2Zj815TecoG7QwAw5tbt8ULIHSUbSqjnRMdWw2XwZdbuf+gw4="
 
 notifications:
   webhooks:

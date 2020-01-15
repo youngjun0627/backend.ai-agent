@@ -1,5 +1,7 @@
 import asyncio
+from asyncio import Future
 from pathlib import Path
+from typing import Set, Tuple
 
 import attr
 
@@ -62,7 +64,9 @@ async def proxy_connection(upper_sock_path: Path,
     # long-running streaming commands are disconnected by the server first when the server-side
     # processing finishes.
     try:
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        task_results: Tuple[Set[Future], Set[Future]] = \
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = task_results
     except asyncio.CancelledError:
         pass
     finally:

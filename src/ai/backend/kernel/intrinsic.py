@@ -1,8 +1,13 @@
 import asyncio
+import logging
 from pathlib import Path
 
+from .logging import BraceStyleAdapter
 
-async def init_sshd_service():
+log = BraceStyleAdapter(logging.getLogger())
+
+
+async def init_sshd_service(child_env):
     Path('/tmp/dropbear').mkdir(parents=True, exist_ok=True)
     auth_path = Path('/home/work/.ssh/authorized_keys')
     if not auth_path.is_file():
@@ -11,12 +16,13 @@ async def init_sshd_service():
         proc = await asyncio.create_subprocess_exec(
             *[
                 '/opt/kernel/dropbearkey',
-                '-t', 'ecdsa',
-                '-s', '384',
+                '-t', 'rsa',
+                '-s', '2048',
                 '-f', '/tmp/dropbear/id_dropbear',
             ],
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE)
+            stderr=asyncio.subprocess.PIPE,
+            env=child_env)
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(f"sshd init error: {stderr.decode('utf8')}")
@@ -29,25 +35,32 @@ async def init_sshd_service():
             *[
                 '/opt/kernel/dropbearconvert',
                 'dropbear', 'openssh',
-                '/tmp/dropbear/id_dropbear', '/home/work/id_ecdsa',
+                '/tmp/dropbear/id_dropbear', '/home/work/id_container',
             ],
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE)
+            stderr=asyncio.subprocess.PIPE,
+            env=child_env)
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(f"sshd init error: {stderr.decode('utf8')}")
     else:
-        auth_path.parent.chmod(0o700)
-        auth_path.chmod(0o600)
+        try:
+            if (auth_path.parent.stat().st_mode & 0o077) != 0:
+                auth_path.parent.chmod(0o700)
+            if (auth_path.stat().st_mode & 0o077) != 0:
+                auth_path.chmod(0o600)
+        except IOError:
+            log.warning('could not set the permission for /home/work/.ssh')
     proc = await asyncio.create_subprocess_exec(
         *[
             '/opt/kernel/dropbearkey',
-            '-t', 'ecdsa',
-            '-s', '384',
-            '-f', '/tmp/dropbear/dropbear_ecdsa_host_key',
+            '-t', 'rsa',
+            '-s', '2048',
+            '-f', '/tmp/dropbear/dropbear_rsa_host_key',
         ],
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE)
+        stderr=asyncio.subprocess.PIPE,
+        env=child_env)
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise RuntimeError(f"sshd init error: {stderr.decode('utf8')}")
@@ -56,8 +69,13 @@ async def init_sshd_service():
 async def prepare_sshd_service(service_info):
     cmdargs = [
         '/opt/kernel/dropbear',
-        '-r', '/tmp/dropbear/dropbear_ecdsa_host_key',
-        '-F',
+        '-r', '/tmp/dropbear/dropbear_rsa_host_key',
+        '-E',  # show logs in stderr
+        '-F',  # run in foreground
+        '-s',  # disable password logins
+        # '-W', str(256 * 1024),  # recv buffer size (256 KiB) -> built-in during compilation
+        '-K', '15',               # keepalive interval
+        '-I', '0',                # idle timeout
         '-p', f"0.0.0.0:{service_info['port']}",
     ]
     env = {}

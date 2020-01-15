@@ -1,11 +1,9 @@
-import asyncio
 import logging
 import os
 from pathlib import Path
 from typing import Dict
 
 from ai.backend.common.logging import BraceStyleAdapter
-import botocore, aiobotocore
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
@@ -22,48 +20,6 @@ if s3_access_key == 'dummy-access-key':
 
 def relpath(path, base):
     return Path(path).resolve().relative_to(Path(base).resolve())
-
-
-async def upload_output_files_to_s3(initial_file_stats,
-                                    final_file_stats,
-                                    base_dir, prefix):
-    loop = asyncio.get_event_loop()
-    output_files = []
-    diff_files = diff_file_stats(initial_file_stats, final_file_stats)
-    if s3_access_key == 'dummy-access-key':
-        return [
-            {
-                'name': str(relpath(fname, base_dir)),
-                'url': f'#dummy-upload',
-            } for fname in diff_files
-        ]
-    if diff_files:
-        session = aiobotocore.get_session(loop=loop)
-        client = session.create_client('s3', region_name=s3_region,
-                                       aws_secret_access_key=s3_secret_key,
-                                       aws_access_key_id=s3_access_key)
-        for fname in diff_files:
-            path = relpath(fname, base_dir)
-            key = f'{s3_bucket_path}/{prefix}/{path}'
-            try:
-                # TODO: put the file chunk-by-chunk.
-                with open(fname, 'rb') as f:
-                    content = f.read()
-                await client.put_object(Bucket=s3_bucket,
-                                        Key=key,
-                                        Body=content,
-                                        ACL='public-read')
-            except botocore.exceptions.ClientError as exc:
-                log.exception('S3 upload error {!r}', exc)
-            except IOError:
-                log.exception('Could not read output file')
-            else:
-                output_files.append({
-                    'name': str(path),
-                    'url': f'https://{s3_bucket}.s3.amazonaws.com/{key}',
-                })
-        client.close()
-    return output_files
 
 
 def scandir(root: Path, allowed_max_size: int):

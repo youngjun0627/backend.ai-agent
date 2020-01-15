@@ -30,6 +30,7 @@ class Runner(BaseRunner):
             '/usr/local/cuda/bin',
             '/usr/local/sbin',
             '/usr/local/bin',
+            '/opt/conda/bin',
             '/usr/sbin',
             '/usr/bin',
             '/sbin',
@@ -73,8 +74,8 @@ class Runner(BaseRunner):
     async def build_heuristic(self) -> int:
         if Path('setup.py').is_file():
             cmd = [
-                self.runtime_path, *DEFAULT_PYFLAGS,
-                '-m', 'pip', 'install', '-e', '.',
+                str(self.runtime_path), *DEFAULT_PYFLAGS,
+                '-m', 'pip', 'install', '--user', '-e', '.',
             ]
             return await self.run_subproc(cmd)
         else:
@@ -84,7 +85,7 @@ class Runner(BaseRunner):
     async def execute_heuristic(self) -> int:
         if Path('main.py').is_file():
             cmd = [
-                self.runtime_path, *DEFAULT_PYFLAGS,
+                str(self.runtime_path), *DEFAULT_PYFLAGS,
                 'main.py',
             ]
             return await self.run_subproc(cmd)
@@ -127,6 +128,11 @@ class Runner(BaseRunner):
                 '--port', str(service_info['port']),
                 '--debugger_port', '6064',  # used by in-container TensorFlow
             ], {}
+        elif service_info['name'] == 'spectravis':
+            return [
+                self.runtime_path, '-m', 'http.server',
+                '8000',
+            ], {}, '/home/work/spectravis'
         elif service_info['name'] == 'sftp':
             return [
                 self.runtime_path, '-m', 'sftpserver', '--port', str(service_info['port'])

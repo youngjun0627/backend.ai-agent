@@ -2,6 +2,10 @@ class InitializationError(Exception):
     pass
 
 
+class UnsupportedResource(Exception):
+    pass
+
+
 class InsufficientResource(Exception):
     pass
 

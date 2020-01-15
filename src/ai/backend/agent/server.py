@@ -1,27 +1,35 @@
+from __future__ import annotations
+
 import asyncio
 import functools
 from ipaddress import ip_network, _BaseAddress as BaseIPAddress
 import logging, logging.config
+import multiprocessing
 import os, os.path
 from pathlib import Path
 from pprint import pformat, pprint
 import signal
 import sys
 import time
-from typing import cast, TYPE_CHECKING
+from typing import (
+    cast, TYPE_CHECKING,
+    Any, Callable,
+    ClassVar,
+    Dict,
+    Set,
+)
 from uuid import UUID
 
 import aiotools
 from aiotools import aclosing
-import aiozmq, aiozmq.rpc
+from callosum.rpc import Peer, RPCMessage
+from callosum.ordering import KeySerializedAsyncScheduler
+from callosum.lower.zeromq import ZeroMQAddress, ZeroMQRPCTransport
 import click
 from setproctitle import setproctitle
 import trafaret as t
-import uvloop
-import zmq
-import zmq.asyncio
 
-from ai.backend.common import config, utils, identity
+from ai.backend.common import config, utils, identity, msgpack
 from ai.backend.common import validators as tx
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
@@ -33,8 +41,12 @@ from ai.backend.common.types import (
 )
 from . import __version__ as VERSION
 from .agent import AbstractAgent, VolumeInfo
-from .exception import InitializationError
-from .stats import StatModes
+from .config import (
+    initial_config_iv,
+    k8s_extra_config_iv,
+    registry_local_config_iv,
+    registry_ecr_config_iv,
+)
 from .utils import current_loop, get_subnet_ip
 
 if TYPE_CHECKING:
@@ -84,7 +96,7 @@ async def get_extra_volumes(docker, lang):
     return mount_list
 
 
-def update_last_used(meth):
+def update_last_used(meth: Callable) -> Callable:
     @functools.wraps(meth)
     async def _inner(self, raw_kernel_id: str, *args, **kwargs):
         try:
@@ -96,12 +108,47 @@ def update_last_used(meth):
     return _inner
 
 
-class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
+class RPCFunctionRegistry:
+
+    functions: Set[str]
+
+    def __init__(self) -> None:
+        self.functions = set()
+
+    def __call__(self, meth: Callable) -> Callable[[RPCMessage], Any]:
+
+        @functools.wraps(meth)
+        async def _inner(self: AgentRPCServer, request: RPCMessage):
+            try:
+                if request.body is None:
+                    return await meth(self)
+                else:
+                    return await meth(
+                        self,
+                        *request.body['args'],
+                        **request.body['kwargs'],
+                    )
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                raise
+            except Exception:
+                log.exception('unexpected error')
+                self.error_monitor.capture_exception()
+                raise
+
+        self.functions.add(meth.__name__)
+        return _inner
+
+
+class AgentRPCServer(aobject):
+    rpc_function: ClassVar[RPCFunctionRegistry] = RPCFunctionRegistry()
 
     loop: asyncio.AbstractEventLoop
     agent: AbstractAgent
+    rpc_server: Peer
     rpc_addr: str
     agent_addr: str
+
+    _stop_signal: signal.Signals
 
     def __init__(self, etcd, config, *, skip_detect_manager: bool = False) -> None:
         self.loop = current_loop()
@@ -110,6 +157,7 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         self.skip_detect_manager = skip_detect_manager
         self.stats_monitor = DummyStatsMonitor()
         self.error_monitor = DummyErrorMonitor()
+        self._stop_signal = signal.SIGTERM
         plugins = [
             'stats_monitor',
             'error_monitor'
@@ -133,9 +181,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
             self.agent = await K8sAgent.new(self.config)
 
         rpc_addr = self.config['agent']['rpc-listen-addr']
-        agent_addr = f"tcp://{rpc_addr}"
-        self.rpc_server = await aiozmq.rpc.serve_rpc(self, bind=agent_addr)
-        self.rpc_server.transport.setsockopt(zmq.LINGER, 200)
+        self.rpc_server = Peer(
+            bind=ZeroMQAddress(f"tcp://{rpc_addr}"),
+            transport=ZeroMQRPCTransport,
+            scheduler=KeySerializedAsyncScheduler(),
+            serializer=msgpack.packb,
+            deserializer=msgpack.unpackb,
+            debug_rpc=self.config['debug']['enabled'],
+        )
+        for func_name in self.rpc_function.functions:
+            self.rpc_server.handle_function(func_name, getattr(self, func_name))
         log.info('started handling RPC requests at {}', rpc_addr)
 
         await self.etcd.put('ip', rpc_addr.host, scope=ConfigScopes.NODE)
@@ -147,15 +202,14 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
 
     async def detect_manager(self):
         log.info('detecting the manager...')
-        manager_id = await self.etcd.get('nodes/manager')
-        if manager_id is None:
+        manager_instances = await self.etcd.get_prefix('nodes/manager')
+        if not manager_instances:
             log.warning('watching etcd to wait for the manager being available')
-            async with aclosing(self.etcd.watch('nodes/manager')) as agen:
+            async with aclosing(self.etcd.watch_prefix('nodes/manager')) as agen:
                 async for ev in agen:
-                    if ev.event == 'put':
-                        manager_id = ev.value
+                    if ev.event == 'put' and ev.value == 'up':
                         break
-        log.info('detecting the manager: OK ({0})', manager_id)
+        log.info('detected at least one manager running')
 
     async def read_agent_config(self):
         # Fill up runtime configurations from etcd.
@@ -176,91 +230,75 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         log.info('configured vfolder mount base: {0}', self.config['vfolder']['mount'])
         log.info('configured vfolder fs prefix: {0}', self.config['vfolder']['fsprefix'])
 
-    async def shutdown(self, stop_signal):
+    async def __aenter__(self) -> None:
+        await self.rpc_server.__aenter__()
+
+    def mark_stop_signal(self, stop_signal: signal.Signals) -> None:
+        self._stop_signal = stop_signal
+
+    async def __aexit__(self, *exc_info) -> None:
         # Stop receiving further requests.
-        if self.rpc_server is not None:
-            self.rpc_server.close()
-            await self.rpc_server.wait_closed()
-        await self.agent.shutdown(stop_signal)
+        await self.rpc_server.__aexit__(*exc_info)
+        await self.agent.shutdown(self._stop_signal)
 
     async def update_status(self, status):
         await self.etcd.put('', status, scope=ConfigScopes.NODE)
 
-    @aiotools.actxmgr
-    async def handle_rpc_exception(self):
-        try:
-            yield
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            raise
-        except AssertionError:
-            log.exception('assertion failure')
-            raise
-        except Exception:
-            log.exception('unexpected error')
-            self.error_monitor.capture_exception()
-            raise
-
-    @aiozmq.rpc.method
-    def ping(self, msg: str) -> str:
+    @rpc_function
+    async def ping(self, msg: str) -> str:
         return msg
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def ping_kernel(self, kernel_id: str):
         log.debug('rpc::ping_kernel({0})', kernel_id)
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def create_kernel(self, kernel_id: str, config: dict):
         log.info('rpc::create_kernel(k:{0}, img:{1})',
                  kernel_id, config['image']['canonical'])
-        async with self.handle_rpc_exception():
-            return await self.agent.create_kernel(
-                KernelId(UUID(kernel_id)), cast(KernelCreationConfig, config))
+        return await self.agent.create_kernel(
+            KernelId(UUID(kernel_id)), cast(KernelCreationConfig, config))
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def destroy_kernel(self, kernel_id: str, reason: str = None):
         log.info('rpc::destroy_kernel(k:{0})', kernel_id)
-        async with self.handle_rpc_exception():
-            return await self.agent.destroy_kernel(
-                KernelId(UUID(kernel_id)), reason or 'user-requested')
+        return await self.agent.destroy_kernel(
+            KernelId(UUID(kernel_id)), reason or 'user-requested')
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def interrupt_kernel(self, kernel_id: str):
         log.info('rpc::interrupt_kernel(k:{0})', kernel_id)
-        async with self.handle_rpc_exception():
-            await self.agent.interrupt_kernel(KernelId(UUID(kernel_id)))
+        await self.agent.interrupt_kernel(KernelId(UUID(kernel_id)))
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def get_completions(self, kernel_id: str,
                               text: str, opts: dict):
         log.debug('rpc::get_completions(k:{0}, ...)', kernel_id)
-        async with self.handle_rpc_exception():
-            await self.agent.get_completions(KernelId(UUID(kernel_id)), text, opts)
+        await self.agent.get_completions(KernelId(UUID(kernel_id)), text, opts)
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def get_logs(self, kernel_id: str):
         log.info('rpc::get_logs(k:{0})', kernel_id)
-        async with self.handle_rpc_exception():
-            return await self.agent.get_logs(KernelId(UUID(kernel_id)))
+        return await self.agent.get_logs(KernelId(UUID(kernel_id)))
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def restart_kernel(self, kernel_id: str, new_config: dict):
         log.info('rpc::restart_kernel(k:{0})', kernel_id)
-        async with self.handle_rpc_exception():
-            return await self.agent.restart_kernel(
-                KernelId(UUID(kernel_id)), cast(KernelCreationConfig, new_config))
+        return await self.agent.restart_kernel(
+            KernelId(UUID(kernel_id)), cast(KernelCreationConfig, new_config))
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def execute(self,
-                      api_version,        # type: int
                       kernel_id,          # type: str
+                      api_version,        # type: int
                       run_id,             # type: str
                       mode,               # type: str
                       code,               # type: str
@@ -272,17 +310,16 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         _log('rpc::execute(k:{0}, run-id:{1}, mode:{2}, code:{3!r})',
              kernel_id, run_id, mode,
              code[:20] + '...' if len(code) > 20 else code)
-        async with self.handle_rpc_exception():
-            result = await self.agent.execute(
-                KernelId(UUID(kernel_id)),
-                run_id, mode, code,
-                opts=opts,
-                api_version=api_version,
-                flush_timeout=flush_timeout
-            )
-            return result
+        result = await self.agent.execute(
+            KernelId(UUID(kernel_id)),
+            run_id, mode, code,
+            opts=opts,
+            api_version=api_version,
+            flush_timeout=flush_timeout
+        )
+        return result
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def start_service(self,
                             kernel_id,   # type: str
@@ -291,58 +328,63 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
                             ):
         # type: (...) -> Dict[str, Any]
         log.info('rpc::start_service(k:{0}, app:{1})', kernel_id, service)
-        async with self.handle_rpc_exception():
-            return await self.agent.start_service(KernelId(UUID(kernel_id)), service, opts)
+        return await self.agent.start_service(KernelId(UUID(kernel_id)), service, opts)
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
         log.info('rpc::upload_file(k:{0}, fn:{1})', kernel_id, filename)
-        async with self.handle_rpc_exception():
-            await self.agent.accept_file(KernelId(UUID(kernel_id)), filename, filedata)
+        await self.agent.accept_file(KernelId(UUID(kernel_id)), filename, filedata)
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def download_file(self, kernel_id: str, filepath: str):
         log.info('rpc::download_file(k:{0}, fn:{1})', kernel_id, filepath)
-        async with self.handle_rpc_exception():
-            return await self.agent.download_file(KernelId(UUID(kernel_id)), filepath)
+        return await self.agent.download_file(KernelId(UUID(kernel_id)), filepath)
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def list_files(self, kernel_id: str, path: str):
         log.info('rpc::list_files(k:{0}, fn:{1})', kernel_id, path)
-        async with self.handle_rpc_exception():
-            return await self.agent.list_files(KernelId(UUID(kernel_id)), path)
+        return await self.agent.list_files(KernelId(UUID(kernel_id)), path)
 
-    @aiozmq.rpc.method
+    @rpc_function
     @update_last_used
     async def refresh_idle(self, kernel_id: str):
         # update_last_used decorator already implements this. :)
         log.debug('rpc::refresh_idle(k:{})', kernel_id)
         pass
 
-    @aiozmq.rpc.method
+    @rpc_function
     async def shutdown_agent(self, terminate_kernels: bool):
         # TODO: implement
         log.info('rpc::shutdown_agent()')
         pass
 
-    @aiozmq.rpc.method
+    @rpc_function
     async def reset_agent(self):
         log.debug('rpc::reset()')
-        async with self.handle_rpc_exception():
-            kernel_ids = tuple(self.agent.kernel_registry.keys())
-            tasks = []
-            for kernel_id in kernel_ids:
-                try:
-                    task = asyncio.ensure_future(
-                        self.agent.destroy_kernel(kernel_id, 'agent-reset'))
-                    tasks.append(task)
-                except Exception:
-                    self.error_monitor.capture_exception()
-                    log.exception('reset: destroying {0}', kernel_id)
-            await asyncio.gather(*tasks)
+        kernel_ids = tuple(self.agent.kernel_registry.keys())
+        tasks = []
+        for kernel_id in kernel_ids:
+            try:
+                task = asyncio.ensure_future(
+                    self.agent.destroy_kernel(kernel_id, 'agent-reset'))
+                tasks.append(task)
+            except Exception:
+                self.error_monitor.capture_exception()
+                log.exception('reset: destroying {0}', kernel_id)
+        await asyncio.gather(*tasks)
+
+
+@aiotools.server
+async def server_main_logwrapper(loop, pidx, _args):
+    setproctitle(f"backend.ai: agent worker-{pidx}")
+    log_endpoint = _args[1]
+    logger = Logger(_args[0]['logging'], is_master=False, log_endpoint=log_endpoint)
+    with logger:
+        async with server_main(loop, pidx, _args):
+            yield
 
 
 @aiotools.server
@@ -427,30 +469,15 @@ async def server_main(loop, pidx, _args):
              rpc_addr.host)
 
     # Pre-load compute plugin configurations.
-    config['plugins'] = await etcd.get_prefix_dict('config/plugins')
+    config['plugins'] = await etcd.get_prefix_dict('config/plugins/accelerator')
 
     # Start RPC server.
-    try:
-        agent = await AgentRPCServer.new(etcd, config)
-    except InitializationError as e:
-        log.error('Agent initialization failed: {}', e)
-        os.kill(0, signal.SIGINT)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        log.exception('unexpected error during AgentRPCServer.init()!')
-        os.kill(0, signal.SIGINT)
+    agent = await AgentRPCServer.new(etcd, config)
 
     # Run!
-    try:
+    async with agent:
         stop_signal = yield
-    finally:
-        # Shutdown.
-        log.info('shutting down...')
-        try:
-            await agent.shutdown(stop_signal)
-        except Exception:
-            log.exception('unexpected error during agent shutdown')
+        agent.mark_stop_signal(stop_signal)
 
 
 @click.group(invoke_without_command=True)
@@ -461,95 +488,6 @@ async def server_main(loop, pidx, _args):
               help='Enable the debug mode and override the global log level to DEBUG.')
 @click.pass_context
 def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
-
-    coredump_defaults = {
-        'enabled': False,
-        'path': './coredumps',
-        'backup-count': 10,
-        'size-limit': '64M',
-    }
-
-    initial_config_iv = t.Dict({
-        t.Key('agent'): t.Dict({
-            t.Key('mode'): t.Enum('docker', 'k8s'),
-            t.Key('rpc-listen-addr', default=('', 6001)):
-                tx.HostPortPair(allow_blank_host=True),
-            t.Key('id', default=None): t.Null | t.String,
-            t.Key('region', default=None): t.Null | t.String,
-            t.Key('instance-type', default=None): t.Null | t.String,
-            t.Key('scaling-group', default='default'): t.String,
-            t.Key('pid-file', default=os.devnull): tx.Path(type='file',
-                                                           allow_nonexisting=True,
-                                                           allow_devnull=True),
-            t.Key('event-loop', default='asyncio'): t.Enum('asyncio', 'uvloop'),
-        }).allow_extra('*'),
-        t.Key('container'): t.Dict({
-            t.Key('kernel-uid', default=-1): tx.UserID,
-            t.Key('kernel-gid', default=-1): tx.GroupID,
-            t.Key('kernel-host', default=''): t.String(allow_blank=True),
-            t.Key('port-range', default=(30000, 31000)): tx.PortRange,
-            t.Key('stats-type', default='docker'):
-                t.Null | t.Enum(*[e.value for e in StatModes]),
-            t.Key('sandbox-type', default='docker'): t.Enum('docker', 'jail'),
-            t.Key('jail-args', default=[]): t.List(t.String),
-            t.Key('scratch-type'): t.Enum('hostdir', 'memory'),
-            t.Key('scratch-root', default='./scratches'):
-                tx.Path(type='dir', auto_create=True),
-            t.Key('scratch-size', default='0'): tx.BinarySize,
-        }).allow_extra('*'),
-        t.Key('logging'): t.Any,  # checked in ai.backend.common.logging
-        t.Key('resource'): t.Dict({
-            t.Key('reserved-cpu', default=1): t.Int,
-            t.Key('reserved-mem', default="1G"): tx.BinarySize,
-            t.Key('reserved-disk', default="8G"): tx.BinarySize,
-        }).allow_extra('*'),
-        t.Key('debug'): t.Dict({
-            t.Key('enabled', default=False): t.Bool,
-            t.Key('skip-container-deletion', default=False): t.Bool,
-            t.Key('log-stats', default=False): t.Bool,
-            t.Key('log-docker-events', default=False): t.Bool,
-            t.Key('coredump', default=coredump_defaults): t.Dict({
-                t.Key('enabled', default=coredump_defaults['enabled']): t.Bool,
-                t.Key('path', default=coredump_defaults['path']):
-                    tx.Path(type='dir', auto_create=True),
-                t.Key('backup-count', default=coredump_defaults['backup-count']):
-                    t.Int[1:],
-                t.Key('size-limit', default=coredump_defaults['size-limit']):
-                    tx.BinarySize,
-            }).allow_extra('*'),
-        }).allow_extra('*'),
-    }).merge(config.etcd_config_iv).allow_extra('*')
-
-    k8s_extra_config_iv = t.Dict({
-        t.Key('registry'): t.Dict({
-            t.Key('type'): t.String
-        }).allow_extra('*'),
-        t.Key('baistatic'): t.Null | t.Dict({
-            t.Key('nfs-addr'): t.String,
-            t.Key('path'): t.String,
-            t.Key('capacity'): tx.BinarySize,
-            t.Key('options'): t.Null | t.String,
-            t.Key('mounted-at'): t.String
-        }),
-        t.Key('vfolder-pv'): t.Null | t.Dict({
-            t.Key('nfs-addr'): t.String,
-            t.Key('path'): t.String,
-            t.Key('capacity'): tx.BinarySize,
-            t.Key('options'): t.Null | t.String
-        }),
-    }).merge(initial_config_iv).allow_extra('*')
-
-    registry_local_config_iv = t.Dict({
-        t.Key('type'): t.String,
-        t.Key('addr'): tx.HostPortPair(),
-        t.Key('projects'): t.List(t.String)
-    })
-
-    registry_ecr_config_iv = t.Dict({
-        t.Key('type'): t.String,
-        t.Key('profile'): t.String,
-        t.Key('registry-id'): t.String
-    })
 
     # Determine where to read configuration.
     raw_cfg, cfg_src_path = config.read_from_file(config_path, 'agent')
@@ -615,6 +553,8 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
               file=sys.stderr)
         raise click.Abort()
 
+    multiprocessing.set_start_method('spawn')
+
     if cli_ctx.invoked_subcommand is None:
 
         if cfg['debug']['coredump']['enabled']:
@@ -633,8 +573,12 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
             cfg['debug']['coredump']['core_path'] = Path(core_pattern).parent
 
         cfg['agent']['pid-file'].write_text(str(os.getpid()))
+        log_sockpath = Path(f'/tmp/backend.ai/ipc/agent-logger-{os.getpid()}.sock')
+        log_sockpath.parent.mkdir(parents=True, exist_ok=True)
+        log_endpoint = f'ipc://{log_sockpath}'
+        cfg['logging']['endpoint'] = log_endpoint
         try:
-            logger = Logger(cfg['logging'])
+            logger = Logger(cfg['logging'], is_master=True, log_endpoint=log_endpoint)
             with logger:
                 ns = cfg['etcd']['namespace']
                 setproctitle(f"backend.ai: agent {ns}")
@@ -646,15 +590,19 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
                     log_config.debug('debug mode enabled.')
 
                 if cfg['agent']['event-loop'] == 'uvloop':
+                    import uvloop
                     uvloop.install()
                     log.info('Using uvloop as the event loop backend')
-                aiotools.start_server(server_main, num_workers=1,
-                                      use_threading=True, args=(cfg, ))
+                aiotools.start_server(server_main_logwrapper,
+                                      num_workers=1,
+                                      use_threading=False,
+                                      args=(cfg, log_endpoint))
                 log.info('exit.')
         finally:
             if cfg['agent']['pid-file'].is_file():
                 # check is_file() to prevent deleting /dev/null!
                 cfg['agent']['pid-file'].unlink()
+            os.unlink(log_sockpath)
     else:
         # Click is going to invoke a subcommand.
         pass

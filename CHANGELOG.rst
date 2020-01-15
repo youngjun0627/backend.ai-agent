@@ -1,6 +1,144 @@
 Changes
 =======
 
+19.12.0b1 (2020-01-xx)
+----------------------
+
+* IMPROVE: Now our manager-to-agent RPC uses `Callosum <https://github.com/lablup/callosum>_` instead of
+  aiozmq, supporting Python 3.8 natively. (#157, #63)
+
+* FIX: Detection for manager now works for HA setup seamlessly. (It now determines if at least one
+  manager is running.) (lablup/backend.ai#125)
+
+19.12.0a3 (2019-12-31)
+----------------------
+
+* FIX: Reconcile a bugfix related to /home/work permissions from the 19.09 branch.
+
+19.12.0a2 (2019-12-31)
+----------------------
+
+* NEW-PREVIEW: Now we support ROCM (Radeon Open Compute) accelerators via ``backend.ai-accelerator-rocm``
+  plugin.
+
+* FIX: Update manager detection routine for HA setup (lablup/backend.ai-manager#125)
+
+* FIX: Wrong ownership of .ssh and keypair files when the SSH keypair is set via the ``internal_data``
+  field of the kernel creation config.
+
+19.12.0a1 (2019-12-26)
+----------------------
+
+* MAINTENANCE: Now it runs on Python 3.8 or higher.
+
+* NEW: support for user-defined bootstrap script (e.g., this can be used to clone a git repo) (#161)
+
+* IMPROVE: ResourceSlots are now more permissive. Agent still checks the validity of known slots
+  but also allows zero-valued unknown slots as well. (#162)
+
+19.09.10 (2020-01-09)
+---------------------
+
+* FIX: Support host-to-container PID mapping in older Linux kernels (lower than 4.1) which does not
+  provide NSPid field in /proc task status.
+
+* FIX: Invalid ownership of several runtime-generated files in the container working directory such as
+  SSH keypair and basic dotfiles, which may prevent containers from working properly.
+
+* MAINTENANCE: Update aiodocker to 0.17
+
+19.09.9 (2019-12-18)
+--------------------
+
+* IMPROVE: Skip containers and images with a unsupported (future) kernelspec version.
+  (lablup/backend.ai#80)
+
+19.09.8 (2019-12-16)
+--------------------
+
+* NEW: Provide some minimal basic dotfiles in kernel containers by default (.bashrc and .vimrc) (#160)
+
+  - Make the "ls" command always colorized using an alias.
+
+* NEW: Add support for keypair-specific SSH private key setup (#158)
+
+19.09.7 (2019-11-11)
+--------------------
+
+* ROLLBACK: SFTP throughput optimization. It has caused PyCharm's helper upload failures for its
+  remote interpreter and debugging support, while all other tested SFTP clients (Cyberduck, FileZilla)
+  have worked flawlessly.
+
+  - While we are investigating both the SSHJ library and dropbear part to find the root cause,
+    the optimization is hold back since working is better than fast.
+
+19.09.6 (2019-11-04)
+--------------------
+
+* FIX/IMPROVE: entrypoint.sh for kernel containers startup
+
+  - Handle UID overlap (not only GID) correctly by renaming the image's existing account
+
+  - Allow execution as root if the agent is configured to do so.
+
+  - FIX: Ensure library preloads not modifiable by the user accounts in kernels even when they unset
+    "LD_PRELOAD" environment variable, by writing "/etc/ld.so.preload" file as root.
+
+    NOTE: Alpine-based images does not support this because musl-libc do not use /etc/ld* configurations
+    but only depend on environment variables with a few hard-coded defaults.
+
+* FIX: Ensure dropbear (our intrinsic SSH daemon) to keep environment variables when users either open a
+  new SSH session or execute a remote command.
+
+* FIX: Regression of the batch-mode execution API.
+
+* MAINTENANCE: Update dependencies and pin Trafaret to v1.x because Trafraet v2.0 release breaks the
+  backward compatibility.
+
+19.09.5 (2019-10-16)
+--------------------
+
+* FIX: SFTP/SCP should work consistently in all images, even without ``/usr/bin/scp`` and ``libcrypto``.
+  Applied static builds of OpenSSH utilities with OpenSSL and zlib included.
+
+19.09.4 (2019-10-15)
+--------------------
+
+* OPTIMIZE: SFTP file transfers are now 3x faster by increasing the network buffer sizes used by
+  dropbear.
+
+* FIX: Regression of entrypoint.sh that caused failure of user/group creation, which resulted in
+  inability to use the SSH service port due to missing username.
+
+19.09.3 (2019-10-14)
+--------------------
+
+* FIX: entrypoint.sh for kernel containers did not work properly when the container image has an user ID
+  or group ID that overlaps with the given values or when the agent is configured to use root for
+  containers.  This fixes kernel launches in macOS where the default user's group "staff" has the group
+  ID 20 which overlaps with the group "dialout" in Ubuntu or "games" in CentOS.
+
+19.09.2 (2019-10-11)
+--------------------
+
+* FIX: SSH and SFTP support now works as expected in all types of kernels, including Alpine-based ones.
+  The auto-generated keypair name is changed to "id_container" and now it uses RSA instead of ECDSA for
+  better compatibility.
+
+* FIX: Handle rarely happened ProcessLookupError when cleaning up kernels and stat synchronizers
+  which has caused infinitely repeated warning "cannot read stats: sysfs unreadable for container xxxx".
+
+* FIX: Use the canonical, normalized version number for the backend.ai-common setup dependency to silence
+  pip warnings during installation.
+
+19.09.1 (2019-10-10)
+--------------------
+
+* FIX: Regression of code execution due to wrong-ordered arguments of code execution RPC call.
+
+* FIX: Potential memory leak and PID exhaustion due to improper termination of stat synchronizer
+  and its logger processes.
+
 19.09.0 (2019-10-07)
 --------------------
 

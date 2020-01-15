@@ -45,6 +45,7 @@ user soft nproc 65536
 **sysctl**
 ```
 fs.file-max=2048000
+fs.inotify.max_user_watches=524288
 net.core.somaxconn=1024
 net.ipv4.tcp_max_syn_backlog=1024
 net.ipv4.tcp_slow_start_after_idle=0
@@ -269,3 +270,10 @@ should be able to access the public Internet (maybe via some corporate firewalls
 | redis:6379               | Redis API access |
 | docker-registry:{80,443} | HTTP watcher API |
 | (Other hosts)            | Depending on user program requirements |
+
+
+LICENSES
+--------
+
+[GNU Lesser General Public License](https://github.com/lablup/backend.ai-agent/blob/master/LICENSE)
+[Dependencies](https://github.com/lablup/backend.ai-manager/blob/agent/DEPENDENCIES.md)

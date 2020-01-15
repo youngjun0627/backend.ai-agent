@@ -51,8 +51,8 @@ class Runner(BaseRunner):
     async def build_heuristic(self) -> int:
         if Path('setup.py').is_file():
             cmd = [
-                self.runtime_path, *DEFAULT_PYFLAGS,
-                '-m', 'pip', 'install', '-e', '.',
+                str(self.runtime_path), *DEFAULT_PYFLAGS,
+                '-m', 'pip', 'install', '--user', '-e', '.',
             ]
             return await self.run_subproc(cmd)
         else:
@@ -62,7 +62,7 @@ class Runner(BaseRunner):
     async def execute_heuristic(self) -> int:
         if Path('main.py').is_file():
             cmd = [
-                self.runtime_path, *DEFAULT_PYFLAGS,
+                str(self.runtime_path), *DEFAULT_PYFLAGS,
                 'main.py',
             ]
             return await self.run_subproc(cmd)

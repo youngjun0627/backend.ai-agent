@@ -264,12 +264,15 @@ class StatContext:
     node_metrics: Mapping[MetricKey, Metric]
     device_metrics: Mapping[MetricKey, MutableMapping[DeviceId, Metric]]
     kernel_metrics: MutableMapping[KernelId, MutableMapping[MetricKey, Metric]]
+    log_endpoint: str
 
     def __init__(self, agent: 'AbstractAgent', mode: StatModes = None, *,
-                 cache_lifespan: float = 30.0):
+                 log_endpoint: str,
+                 cache_lifespan: float = 30.0) -> None:
         self.agent = agent
         self.mode = mode if mode is not None else StatModes.get_preferred_mode()
         self.cache_lifespan = cache_lifespan
+        self.log_endpoint = log_endpoint
 
         self.node_metrics = {}
         self.device_metrics = {}
@@ -486,7 +489,9 @@ class StatContext:
 @aiotools.actxmgr
 async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
                                   stat_type: StatModes, cid: str,
-                                  *, exec_opts=None):
+                                  log_endpoint: str,
+                                  *,
+                                  exec_opts: Mapping[str, str] = None):
     # Spawn high-perf stats collector process for Linux native setups.
     # NOTE: We don't have to keep track of this process,
     #       as they will self-terminate when the container terminates.
@@ -499,7 +504,9 @@ async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
 
     proc = await asyncio.create_subprocess_exec(*[
         sys.executable, '-m', 'ai.backend.agent.stats',
-        str(config_path), str(sync_sockpath), cid, '--type', stat_type.value,
+        str(config_path), str(sync_sockpath), cid,
+        '--type', stat_type.value,
+        '--log-endpoint', log_endpoint,
     ], **exec_opts)
 
     signal_sockpath = ipc_base_path / f'stat-start-{proc.pid}.sock'
@@ -705,6 +712,7 @@ if __name__ == '__main__':
     parser.add_argument('cid', type=str)
     parser.add_argument('-t', '--type', choices=list(StatModes), type=StatModes,
                         default=StatModes.DOCKER)
+    parser.add_argument('--log-endpoint', type=str)
     args = parser.parse_args()
     setproctitle(f'backend.ai: stat-collector {args.cid[:7]}')
 
@@ -719,6 +727,8 @@ if __name__ == '__main__':
         'pkg-ns': {'ai.backend': 'INFO'},
         'console': {'colored': True, 'format': 'verbose'},
     }
-    logger = Logger(raw_logging_cfg or fallback_logging_cfg)
+    logger = Logger(raw_logging_cfg or fallback_logging_cfg,
+                    is_master=False,
+                    log_endpoint=args.log_endpoint)
     with logger:
         main(args)

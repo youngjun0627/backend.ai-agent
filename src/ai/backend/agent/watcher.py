@@ -344,7 +344,7 @@ def main(cli_ctx, config_path, debug):
 
     try:
         cfg = config.check(raw_cfg, watcher_config_iv)
-        if 'debug'in cfg and cfg['debug']['enabled']:
+        if 'debug' in cfg and cfg['debug']['enabled']:
             print('== Watcher configuration ==')
             pprint(cfg)
         cfg['_src'] = cfg_src_path
