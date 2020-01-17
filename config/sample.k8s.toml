@@ -33,27 +33,6 @@ scaling-group = "default"
 # pid-file = "./agent.pid"             # env: BACKEND_PID_FILE
 
 
-[registry]
-# Registry for use with k8s cluster 
-# All kernel container images should be saved here 
-
-# ECR only works if nodes are from cloud provider
-# When using ECR as private registry, you don't need to create imagePullSecret
-# ACR(Azure Container Registry) users can just use "local" type  
-
-# Type value should be one of : "ecr" or "local"
-# Configuration items will be different, depending on the value of "type"
-
-# When using self-deployed private registry
-type = "local" 
-addr = { host = "localhost", port = 5000 }
-
-# When using ECR
-type = "ecr"
-profile = "default" # This should refer profile to use from AWS CLI configuration
-registry-id = "123456789012"
-
-
 [baistatic]
 # NFS information for backend.ai static files
 nfs-addr = "localhost"

@@ -13,10 +13,6 @@ scaling-group = "default"
 pid-file = "./agent.pid"
 
 
-[registry]
-addr = { host = "localhost", port = 5000 }
-
-
 [baistatic]
 # NFS information for backend.ai static files
 nfs-addr = "localhost"

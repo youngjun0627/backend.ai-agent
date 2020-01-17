@@ -30,15 +30,7 @@ and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv) (optional but 
 * Docker 18.03 or later with docker-compose (18.09 or later is recommended)
 * Properly configured Kubeconfig file - should be located at `$HOME/.kube/config` or `$KUBECONFIG` path
 * [Git LFS](https://git-lfs.github.com/) installed and configured
-* Private Registry for Backend.AI kernel images
-
-To let manager determine available kernel images in K8s cluster and secure kernel image integrity of whole K8s cluster, Backend.AI Agent requires a private registry. There are no requirements for registry spec; However, all K8s worker nodes should pull images from the registry without any error.
-
-Also, after deploying the private registry, imagePullSecret `backend-ai-registry-secret` needs to be created in target K8s cluster, with namespace `backend-ai`. Check [K8s documentation](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/) if you don't know how to create imagePullSecret.
-
-When using ECR as a private registry, you should:
-- provide `registry-id` instead of registry address in `agent.toml`
-- be logged in to AWS using AWS CLI with `aws configure`
+* [Backend.AI K8s controller](https://github.com/lablup/backend.ai-k8s-controller) installed and running without any error
 
 #### One-shot installation
 
@@ -94,7 +86,7 @@ $ cp config/halfstack.toml ./agent.toml
 Then, run it (for debugging, append a `--debug` flag):
 
 ```console
-$ python -m ai.backend.agent.server
+$ python -m ai.backen`d.agent.server
 ```
 
 To run the agent-watcher:
@@ -153,24 +145,6 @@ When you are trying to deploy Backend.AI Agent to K8s cluster from Cloud Provide
 
 ### Setting up CUDA support (experimental)
 If [nVIDIA Device Plugin for K8s](https://github.com/NVIDIA/k8s-device-plugin) has been installed and running without any error, Backend.AI Agent automatically inspects available GPU and report it to manager.
-
-### Adding Backend.AI kernel images to private registry
-
-To import all available kernel images from lablup docker repository (**THIS WILL TAKE REALLY LONG TIME!!!**):
-
-```sh
-python -m ai.backend.agent.cli.images rescan-images index.docker.io
-```
-
-or, to only pull images you want: 
-1. Go to Lablup's [Docker Hub](https://hub.docker.com/u/lablup) and check image name of kernel image you want to pull.
-2. Execute: 
-
-```sh
-python -m ai.backend.agent.cli.images rescan-images index.docker.io -i <image name>
-```
-3. Repeat 1 and 2 for every images you want.
-
 
 ### Running from a command line
 
