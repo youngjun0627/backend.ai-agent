@@ -1,11 +1,8 @@
 import asyncio
-import configparser
-import base64
-import datetime
+from contextvars import ContextVar
 from decimal import Decimal
 import json
 import logging, logging.config
-import os
 from pathlib import Path
 import platform
 from pprint import pformat
@@ -13,24 +10,25 @@ import random
 import secrets
 import time
 from typing import (
-    Any, Dict, List,
-    Optional, Mapping,
-    Tuple, Type,
+    Any, Dict, List, Callable,
+    Optional, Mapping, MutableMapping,
+    Tuple, Type, Union, Sequence
 )
-from uuid import UUID
-import yarl
 
-import aiohttp
+import aiotools
+from async_timeout import timeout as _timeout
 import attr
-import boto3
+from callosum.rpc import Peer, RPCUserError
+from callosum.lower.zeromq import ZeroMQAddress, ZeroMQRPCTransport
 from kubernetes_asyncio import client as K8sClient, config as K8sConfig
-import pytz
-import snappy
+import zmq
 
 from ai.backend.common import msgpack
-from ai.backend.common.docker import login, ImageRef
+from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import (
+    AutoPullBehavior,
+    ImageRegistry,
     DeviceName,
     BinarySize,
     KernelCreationConfig,
@@ -40,6 +38,9 @@ from ai.backend.common.types import (
     MountPermission,
     ResourceSlot,
     SlotName,
+    ServicePort,
+    SessionTypes,
+    ServicePortProtocols,
 )
 from .kernel import prepare_runner_files, K8sKernel
 from .k8sapi import (
@@ -56,13 +57,18 @@ from .resources import (
     AbstractComputePlugin,
     detect_resources,
 )
-from .. import __version__ as VERSION
 from ..agent import AbstractAgent
-from ..exception import InsufficientResource, K8sError
+from ..exception import (
+    InsufficientResource,
+    K8sError,
+    AgentError
+)
 from ..resources import KernelResourceSpec
 from ..kernel import match_krunner_volume, KernelFeatures
+from ..utils import parse_service_ports
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
+agent_peers: MutableMapping[str, zmq.asyncio.Socket] = {}  # agent-addr to socket
 
 
 def format_binarysize(s: BinarySize) -> str:
@@ -88,15 +94,74 @@ def parse_service_port(s: str) -> Dict[str, Any]:
         'name': name,
         'protocol': protocol,
         'container_ports': (port,),
-        'host_port': None,  # determined after container start
+        'host_ports': None,  # determined after container start
     }
+
+
+class PeerInvoker(Peer):
+
+    class _CallStub:
+
+        _cached_funcs: Dict[str, Callable]
+        order_key: ContextVar[Optional[str]]
+
+        def __init__(self, peer: Peer):
+            self._cached_funcs = {}
+            self.peer = peer
+            self.order_key = ContextVar('order_key', default=None)
+
+        def __getattr__(self, name: str):
+            if f := self._cached_funcs.get(name, None):  # noqa
+                return f
+            else:
+                async def _wrapped(*args, **kwargs):
+                    request_body = {
+                        'args': args,
+                        'kwargs': kwargs,
+                    }
+                    self.peer.last_used = time.monotonic()
+                    ret = await self.peer.invoke(name, request_body,
+                                                 order_key=self.order_key.get())
+                    self.peer.last_used = time.monotonic()
+                    return ret
+                self._cached_funcs[name] = _wrapped
+                return _wrapped
+
+    call: _CallStub
+    last_used: float
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.call = self._CallStub(self)
+        self.last_used = time.monotonic()
+
+
+@aiotools.actxmgr
+async def RPCContext(addr, timeout=None, *, order_key: str = None):
+    global agent_peers
+    peer = agent_peers.get(addr, None)
+    if peer is None:
+        log.debug('Estabilshing connection to tcp://{}:16001', addr)
+        peer = PeerInvoker(
+            connect=ZeroMQAddress(f'tcp://{addr}:16001'),
+            transport=ZeroMQRPCTransport,
+            serializer=msgpack.packb,
+            deserializer=msgpack.unpackb,
+        )
+        await peer.__aenter__()
+        agent_peers[addr] = peer
+    try:
+        with _timeout(timeout):
+            peer.call.order_key.set(order_key)
+            yield peer
+    except RPCUserError as orig_exc:
+        raise AgentError(orig_exc.name, orig_exc.args)
+    except Exception:
+        raise
 
 
 class K8sAgent(AbstractAgent):
     vfolder_as_pvc: bool
-    ecr_address: str
-    ecr_token: str
-    ecr_token_expireAt: datetime.datetime
     k8s_images: List[str]
     workers: dict
 
@@ -105,9 +170,6 @@ class K8sAgent(AbstractAgent):
 
     async def __ainit__(self) -> None:
         self.vfolder_as_pvc = False
-        self.ecr_address = ''
-        self.ecr_token = ''
-        self.ecr_token_expireAt = datetime.datetime.now()
         self.k8s_images = []
 
         self.workers = {}
@@ -120,9 +182,6 @@ class K8sAgent(AbstractAgent):
         if 'vfolder-pv' in self.config.keys():
             await self.ensure_vfolder_pv()
 
-        if self.config['registry']['type'] == 'ecr':
-            await self.get_aws_credentials()
-
         await self.check_krunner_pv_status()
         await prepare_runner_files(self.config['baistatic']['mounted-at'])
 
@@ -131,9 +190,8 @@ class K8sAgent(AbstractAgent):
         k8s_version = k8s_version_response.git_version
         k8s_platform = k8s_version_response.platform
 
-        log.info('running with Kubernetes {0} on Platform {1}', 
+        log.info('running with Kubernetes {0} on Platform {1}',
                  k8s_version, k8s_platform)
-
 
     @staticmethod
     async def detect_resources(resource_configs: Mapping[str, Any],
@@ -143,19 +201,6 @@ class K8sAgent(AbstractAgent):
                                    Mapping[SlotName, Decimal]
                                ]:
         return await detect_resources(resource_configs)
-
-    async def get_aws_credentials(self) -> None:
-        region = configparser.ConfigParser()
-        credentials = configparser.ConfigParser()
-
-        aws_path = Path.home() / Path('.aws')
-        region.read_string((aws_path / Path('config')).read_text())
-        credentials.read_string((aws_path / Path('credentials')).read_text())
-
-        profile = self.config['registry']['profile']
-        self.config['registry']['region'] = region[profile]['region']
-        self.config['registry']['access-key'] = credentials[profile]['aws_access_key_id']
-        self.config['registry']['secret-key'] = credentials[profile]['aws_secret_access_key']
 
     async def check_krunner_pv_status(self) -> None:
         await K8sConfig.load_kube_config()
@@ -237,7 +282,7 @@ class K8sAgent(AbstractAgent):
         nodes = await k8sCoreApi.list_node()
         for node in nodes.items:
             is_master = False
-            for taint in node.spec.taints if node.spec.taints != None else []:
+            for taint in node.spec.taints if node.spec.taints is not None else []:
                 if taint.key == 'node-role.kubernetes.io/master' and taint.effect == 'NoSchedule':
                     is_master = True
                     break
@@ -246,74 +291,10 @@ class K8sAgent(AbstractAgent):
                 continue
             self.workers[node.metadata.name] = node.status.capacity
             for addr in node.status.addresses:
-                if addr.type == 'InternalIP':
-                    self.workers[node.metadata.name]['InternalIP'] = addr.address
                 if addr.type == 'ExternalIP':
                     self.workers[node.metadata.name]['ExternalIP'] = addr.address
-
-    async def get_docker_registry_info(self, scope: str = 'registry:catalog:*') -> Tuple[str, dict]:
-        await K8sConfig.load_kube_config()
-        k8sCoreApi = K8sClient.CoreV1Api()
-        registry_type = self.config['registry']['type']
-        # Determines Registry URL and its appropriate Authorization header
-        if registry_type == 'local':
-            addr, port = self.config['registry']['addr'].as_sockaddr()
-
-            registry_pull_secrets = await k8sCoreApi.list_namespaced_secret('backend-ai')
-            for secret in registry_pull_secrets.items:
-                if secret.metadata.name == 'backend-ai-registry-secret':
-                    pull_secret = secret
-                    break
-            else:
-                raise K8sError('backend-ai-registry-secret does not exist in backend-ai namespace')
-
-            auth_data = json.loads(base64.b64decode(pull_secret.data['.dockerconfigjson']))
-            token = None
-            for server, auth_info in auth_data['auths'].items():
-                if addr in server:
-                    token = auth_info['auth']
-            if token is None:
-                raise K8sError(
-                    'No authentication information for registry server configured in agent.toml'
-                )
-
-            sess = aiohttp.ClientSession(connector=aiohttp.TCPConnector(verify_ssl=False))
-            url = yarl.URL(f'https://{addr}:{port}')
-            username, password = base64.b64decode(token).decode().split(':')
-
-            header = await login(
-                sess, url, { 'username': username, 'password': password }, scope
-            )
-            await sess.close()
-            return str(url), header['headers']
-
-        elif registry_type == 'ecr':
-            # Check if given token is valid yet
-            utc = pytz.UTC
-            if self.ecr_address and \
-                    self.ecr_token and self.ecr_token_expireAt and \
-                    utc.localize(datetime.datetime.now()) < self.ecr_token_expireAt:
-                registry_addr, headers = self.ecr_address, {'Authorization': 'Basic ' + self.ecr_token}
-                return registry_addr, headers
-
-            client = boto3.client(
-                'ecr',
-                aws_access_key_id=self.config['registry']['access-key'],
-                aws_secret_access_key=self.config['registry']['secret-key']
-            )
-            auth_data = client.get_authorization_token(
-                registryIds=[self.config['registry']['registry-id']]
-            )
-            self.ecr_address = auth_data['authorizationData'][0]['proxyEndpoint']
-            self.ecr_token = auth_data['authorizationData'][0]['authorizationToken']
-            self.ecr_token_expireAt = auth_data['authorizationData'][0]['expiresAt']
-            log.debug('ECR Access Token expires at: {0}', self.ecr_token_expireAt)
-
-            return self.ecr_address, {
-                'Authorization': 'Basic ' + self.ecr_token,
-                'Content-Type': 'application/json'
-            }
-        raise K8sError(f'Registry type {registry_type} not implemented yet')
+                if addr.type == 'InternalIP':
+                    self.workers[node.metadata.name]['InternalIP'] = addr.address
 
     async def scan_running_kernels(self) -> None:
         await K8sConfig.load_kube_config()
@@ -335,13 +316,36 @@ class K8sAgent(AbstractAgent):
                 log.error('ConfigMap for kernel {0} not found, skipping restoration', kernel_id)
                 continue
             registry = json.loads(registry_cm.data['registry'])
+            ports = deployment.spec.template.spec.containers[0].ports
+            port_map = {
+                p.container_port: p.host_port or 0 for p in ports
+            }
+
+            service_ports: List[ServicePort] = []
+            service_ports.append({
+                'name': 'sshd',
+                'protocol': ServicePortProtocols('tcp'),
+                'container_ports': (2200,),
+                'host_ports': (port_map.get(2200, None),),
+            })
+            service_ports.append({
+                'name': 'ttyd',
+                'protocol': ServicePortProtocols('http'),
+                'container_ports': (7681,),
+                'host_ports': (port_map.get(7681, None),),
+            })
+            for service_port in parse_service_ports(registry_cm.data['registry']):
+                service_port['host_ports'] = tuple(
+                    port_map.get(cport, None) for cport in service_port['container_ports']
+                )
+                service_ports.append(service_port)
             self.kernel_registry[_kernel_id] = await K8sKernel.new(
-                deployment.metadata.name, 
+                deployment.metadata.name,
                 ImageRef(registry['lang']['canonical'], registry['lang']['registry']),
                 registry['version'],
                 config=self.config,
                 resource_spec=KernelResourceSpec.read_from_string(registry['resource_spec']),
-                service_ports=registry['service_ports'],
+                service_ports=service_ports,
                 data={
                     'kernel_host': random.choice([x['InternalIP'] for x in self.workers.values()]),
                     'repl_in_port': registry['repl_in_port'],
@@ -356,78 +360,42 @@ class K8sAgent(AbstractAgent):
             log.info('Restored kernel {0} from K8s', kernel_id)
 
     async def scan_images(self, interval: float = None) -> None:
-        updated_images: List[str] = []
-        registry_addr, header = await self.get_docker_registry_info()
+        updated_images: Dict[str, str] = {}
+        for name, node in self.workers.items():
+            async with RPCContext(node['InternalIP'], 30) as rpc:
+                _images: Dict[str, str] = await rpc.call.scan_images()
+                for tag, image_id in _images.items():
+                    if tag not in updated_images.keys():
+                        updated_images[tag] = image_id
 
-        async with aiohttp.ClientSession(headers=header, connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
-            all_images_response = await session.get(f'{registry_addr}/v2/_catalog')
-            status_code = all_images_response.status
-            log.debug('/v2/_catalog/: {0}', await all_images_response.text())
-            all_images = json.loads(await all_images_response.text())
-            if status_code == 401:
-                raise K8sError('\n'.join([x['message'] for x in all_images['errors']]))
-            
-        filtered_images = list(
-            filter(
-                lambda x: x.split('/')[0] in self.config['registry']['projects'], 
-                all_images['repositories']
-            )
-        )
-        scope = 'registry:catalog:* ' + ' '.join([f'repository:{repo}:pull' for repo in filtered_images])
-        registry_addr, header = await self.get_docker_registry_info(scope=scope)
+        self.images = updated_images
 
-        async with aiohttp.ClientSession(headers=header, connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
-            for image_name in filtered_images:
-                image_tags_response = await session.get(f'{registry_addr}/v2/{image_name}/tags/list')
-                image_tags = json.loads(await image_tags_response.text())
-                if image_tags.get('tags') is None:
-                    continue
-                updated_images += [f'{image_name}:{x}' for x in image_tags['tags']]
+    async def check_image(self, image_id: str, auto_pull: AutoPullBehavior,
+                          canonical: str,
+                          known_registries: Union[Mapping[str, Any], Sequence[str]] = None) \
+                              -> Dict[str, bool]:
+        status: Dict[str, bool] = {}
+        for name, node in self.workers.items():
+            async with RPCContext(node['InternalIP'], 30) as rpc:
+                status[name] = await rpc.call.check_image(canonical, known_registries, image_id,
+                                                          auto_pull)
+        return status
 
-        for added_image in list(set(updated_images) - set(self.k8s_images)):
-            log.debug('found kernel image: {0}', added_image)
-        for removed_image in list(set(self.k8s_images) - set(updated_images)):
-            log.debug('removed kernel image: {0}', removed_image)
-        self.k8s_images = updated_images
+    async def pull_image(self, registry_conf: ImageRegistry, node_name: str,
+                          canonical: str,
+                          known_registries: Union[Mapping[str, Any], Sequence[str]] = None):
+        node = self.workers[node_name]
+        async with RPCContext(node['InternalIP']) as rpc:
+            await rpc.call.pull_image(canonical, known_registries, registry_conf)
+
+    async def get_service_ports_from_label(self, canonical: str) -> str:
+        node: dict = random.choice(tuple(self.workers.values()))
+        async with RPCContext(node['InternalIP']) as rpc:
+            image_info = await rpc.call.inspect_image(canonical)
+            return image_info['Config']['Labels']['ai.backend.service-ports']
 
     async def collect_node_stat(self, interval: float):
         pass
-
-    async def heartbeat(self, interval: float) -> None:
-        '''
-        Send my status information and available kernel images.
-        '''
-        res_slots = {}
-
-        for cctx in self.computers.values():
-            for slot_key, slot_type in cctx.klass.slot_types:
-                res_slots[slot_key] = (slot_type, str(self.slots.get(slot_key, 0)))
-
-        agent_info = {
-            'ip': str(self.config['agent']['rpc-listen-addr'].host),
-            'region': self.config['agent']['region'],
-            'addr': f"tcp://{self.config['agent']['rpc-listen-addr']}",
-            'resource_slots': res_slots,
-            'version': VERSION,
-            'compute_plugins': {
-                key: {
-                    'version': computer.klass.get_version(),
-                    **(await computer.klass.extra_info())
-                }
-                for key, computer in self.computers.items()
-            },
-            'images': snappy.compress(msgpack.packb([
-                (x, 'K8S_AGENT') for x in self.k8s_images
-            ]))
-        }
-
-        try:
-            await self.produce_event('instance_heartbeat', agent_info)
-        except asyncio.TimeoutError:
-            log.warning('event dispatch timeout: instance_heartbeat')
-        except Exception:
-            log.exception('instance_heartbeat failure')
-            self.error_monitor.capture_exception()
 
     async def create_kernel(self, _kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
                             restarting: bool = False) -> KernelCreationResult:
@@ -441,7 +409,7 @@ class K8sAgent(AbstractAgent):
             'create_kernel: kernel_config -> {0}',
             json.dumps(kernel_config, ensure_ascii=False, indent=2)
         )
-        
+
         await self.produce_event('kernel_preparing', kernel_id)
 
         # Read image-specific labels and settings
@@ -453,19 +421,35 @@ class K8sAgent(AbstractAgent):
 
         image_labels = kernel_config['image']['labels']
 
+        image_status = await self.check_image(
+            kernel_config['image']['digest'],
+            AutoPullBehavior(kernel_config.get('auto_pull', 'digest')),
+            kernel_config['image']['canonical'],
+            [kernel_config['image']['registry']['name']]
+        )
+        if True in image_status.values():
+            await self.produce_event('kernel_pulling',
+                                     str(kernel_id), image_ref.canonical)
+
+        for node, do_pull in image_status.items():
+            if do_pull:
+                await self.pull_image(kernel_config['image']['registry'], node,
+                                      kernel_config['image']['canonical'],
+                                      [kernel_config['image']['registry']['name']])
+
         version        = int(image_labels.get('ai.backend.kernelspec', '1'))
         _envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
         envs_corecount = _envs_corecount.split(',') if _envs_corecount else []
         kernel_features = set(image_labels.get('ai.backend.features', '').split())
 
-        scratch_dir = (self.config['container']['scratch-root'] / str(kernel_id)).resolve()
-        work_dir = scratch_dir / 'work'
-
         slots = ResourceSlot.from_json(kernel_config['resource_slots'])
         vfolders = kernel_config['mounts']
-        
+        vfolder_mount_map: Mapping[str, str] = {}
+        if 'mount_map' in kernel_config.keys():
+            vfolder_mount_map = kernel_config['mount_map']
+
         await self.produce_event('kernel_creating', kernel_id)
-        
+
         resource_spec = KernelResourceSpec(
             container_id='K8sDUMMYCID',
             allocations={},
@@ -479,7 +463,7 @@ class K8sAgent(AbstractAgent):
         if KernelFeatures.UID_MATCH in kernel_features:
             uid = self.config['container']['kernel-uid']
             gid = self.config['container']['kernel-gid']
-            environ['LOCAL_USER_ID'] = str(gid)
+            environ['LOCAL_GROUP_ID'] = str(gid)
             environ['LOCAL_USER_ID'] = str(uid)
 
         # Ensure that we have intrinsic slots.
@@ -518,35 +502,25 @@ class K8sAgent(AbstractAgent):
 
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
-        matched_distro, krunner_volume = match_krunner_volume(self.config['container']['krunner-volumes'], distro)
+        matched_distro, krunner_volume = \
+            match_krunner_volume(self.config['container']['krunner-volumes'], distro)
+        matched_libc_style = 'glibc'
+        if matched_distro.startswith('alpine'):
+            matched_libc_style = 'musl'
         log.debug('selected krunner: {}', matched_distro)
+        log.debug('selected libc style: {}', matched_libc_style)
         log.debug('krunner volume: {}', krunner_volume)
         arch = platform.machine()
-
-        # Add private registry information
-        if self.config['registry']['type'] == 'local':
-            registry_addr, registry_port = self.config['registry']['addr']
-            registry_name = f'{registry_addr}:{registry_port}'
-        elif self.config['registry']['type'] == 'ecr':
-            registry_name = self.ecr_address.replace('https://', '')
 
         canonical = kernel_config['image']['canonical']
 
         # Create deployment object with given image name
-        _, repo, name_with_tag = canonical.split('/')
-        if self.config['registry']['type'] != 'local':
-            deployment = KernelDeployment(
-                str(kernel_id), f'{registry_name}/{repo}/{name_with_tag}',
-                krunner_volume, arch,
-                ecr_url=registry_name,
-                name=f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-')
-            )
-        else:
-            deployment = KernelDeployment(
-                str(kernel_id), f'index.docker.io/{repo}/{name_with_tag}',
-                krunner_volume, arch, 
-                name=f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-')
-            )
+        registry_name, repo, name_with_tag = canonical.split('/')
+        deployment = KernelDeployment(
+            str(kernel_id), f'{registry_name}/{repo}/{name_with_tag}',
+            krunner_volume, arch,
+            name=f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-')
+        )
 
         def _mount(kernel_id: str, hostPath: str, mountPath: str, mountType: str, perm='ro'):
             name = (kernel_id + '-' + mountPath.split('/')[-1]).replace('.', '-')
@@ -572,7 +546,7 @@ class K8sAgent(AbstractAgent):
             PVCMountSpec('entrypoint.sh', '/opt/kernel/entrypoint.sh', 'File')
         )
         deployment.mount_pvc(
-            PVCMountSpec(f'su-exec.{distro}.bin', '/opt/kernel/su-exec', 'File')
+            PVCMountSpec(f'su-exec.{distro}.{arch}.bin', '/opt/kernel/su-exec', 'File')
         )
         deployment.mount_pvc(
             PVCMountSpec(f'jail.{distro}.bin', '/opt/kernel/jail', 'File')
@@ -604,15 +578,15 @@ class K8sAgent(AbstractAgent):
         )
 
         deployment.mount_pvc(
-            PVCMountSpec(f'dropbear.{arch}.bin', '/opt/kernel/dropbear', 'File')
+            PVCMountSpec(f'dropbear.{matched_libc_style}.{arch}.bin', '/opt/kernel/dropbear', 'File')
         )
         deployment.mount_pvc(
-            PVCMountSpec(f'dropbearconvert.{arch}.bin', '/opt/kernel/dropbearconvert', 'File')
+            PVCMountSpec(f'dropbearconvert.{matched_libc_style}.{arch}.bin', '/opt/kernel/dropbearconvert', 'File')
         )
         deployment.mount_pvc(
-            PVCMountSpec(f'dropbearkey.{arch}.bin', '/opt/kernel/dropbearkey', 'File')
+            PVCMountSpec(f'dropbearkey.{matched_libc_style}.{arch}.bin', '/opt/kernel/dropbearkey', 'File')
         )
-        
+
         # If agent is using vFolder by NFS PVC, check if vFolder PVC exists and Bound
         # # otherwise raise since we can't use vfolder
         if len(vfolders) > 0 and self.vfolder_as_pvc:
@@ -630,11 +604,24 @@ class K8sAgent(AbstractAgent):
             deployment.vfolder_pvc = pvc.metadata.name
 
         for vfolder in vfolders:
-            if len(vfolder) == 4:
+            mount_hostpath = False
+            if len(vfolder) == 5:
+                folder_name, folder_host, folder_id, folder_perm, host_path_raw = vfolder
+                if host_path_raw:
+                    mount_hostpath = True
+                    host_path = Path(host_path_raw)
+                else:
+                    host_path = (self.config['vfolder']['mount'] / folder_host /
+                                    self.config['vfolder']['fsprefix'] / folder_id)
+            elif len(vfolder) == 4:  # for backward compatibility
                 folder_name, folder_host, folder_id, folder_perm = vfolder
+                host_path = (self.config['vfolder']['mount'] / folder_host /
+                                self.config['vfolder']['fsprefix'] / folder_id)
             elif len(vfolder) == 3:  # legacy managers
                 folder_name, folder_host, folder_id = vfolder
                 folder_perm = 'rw'
+                host_path = (self.config['vfolder']['mount'] / folder_host /
+                                self.config['vfolder']['fsprefix'] / folder_id)
             else:
                 raise RuntimeError(
                     'Unexpected number of vfolder mount detail tuple size')
@@ -646,18 +633,24 @@ class K8sAgent(AbstractAgent):
                 # (Currently docker's READ_WRITE includes DELETE)
                 perm_char = 'rw'
 
-            if self.vfolder_as_pvc:
-                subPath = (folder_host / self.config['vfolder']['fsprefix'] / folder_id)
-                deployment.mount_vfolder_pvc(
-                    PVCMountSpec(str(subPath), f'/home/work/{folder_name}', 'Directory', perm=perm_char)
-                )
+            if kernel_path_raw := vfolder_mount_map.get(folder_name):
+                if not kernel_path_raw.startswith('/home/work/'):  # type: ignore
+                    raise ValueError(
+                        f'Error while mounting {folder_name} to {kernel_path_raw}: '
+                        'all vfolder mounts should be under /home/work')
+                kernel_path = Path(kernel_path_raw)  # type: ignore
             else:
-                host_path = (self.config['vfolder']['mount'] / folder_host /
-                    self.config['vfolder']['fsprefix'] / folder_id)
-                
+                kernel_path = Path(f'/home/work/{folder_name}')
+            
+            if mount_hostpath or not self.vfolder_as_pvc:
                 _mount(
                     kernel_id, host_path.absolute().as_posix(),
-                    f'/home/work/{folder_name}', 'Directory', perm=perm_char
+                    kernel_path.absolute().as_posix(), 'Directory', perm=perm_char
+                )
+            else:
+                subPath = (folder_host / self.config['vfolder']['fsprefix'] / folder_id)
+                deployment.mount_vfolder_pvc(
+                    PVCMountSpec(str(subPath), kernel_path.absolute().as_posix(), 'Directory', perm=perm_char)
                 )
 
         # should no longer be used!
@@ -665,7 +658,6 @@ class K8sAgent(AbstractAgent):
 
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
 
-        computer_docker_args: Dict[str, Any] = {}
         injected_hooks: List[str] = []
 
         # Inject hook library
@@ -686,7 +678,8 @@ class K8sAgent(AbstractAgent):
                         container_hook_path = '/opt/kernel/lib{}{}.so'.format(
                             computer_set.klass.key, secrets.token_hex(6),
                         )
-                        _mount(kernel_id, hook_path.absolute().as_posix(), container_hook_path, 'File', perm='ro')
+                        _mount(kernel_id, hook_path.absolute().as_posix(), container_hook_path, 'File',
+                               perm='ro')
                         environ['LD_PRELOAD'] += ':' + container_hook_path
                         injected_hooks.append(hook_path.absolute().as_posix())
 
@@ -720,20 +713,32 @@ class K8sAgent(AbstractAgent):
         log.info('kernel {0} starting with resource spec: \n',
                  pformat(attr.asdict(resource_spec)))
 
-        exposed_ports = []
-        service_ports: Dict[int, Any] = {}
+        exposed_ports = [2000, 2001]
+        service_ports = []
+        port_map = {}
 
-        # Extract port expose information from kernel creation request
-        for item in image_labels.get('ai.backend.service-ports', '').split(','):
-            if not item:
-                continue
-            service_port = parse_service_port(item)
-            container_port = service_port['container_ports'][0]
-            service_ports[container_port] = service_port
-            exposed_ports.append(container_port)
-        if 'git' in image_ref.name:  # legacy (TODO: remove it!)
-            exposed_ports.append(2002)
-            exposed_ports.append(2003)
+        for sport in parse_service_ports(await self.get_service_ports_from_label(image_ref.canonical)):
+            port_map[sport['name']] = sport
+        for sport in parse_service_ports(image_labels.get('ai.backend.service-ports', '')):
+            port_map[sport['name']] = sport
+        port_map['sshd'] = {
+            'name': 'sshd',
+            'protocol': ServicePortProtocols('tcp'),
+            'container_ports': (2200,),
+            'host_ports': (None,),
+        }
+
+        port_map['ttyd'] = {
+            'name': 'ttyd',
+            'protocol': ServicePortProtocols('http'),
+            'container_ports': (7681,),
+            'host_ports': (None,),
+        }
+        for sport in port_map.values():
+            service_ports.append(sport)
+            for cport in sport['container_ports']:
+                exposed_ports.append(cport)
+
         log.debug('exposed ports: {!r}', exposed_ports)
 
         runtime_type = image_labels.get('ai.backend.runtime-type', 'python')
@@ -778,7 +783,7 @@ class K8sAgent(AbstractAgent):
         expose_service = Service(
             str(kernel_id), 'expose', deployment.name,
             [(port['container_ports'][0], f'{kernel_id}-{port["name"]}')
-                for port in service_ports.values()],
+                for port in service_ports],
             service_type='NodePort'
         )
 
@@ -787,7 +792,7 @@ class K8sAgent(AbstractAgent):
         # We are all set! Create and start the container.
 
         # TODO: Find appropriate model import for V1ServicePort
-        node_ports: List[Any] = [] 
+        node_ports: List[Any] = []
 
         # Send request to K8s API
         if len(exposed_ports) > 0:
@@ -838,9 +843,11 @@ class K8sAgent(AbstractAgent):
         for port in node_ports:
             exposed_port_results[port.port] = port.node_port
 
-        for pk in service_ports.keys():
-            service_ports[pk]['host_port'] = exposed_port_results[pk]
-
+        for port in service_ports:
+            host_ports = []
+            for cport in port['container_ports']:
+                host_ports.append(exposed_port_results[cport])
+            port['host_ports'] =  host_ports
         # Check NodePort assigend to REPL
         for nodeport in repl_service_api_response.spec.ports:
             if nodeport.target_port == 2000:
@@ -858,13 +865,13 @@ class K8sAgent(AbstractAgent):
             await self.destroy_kernel(_kernel_id, 'elb-assign-error')
             raise K8sError('REPL out port not assigned')
 
-        self.kernel_registry[_kernel_id] = await K8sKernel.new(
+        kernel_obj: K8sKernel = await K8sKernel.new(
             deployment.name,
             image_ref,
             version,
             config=self.config,
             resource_spec=resource_spec,
-            service_ports=list(service_ports.values()),
+            service_ports=service_ports,
             data={
                 'kernel_host': target_node_ip,  # IP or FQDN
                 'repl_in_port': repl_in_port,  # Int
@@ -875,6 +882,16 @@ class K8sAgent(AbstractAgent):
                 'sync_stat': False
             }
         )
+        await kernel_obj.scale(1)
+        self.kernel_registry[_kernel_id] = kernel_obj
+
+        live_services = await kernel_obj.get_service_apps()
+        if live_services['status'] != 'failed':
+            for live_service in live_services['data']:
+                for service_port in service_ports:
+                    if live_service['name'] == service_port['name']:
+                        service_port.update(live_service)
+                        break
 
         registry_cm = ConfigMap(str(kernel_id), 'registry')
         registry_cm.put('registry', json.dumps({
@@ -887,7 +904,7 @@ class K8sAgent(AbstractAgent):
             'repl_out_port': repl_out_port,  # Int
             'stdin_port': stdin_port,    # legacy, Int
             'stdout_port': stdout_port,  # legacy, Int
-            'service_ports': list(service_ports.values()),  # JSON
+            'service_ports': service_ports,  # JSON
             'host_ports': list(exposed_port_results.values()),  # List[Int]
             'resource_spec': resource_spec.write_to_string(),  # JSON
         }))
@@ -898,19 +915,18 @@ class K8sAgent(AbstractAgent):
             raise K8sError('Registry ConfigMap not saved')
 
         await self.produce_event('kernel_started', kernel_id)
-        
+
         log.debug('kernel repl-in address: {0}:{1}', target_node_ip, repl_in_port)
         log.debug('kernel repl-out address: {0}:{1}', target_node_ip, repl_out_port)
 
-
         return {
-            'id': _kernel_id,
+            'id': str(_kernel_id),
             'kernel_host': target_node_ip,
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,    # legacy
             'stdout_port': stdout_port,  # legacy
-            'service_ports': list(service_ports.values()),
+            'service_ports': service_ports,
             'container_id': '#',
             'resource_spec': resource_spec.to_json_serializable_dict(),
             'attached_devices': attached_devices
@@ -964,7 +980,7 @@ class K8sAgent(AbstractAgent):
             await k8sAppsApi.delete_namespaced_deployment(f'{deployment_name}', 'backend-ai')
         except:
             log.warning('_destroy({0}) kernel missing (already dead?)', kernel_id)
-        
+
         await self.kernel_registry[_kernel_id].runner.close()
 
         await force_cleanup(reason=reason)

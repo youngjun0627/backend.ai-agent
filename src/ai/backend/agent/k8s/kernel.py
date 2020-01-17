@@ -49,7 +49,7 @@ class K8sKernel(AbstractKernel):
     async def scale(self, num: int):
         await K8sConfig.load_kube_config()
         k8sAppsApi = K8sClient.AppsV1Api()
-        return await k8sAppsApi.replace_namespaced_deployment_scale(
+        scale_result = await k8sAppsApi.replace_namespaced_deployment_scale(
             self.kernel_id, 'backend-ai',
             body={
                 'apiVersion': 'autoscaling/v1',
@@ -62,6 +62,15 @@ class K8sKernel(AbstractKernel):
                 'status': {'replicas': num, 'selector': f'run={self.kernel_id}'}
             }
         )
+
+        if scale_result.to_dict()['spec']['replicas'] == 0:
+            raise K8sError('Deployment scaling failed: ' + str(scale_result))
+
+        while not await self.is_scaled():
+            asyncio.sleep(0.5)
+
+        log.debug('Session scaled to 1')
+
 
     async def create_code_runner(self, *,
                            client_features: FrozenSet[str],
@@ -77,6 +86,10 @@ class K8sKernel(AbstractKernel):
     async def get_completions(self, text: str, opts: Mapping[str, Any]):
         result = await self.runner.feed_and_get_completion(text, opts)
         return {'status': 'finished', 'completions': result}
+
+    async def get_service_apps(self):
+        result = await self.runner.feed_service_apps()
+        return result
 
     async def check_status(self):
         # TODO: Implement
@@ -107,17 +120,7 @@ class K8sKernel(AbstractKernel):
                 break
         else:
             return {'status': 'failed', 'error': 'invalid service name'}
-        
-        scale = await self.scale(1)
-        if scale.to_dict()['spec']['replicas'] == 0:
-            log.error('Scaling failed! Response body: {0}', scale)
-            return {'status': 'failed', 'error': 'Deployment scaling failed: ' + str(scale)}
 
-        if scale.to_dict()['status']['replicas'] == 0:
-            while not await self.is_scaled():
-                asyncio.sleep(0.5)
-
-        log.debug('Session scaled to 1')
         result = await self.runner.feed_start_service({
             'name': service,
             'port': sport['container_ports'][0],
@@ -180,7 +183,7 @@ async def prepare_runner_files(mount_path_str: str):
     runner_files = [
         'jupyter-custom.css', 'logo.svg',
         'roboto.ttf', 'roboto-italic.ttf',
-        'entrypoint.sh'
+        'entrypoint.sh', '.bashrc', '.vimrc'
     ]
     runner_files += [path.name for path in runner_path.glob('*.bin')]
     runner_files += [path.name for path in runner_path.glob('*.so')]

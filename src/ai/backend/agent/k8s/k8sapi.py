@@ -1,7 +1,7 @@
 import attr
 
 from typing import (
-    Any, Dict, List, Mapping
+    Any, Dict, List
 )
 
 '''This file contains API templates for Python K8s Client.
@@ -97,12 +97,11 @@ class PVCMountSpec(AbstractMountSpec):
 
 class KernelDeployment:
     def __init__(self, kernel_id: str, image: str, krunner_volume: str, arch: str,
-                ecr_url: str = '', name: str = 'deployment'):
+                 name: str = 'deployment'):
         self.name = name
         self.image = image
         self.krunner_volume = krunner_volume
         self.arch = arch
-        self.ecr_url = ecr_url
 
         self.hostPathMounts: List[AbstractMountSpec] = []
         self.pvcMounts: List[AbstractMountSpec] = []
@@ -182,6 +181,28 @@ class KernelDeployment:
                 'template': {
                     'metadata': {'labels': {'run': self.name}},
                     'spec': {
+                        'initContainers': [
+                            {
+                                'name': 'workdir-ownership-fix',
+                                'image': 'busybox',
+                                'env': [{'name': k, 'value': v} for k, v in self.env.items()],
+                                'command': ['sh', '-c', 'chown -R ${LOCAL_USER_ID:-9001}:${LOCAL_GROUP_ID:-9001} /work'],
+                                'volumeMounts': [{
+                                    'name': 'workdir',
+                                    'mountPath': '/work'
+                                }]
+                            },
+                            {
+                                'name': 'workdir-perm-fix',
+                                'image': 'busybox',
+                                'env': [{'name': k, 'value': v} for k, v in self.env.items()],
+                                'command': ['sh', '-c', 'chmod 700 /work'],
+                                'volumeMounts': [{
+                                    'name': 'workdir',
+                                    'mountPath': '/work'
+                                }]
+                            }
+                        ],
                         'containers': [
                             {
                                 'name': 'session',
@@ -190,7 +211,7 @@ class KernelDeployment:
                                 'command': ['sh', '/opt/kernel/entrypoint.sh'],
                                 'args': self.cmd,
                                 'env': [{'name': k, 'value': v} for k, v in self.env.items()],
-                                'volumeMounts':    [{
+                                'volumeMounts': [{
                                     'name': 'workdir',
                                     'mountPath': '/home/work'
                                 }, {
@@ -200,18 +221,15 @@ class KernelDeployment:
                                     'name': 'jupyter',
                                     'mountPath': '/home/work/.jupyter'
                                 }, {
-                                    'name':    'krunner',
+                                    'name': 'krunner',
                                     'mountPath': '/opt/backend.ai',
                                     'subPath': self.krunner_volume,
                                     'readOnly': True
-                                }] + [x.as_volume_mount_dict() for x in self.configMapMounts +
-                                        self.hostPathMounts + self.pvcMounts],
+                                }] + [x.as_volume_mount_dict() for x in \
+                                        self.configMapMounts + self.hostPathMounts + self.pvcMounts],
                                 'ports': [{'containerPort': x} for x in self.ports],
-                                }
+                            }
                         ],
-                        'imagePullSecrets': [{
-                            'name': 'backend-ai-registry-secret'
-                        }] if len(self.ecr_url) == 0 else [{}],
                         'volumes': [{
                             'name': 'workdir',
                             'emptyDir': {}

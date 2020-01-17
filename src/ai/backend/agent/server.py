@@ -44,8 +44,6 @@ from .agent import AbstractAgent, VolumeInfo
 from .config import (
     initial_config_iv,
     k8s_extra_config_iv,
-    registry_local_config_iv,
-    registry_ecr_config_iv,
 )
 from .utils import current_loop, get_subnet_ip
 
@@ -519,17 +517,6 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
         cfg = config.check(raw_cfg, initial_config_iv)
         if cfg['agent']['mode'] == 'k8s':
             cfg = config.check(raw_cfg, k8s_extra_config_iv)
-            if cfg['registry']['type'] == 'local':
-                registry_target_config_iv = registry_local_config_iv
-            elif cfg['registry']['type'] == 'ecr':
-                registry_target_config_iv = registry_ecr_config_iv
-            else:
-                print('Validation of agent configuration has failed: registry type {} not supported'
-                    .format(cfg['registry']['type']), file=sys.stderr)
-                raise click.Abort()
-
-            registry_cfg = config.check(cfg['registry'], registry_target_config_iv)
-            cfg['registry'] = registry_cfg
 
         if 'debug' in cfg and cfg['debug']['enabled']:
             print('== Agent configuration ==')

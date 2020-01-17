@@ -67,9 +67,6 @@ initial_config_iv = t.Dict({
 }).merge(config.etcd_config_iv).allow_extra('*')
 
 k8s_extra_config_iv = t.Dict({
-    t.Key('registry'): t.Dict({
-        t.Key('type'): t.String
-    }).allow_extra('*'),
     t.Key('baistatic'): t.Null | t.Dict({
         t.Key('nfs-addr'): t.String,
         t.Key('path'): t.String,
@@ -85,13 +82,3 @@ k8s_extra_config_iv = t.Dict({
     }),
 }).merge(initial_config_iv).allow_extra('*')
 
-registry_local_config_iv = t.Dict({
-    t.Key('type'): t.String,
-    t.Key('addr'): tx.HostPortPair()
-})
-
-registry_ecr_config_iv = t.Dict({
-    t.Key('type'): t.String,
-    t.Key('profile'): t.String,
-    t.Key('registry-id'): t.String
-})
