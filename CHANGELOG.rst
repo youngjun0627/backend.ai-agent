@@ -36,6 +36,12 @@ Changes
 * IMPROVE: ResourceSlots are now more permissive. Agent still checks the validity of known slots
   but also allows zero-valued unknown slots as well. (#162)
 
+19.09.11 (2020-01-20)
+---------------------
+
+* FIX: Package version conflicts due to aiobotocore/botocore and python-dateutil, by removing no longer
+  used codes and aiobotocore dependency.
+
 19.09.10 (2020-01-09)
 ---------------------
 
