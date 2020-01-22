@@ -101,7 +101,7 @@ $ cd agent
 $ pyenv virtualenv venv-agent
 $ pyenv local venv-agent
 $ pip install -U pip setuptools
-$ pip install -U -r requirements-dev.txt
+$ pip install -U -r requirements/dev.txt
 ```
 
 ### Linting
