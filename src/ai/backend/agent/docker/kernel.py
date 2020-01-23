@@ -287,3 +287,37 @@ async def prepare_krunner_env(distro: str):
     finally:
         await docker.close()
     return volume_name
+
+
+async def prepare_vscode_files(distro: str, arch: str):
+    log.info('checking VSCode binary for {}.{}...', distro, arch)
+    package_version = pkg_resources.get_distribution(f'backend.ai-code-server-{distro}').version
+    version_file = Path(pkg_resources.resource_filename(f'ai.backend.vscode.{distro}',
+                                                        './binary-version.txt'))
+    try:
+        binary_version = version_file.read_text().strip()
+        do_create = binary_version < package_version
+    except FileNotFoundError:
+        do_create = True
+
+    if do_create:
+        log.info('Populating VSCode binary for {}.{}', distro, arch)
+        tar_path = Path(
+            pkg_resources.resource_filename(
+                f'ai.backend.vscode.{distro}',
+                f'code-server.{distro}.{arch}.tar.gz'
+            )
+        )
+        destination_path = (Path(pkg_resources.resource_filename('ai.backend.agent', '../runner'))
+                            .resolve())
+        proc = await asyncio.create_subprocess_exec(*[
+            'tar', 'xvzf', tar_path.absolute().as_posix(), '-C',
+            destination_path.absolute().as_posix()
+        ])
+        if (await proc.wait() != 0):
+            raise RuntimeError('extracting vscode binary has failed!')
+
+        def _write():
+            with open(version_file, 'w') as fw:
+                fw.write(package_version)
+        await asyncio.get_event_loop().run_in_executor(None, _write)

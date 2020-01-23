@@ -137,9 +137,3 @@ class Runner(BaseRunner):
             return [
                 self.runtime_path, '-m', 'sftpserver', '--port', str(service_info['port'])
             ], {}
-        elif service_info['name'] == 'vscode':
-            extension_dir = Path('/home/work/.vscode-exts')
-            extension_dir.mkdir(parents=True, exist_ok=True)
-            return [
-                '/usr/local/bin/code-server', '-NHp', '8180', '--extensions-dir', str(extension_dir)
-            ], {'PWD': '/home/work'}

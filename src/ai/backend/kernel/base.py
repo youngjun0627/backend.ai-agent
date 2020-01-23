@@ -29,7 +29,7 @@ from .compat import asyncio_run_forever, current_loop
 from .utils import wait_local_port_open
 from .intrinsic import (
     init_sshd_service, prepare_sshd_service,
-    prepare_ttyd_service,
+    prepare_ttyd_service, prepare_vscode_service
 )
 
 log = BraceStyleAdapter(logging.getLogger())
@@ -436,6 +436,8 @@ class BaseRunner(metaclass=ABCMeta):
                 cmdargs, env = await prepare_ttyd_service(service_info)
             elif service_info['name'] == 'sshd':
                 cmdargs, env = await prepare_sshd_service(service_info)
+            elif service_info['name'] == 'vscode':
+                cmdargs, env = await prepare_vscode_service(service_info)
             elif self.service_parser is not None:
                 log.debug(service_info)
                 self.service_parser.variables['ports'] = service_info['port']

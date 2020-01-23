@@ -393,8 +393,9 @@ async def server_main(loop, pidx, _args):
 
     log.info('Preparing kernel runner environments...')
     supported_distros = ['alpine3.8', 'ubuntu16.04', 'centos7.6', 'centos6.10']
+    vscode_supported_distros = ['alpine', 'linux']
     if config['agent']['mode'] == 'docker':
-        from .docker.kernel import prepare_krunner_env
+        from .docker.kernel import prepare_krunner_env, prepare_vscode_files
         krunner_volumes = {
             k: v for k, v in zip(supported_distros, await asyncio.gather(
                 *[
@@ -404,6 +405,16 @@ async def server_main(loop, pidx, _args):
                 return_exceptions=True,
             ))
         }
+        vscode_files = {
+            k: v for k, v in zip(vscode_supported_distros, await asyncio.gather(
+                *[prepare_vscode_files(v, 'x86_64') for v in vscode_supported_distros],
+                return_exceptions=True
+            ))
+        }
+        for distro, result in vscode_files.items():
+            if isinstance(result, Exception):
+                log.error('Loading VSCode files for {}.x86_64 failed: {}', distro, result)
+                raise click.Abort()
     else:
         from .k8s.kernel import prepare_krunner_env
         nfs_mount_path = config['baistatic']['mounted-at']

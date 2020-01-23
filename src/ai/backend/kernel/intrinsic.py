@@ -90,3 +90,12 @@ async def prepare_ttyd_service(service_info):
         shell_path = '/bin/ash'
     cmdargs, env = ['/opt/backend.ai/bin/ttyd', shell_path], {}
     return cmdargs, env
+
+
+async def prepare_vscode_service(service_info):
+    extension_dir = Path('/home/work/.vscode-exts')
+    extension_dir.mkdir(parents=True, exist_ok=True)
+    return [
+        '/opt/kernel/code-server', '--port', '8180', '--auth', 'none',
+        '--extensions-dir', str(extension_dir)
+    ], {'PWD': '/home/work'}
