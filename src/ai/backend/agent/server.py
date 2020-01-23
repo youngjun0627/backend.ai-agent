@@ -393,7 +393,7 @@ async def server_main(loop, pidx, _args):
 
     log.info('Preparing kernel runner environments...')
     supported_distros = ['alpine3.8', 'ubuntu16.04', 'centos7.6', 'centos6.10']
-    vscode_supported_distros = ['alpine', 'linux']
+    vscode_supported_distros = ['linux']
     if config['agent']['mode'] == 'docker':
         from .docker.kernel import prepare_krunner_env, prepare_vscode_files
         krunner_volumes = {
