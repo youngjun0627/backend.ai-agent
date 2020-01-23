@@ -159,6 +159,12 @@ class DockerAgent(AbstractAgent):
                 await container.show()
                 image = container['Config']['Image']
                 labels = container['Config']['Labels']
+                distro = labels.get('ai.backend.base-distro', 'ubuntu16.04')
+                matched_distro, krunner_volume = match_krunner_volume(
+                    self.config['container']['krunner-volumes'], distro)
+                matched_libc_style = 'glibc'
+                if matched_distro.startswith('alpine'):
+                    matched_libc_style = 'musl'
                 kernelspec = int(labels.get('ai.backend.kernelspec', '1'))
                 if not (MIN_KERNELSPEC <= kernelspec <= MAX_KERNELSPEC):
                     continue
@@ -201,12 +207,13 @@ class DockerAgent(AbstractAgent):
                     'container_ports': (7681,),
                     'host_ports': (port_map.get(7681, None),),
                 })
-                service_ports.append({
-                    'name': 'vscode',
-                    'protocol': ServicePortProtocols('http'),
-                    'container_ports': (8180,),
-                    'host_ports': (port_map.get(8180, None),),
-                })
+                if matched_libc_style == 'glibc':
+                    service_ports.append({
+                        'name': 'vscode',
+                        'protocol': ServicePortProtocols('http'),
+                        'container_ports': (8180,),
+                        'host_ports': (port_map.get(8180, None),),
+                    })
                 # For legacy support
                 for service_port in parse_service_ports(labels.get('ai.backend.service-ports', '')):
                     service_port['host_ports'] = tuple(
@@ -644,10 +651,9 @@ class DockerAgent(AbstractAgent):
             'ai.backend.agent',
             f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
 
-        vscode_distro = 'alpine' if matched_libc_style == 'musl' else 'linux'
         vscode_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent',
-            f'../runner/code-server.{vscode_distro}.{arch}.bin'))
+            f'../runner/code-server.linux.{arch}.bin'))
 
         bashrc_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/.bashrc'))
@@ -664,9 +670,10 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, dropbear_path.resolve(), '/opt/kernel/dropbear')
         _mount(MountTypes.BIND, dropbearconv_path.resolve(), '/opt/kernel/dropbearconvert')
         _mount(MountTypes.BIND, dropbearkey_path.resolve(), '/opt/kernel/dropbearkey')
-        _mount(MountTypes.BIND, vscode_path.resolve(), '/opt/kernel/code-server')
         _mount(MountTypes.BIND, sftp_server_path.resolve(), '/usr/libexec/sftp-server')
         _mount(MountTypes.BIND, scp_path.resolve(), '/usr/bin/scp')
+        if matched_libc_style == 'libc':
+            _mount(MountTypes.BIND, vscode_path.resolve(), '/opt/kernel/code-server')
 
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
@@ -842,12 +849,13 @@ class DockerAgent(AbstractAgent):
             'container_ports': (7681,),
             'host_ports': (None,),
         }
-        port_map['vscode'] = {
-            'name': 'vscode',
-            'protocol': ServicePortProtocols('http'),
-            'container_ports': (8180,),
-            'host_ports': (None,),
-        }
+        if matched_libc_style == 'glibc':
+            port_map['vscode'] = {
+                'name': 'vscode',
+                'protocol': ServicePortProtocols('http'),
+                'container_ports': (8180,),
+                'host_ports': (None,),
+            }
         for sport in port_map.values():
             service_ports.append(sport)
             for cport in sport['container_ports']:
