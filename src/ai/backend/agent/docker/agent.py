@@ -735,7 +735,7 @@ class DockerAgent(AbstractAgent):
             # Check https://github.com/python/mypy/issues/7316
             # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
             # Check https://gitlab.com/pycqa/flake8/issues/599
-            if bootstrap := kernel_config.get('bootstrap_script'):
+            if bootstrap := kernel_config.get('bootstrap_script'):  # noqa
                 with open(work_dir / 'bootstrap.sh', 'wb') as fw:
                     fw.write(base64.b64decode(bootstrap))  # type: ignore
             os.makedirs(config_dir, exist_ok=True)
@@ -784,6 +784,21 @@ class DockerAgent(AbstractAgent):
                         os.chown(ssh_dir, uid, gid)
                         os.chown(ssh_dir / 'authorized_keys', uid, gid)
                         os.chown(work_dir / 'id_container', uid, gid)
+
+        for dotfile in internal_data.get('dotfiles', []):
+            file_path: Path = work_dir / dotfile['path']
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(dotfile['data'])
+
+            tmp = Path(file_path)
+            while tmp != work_dir:
+                tmp.chmod(int(dotfile['perm'], 8))
+                # only possible when I am root.
+                if KernelFeatures.UID_MATCH in kernel_features and os.geteuid() == 0:
+                    uid = self.config['container']['kernel-uid']
+                    gid = self.config['container']['kernel-gid']
+                    os.chown(tmp, uid, gid)
+                tmp = tmp.parent
 
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
