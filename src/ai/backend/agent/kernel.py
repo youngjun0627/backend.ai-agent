@@ -58,6 +58,8 @@ default_api_version = 4
 
 class RunEvent(Exception):
 
+    data: Any
+
     def __init__(self, data=None):
         super().__init__()
         self.data = data
@@ -91,21 +93,32 @@ class ResultRecord:
 
 class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
 
+    version: int
+    agent_config: Mapping[str, Any]
+    kernel_id: str
+    image: ImageRef
+    resource_spec: KernelResourceSpec
+    service_ports: Any
+    data: Dict[Any, Any]
+    last_used: float
+    termination_reason: Optional[str]
+
     runner: 'AbstractCodeRunner'
 
     def __init__(self, kernel_id: str, image: ImageRef, version: int, *,
-                 config: Mapping[str, Any],
+                 agent_config: Mapping[str, Any],
                  resource_spec: KernelResourceSpec,
                  service_ports: Any,  # TODO: type-annotation
-                 data: Dict[str, Any]) -> None:
-        self.config = config
+                 data: Dict[Any, Any]) -> None:
+        self.agent_config = agent_config
         self.kernel_id = kernel_id
         self.image = image
         self.version = version
-        self.last_used = time.monotonic()
         self.resource_spec = resource_spec
         self.service_ports = service_ports
         self.data = data
+        self.last_used = time.monotonic()
+        self.termination_reason = None
         self._runner_lock = asyncio.Lock()
         self._tasks: Set[asyncio.Task] = set()
 
@@ -167,6 +180,10 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_service_apps(self, service_name):
+        raise NotImplementedError
+
+    @abstractmethod
     async def accept_file(self, filename, filedata):
         raise NotImplementedError
 
@@ -183,7 +200,6 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
                       opts: Mapping[str, Any],
                       api_version: int,
                       flush_timeout: float):
-        self.last_used = time.monotonic()
         try:
             myself = asyncio.Task.current_task()
             self._tasks.add(myself)
@@ -220,6 +236,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
     # FIXME: use __future__.annotations in Python 3.7+
     completion_queue: asyncio.Queue  # contains: bytes
     service_queue: asyncio.Queue     # contains: bytes
+    service_apps_info_queue: asyncio.Queue     # contains: bytes
     status_queue: asyncio.Queue      # contains: bytes
     output_queue: Optional[asyncio.Queue]  # contains: ResultRecord
     current_run_id: Optional[str]
@@ -244,6 +261,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         self.output_sock = self.zctx.socket(zmq.PULL)
         self.completion_queue = asyncio.Queue(maxsize=128)
         self.service_queue = asyncio.Queue(maxsize=128)
+        self.service_apps_info_queue = asyncio.Queue(maxsize=128)
         self.status_queue = asyncio.Queue(maxsize=128)
         self.output_queue = None
         self.pending_queues = OrderedDict()
@@ -374,6 +392,21 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         except asyncio.TimeoutError:
             return {'status': 'failed', 'error': 'timeout'}
 
+    async def feed_service_apps(self):
+        await self.input_sock.send_multipart([
+            b'get-apps',
+            ''.encode('utf8'),
+        ])
+        try:
+            with timeout(10):
+                result = await self.service_apps_info_queue.get()
+            self.service_apps_info_queue.task_done()
+            return json.loads(result)
+        except asyncio.CancelledError:
+            return {'status': 'failed', 'error': 'cancelled'}
+        except asyncio.TimeoutError:
+            return {'status': 'failed', 'error': 'timeout'}
+
     async def watchdog(self):
         try:
             await asyncio.sleep(self.exec_timeout)
@@ -409,7 +442,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             result['media'] = media_items
             result['html'] = html_items
 
-        elif api_ver in (2, 3):
+        elif api_ver >= 2:
 
             console_items = []
             last_stdout = io.StringIO()
@@ -614,6 +647,8 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
                         await self.completion_queue.put(msg_data)
                     elif msg_type == b'service-result':
                         await self.service_queue.put(msg_data)
+                    elif msg_type == b'apps-result':
+                        await self.service_apps_info_queue.put(msg_data)
                     elif msg_type == b'stdout':
                         if self.output_queue is None:
                             continue

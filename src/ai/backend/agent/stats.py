@@ -33,7 +33,7 @@ from setproctitle import setproctitle
 import zmq
 import zmq.asyncio
 
-from ai.backend.common import config
+from ai.backend.common import config, redis
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.identity import is_containerized
 from ai.backend.common.types import (
@@ -250,9 +250,11 @@ class Metric:
 
 @attr.s(auto_attribs=True, slots=True)
 class StatSyncState:
-    kernel_id: str
+    kernel_id: KernelId
     terminated: asyncio.Event = attr.Factory(asyncio.Event)
     last_stat: Mapping[MetricKey, Metric] = attr.Factory(dict)
+    last_sync: float = attr.Factory(time.monotonic)
+    sync_proc: Optional[asyncio.subprocess.Process] = None
 
 
 class StatContext:
@@ -262,12 +264,15 @@ class StatContext:
     node_metrics: Mapping[MetricKey, Metric]
     device_metrics: Mapping[MetricKey, MutableMapping[DeviceId, Metric]]
     kernel_metrics: MutableMapping[KernelId, MutableMapping[MetricKey, Metric]]
+    log_endpoint: str
 
     def __init__(self, agent: 'AbstractAgent', mode: StatModes = None, *,
-                 cache_lifespan: float = 30.0):
+                 log_endpoint: str,
+                 cache_lifespan: float = 30.0) -> None:
         self.agent = agent
         self.mode = mode if mode is not None else StatModes.get_preferred_mode()
         self.cache_lifespan = cache_lifespan
+        self.log_endpoint = log_endpoint
 
         self.node_metrics = {}
         self.device_metrics = {}
@@ -384,7 +389,6 @@ class StatContext:
                             self.kernel_metrics[kernel_id][metric_key].update(measure)
 
         # push to the Redis server
-        pipe = self.agent.redis_stat_pool.pipeline()
         redis_agent_updates = {
             'node': {
                 key: obj.to_serializable_dict()
@@ -399,16 +403,21 @@ class StatContext:
         if self.agent.config['debug']['log-stats']:
             log.debug('stats: node_updates: {0}: {1}',
                       self.agent.config['agent']['id'], redis_agent_updates['node'])
-        pipe.set(self.agent.config['agent']['id'], msgpack.packb(redis_agent_updates))
-        pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
-        for kernel_id, metrics in self.kernel_metrics.items():
-            serialized_metrics = {
-                key: obj.to_serializable_dict()
-                for key, obj in metrics.items()
-            }
-            pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-            pipe.expire(kernel_id, self.cache_lifespan)
-        await pipe.execute()
+        serialized_agent_updates = msgpack.packb(redis_agent_updates)
+
+        def _pipe_builder():
+            pipe = self.agent.redis_stat_pool.pipeline()
+            pipe.set(self.agent.config['agent']['id'], serialized_agent_updates)
+            pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
+            for kernel_id, metrics in self.kernel_metrics.items():
+                serialized_metrics = {
+                    key: obj.to_serializable_dict()
+                    for key, obj in metrics.items()
+                }
+                pipe.set(str(kernel_id), msgpack.packb(serialized_metrics))
+                pipe.expire(str(kernel_id), self.cache_lifespan)
+            return pipe
+        await redis.execute_with_retries(_pipe_builder)
 
     async def collect_container_stat(self, container_id: ContainerId) -> Mapping[MetricKey, Metric]:
         '''
@@ -457,26 +466,32 @@ class StatContext:
                             self.kernel_metrics[kernel_id][metric_key].update(measure)
 
         if kernel_id is not None:
-            pipe = self.agent.redis_stat_pool.pipeline()
             metrics = self.kernel_metrics[kernel_id]
-            serialized_metrics = {
+            serializable_metrics = {
                 key: obj.to_serializable_dict()
                 for key, obj in metrics.items()
             }
             if self.agent.config['debug']['log-stats']:
                 log.debug('kernel_updates: {0}: {1}',
-                          kernel_id, serialized_metrics)
-            pipe.set(kernel_id, msgpack.packb(serialized_metrics))
-            pipe.expire(kernel_id, self.cache_lifespan)
-            await pipe.execute()
+                          kernel_id, serializable_metrics)
+            serialized_metrics = msgpack.packb(serializable_metrics)
+
+            def _pipe_builder():
+                pipe = self.agent.redis_stat_pool.pipeline()
+                pipe.set(str(kernel_id), serialized_metrics)
+                pipe.expire(str(kernel_id), self.cache_lifespan)
+                return pipe
+            await redis.execute_with_retries(_pipe_builder)
             return metrics
         return {}
 
 
 @aiotools.actxmgr
 async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
-                                  stat_type: MetricTypes, cid: str,
-                                  *, exec_opts=None):
+                                  stat_type: StatModes, cid: str,
+                                  log_endpoint: str,
+                                  *,
+                                  exec_opts: Mapping[str, str] = None):
     # Spawn high-perf stats collector process for Linux native setups.
     # NOTE: We don't have to keep track of this process,
     #       as they will self-terminate when the container terminates.
@@ -489,7 +504,9 @@ async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
 
     proc = await asyncio.create_subprocess_exec(*[
         sys.executable, '-m', 'ai.backend.agent.stats',
-        str(config_path), str(sync_sockpath), cid, '--type', stat_type.value,
+        str(config_path), str(sync_sockpath), cid,
+        '--type', stat_type.value,
+        '--log-endpoint', log_endpoint,
     ], **exec_opts)
 
     signal_sockpath = ipc_base_path / f'stat-start-{proc.pid}.sock'
@@ -619,6 +636,12 @@ def main(args):
     context = zmq.Context.instance()
     mypid = os.getpid()
 
+    def handle_stop_signal(sig, frame):
+        raise SystemExit(-sig)
+
+    signal.signal(signal.SIGTERM, handle_stop_signal)
+    signal.signal(signal.SIGINT, handle_stop_signal)
+
     ipc_base_path = Path('/tmp/backend.ai/ipc')
     signal_sockpath = ipc_base_path / f'stat-start-{mypid}.sock'
     log.debug('creating signal socket at {}', signal_sockpath)
@@ -655,35 +678,30 @@ def main(args):
             stop_signals = {signal.SIGINT, signal.SIGTERM}
             signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
             loop = asyncio.get_event_loop()
-            with closing(sync_sock):
-                # Notify the agent to start the container.
-                signal_sock.send_multipart([b''])
-                # Wait for the container to be actually started.
-                signal_sock.recv_multipart()
-                signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
-                while True:
-                    is_running = loop.run_until_complete(is_container_running(args.cid))
-                    if is_running:
-                        ping_agent({'status': 'collect-stat', 'cid': args.cid})
-                    else:
-                        ping_agent({'status': 'terminated', 'cid': args.cid})
-                        break
-                    # Agent periodically collects container stats.
-                    time.sleep(1.0)
-            loop.close()
+            try:
+                with closing(sync_sock):
+                    # Notify the agent to start the container.
+                    signal_sock.send_multipart([b''])
+                    # Wait for the container to be actually started.
+                    signal_sock.recv_multipart()
+                    signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
+                    while True:
+                        is_running = loop.run_until_complete(is_container_running(args.cid))
+                        if is_running:
+                            ping_agent({'status': 'collect-stat', 'cid': args.cid})
+                        else:
+                            ping_agent({'status': 'terminated', 'cid': args.cid})
+                            break
+                        # Agent periodically collects container stats.
+                        time.sleep(1.0)
+            finally:
+                loop.stop()
 
-    except (KeyboardInterrupt, SystemExit):
-        exit_code = 1
-    else:
-        exit_code = 0
     finally:
         signal_sock.close()
         signal_sockpath.unlink()
         log.debug('terminated statistics collection for {}', args.cid)
         context.term()
-
-    time.sleep(0.05)
-    sys.exit(exit_code)
 
 
 if __name__ == '__main__':
@@ -694,6 +712,7 @@ if __name__ == '__main__':
     parser.add_argument('cid', type=str)
     parser.add_argument('-t', '--type', choices=list(StatModes), type=StatModes,
                         default=StatModes.DOCKER)
+    parser.add_argument('--log-endpoint', type=str)
     args = parser.parse_args()
     setproctitle(f'backend.ai: stat-collector {args.cid[:7]}')
 
@@ -708,6 +727,8 @@ if __name__ == '__main__':
         'pkg-ns': {'ai.backend': 'INFO'},
         'console': {'colored': True, 'format': 'verbose'},
     }
-    logger = Logger(raw_logging_cfg or fallback_logging_cfg)
+    logger = Logger(raw_logging_cfg or fallback_logging_cfg,
+                    is_master=False,
+                    log_endpoint=args.log_endpoint)
     with logger:
         main(args)

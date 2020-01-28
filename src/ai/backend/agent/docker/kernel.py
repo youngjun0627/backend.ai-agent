@@ -30,13 +30,13 @@ class DockerKernel(AbstractKernel):
     # FIXME: apply TypedDict to data in Python 3.8
 
     def __init__(self, kernel_id: str, image: ImageRef, version: int, *,
-                 config: Mapping[str, Any],
+                 agent_config: Mapping[str, Any],
                  resource_spec: KernelResourceSpec,
                  service_ports: Any,  # TODO: type-annotation
                  data: Dict[str, Any]) -> None:
         super().__init__(
             kernel_id, image, version,
-            config=config,
+            agent_config=agent_config,
             resource_spec=resource_spec,
             service_ports=service_ports,
             data=data)
@@ -78,6 +78,11 @@ class DockerKernel(AbstractKernel):
         return {'status': 'finished'}
 
     async def start_service(self, service: str, opts: Mapping[str, Any]):
+        if self.data.get('block_service_ports', False):
+            return {
+                'status': 'failed',
+                'error': 'operation blocked',
+            }
         for sport in self.service_ports:
             if sport['name'] == service:
                 break
@@ -85,15 +90,20 @@ class DockerKernel(AbstractKernel):
             return {'status': 'failed', 'error': 'invalid service name'}
         result = await self.runner.feed_start_service({
             'name': service,
-            'port': sport['container_port'],
+            'port': sport['container_ports'][0],  # primary port
+            'ports': sport['container_ports'],
             'protocol': sport['protocol'],
             'options': opts,
         })
         return result
 
+    async def get_service_apps(self):
+        result = await self.runner.feed_service_apps()
+        return result
+
     async def accept_file(self, filename: str, filedata: bytes):
         loop = current_loop()
-        work_dir = self.config['container']['scratch-root'] / self.kernel_id / 'work'
+        work_dir = self.agent_config['container']['scratch-root'] / str(self.kernel_id) / 'work'
         try:
             # create intermediate directories in the path
             dest_path = (work_dir / filename).resolve(strict=False)
@@ -124,7 +134,8 @@ class DockerKernel(AbstractKernel):
             with await container.get_archive(abspath) as tarobj:
                 tarobj.fileobj.seek(0, 2)
                 fsize = tarobj.fileobj.tell()
-                assert fsize < 1 * 1048576, 'too large file.'
+                if fsize > 1048576:
+                    raise ValueError('too large file')
                 tarbytes = tarobj.fileobj.getvalue()
         except DockerError:
             log.warning('Could not found the file: {0}', abspath)
@@ -259,7 +270,7 @@ async def prepare_krunner_env(distro: str):
                 f'./krunner-env.{distro}.{arch}.tar.xz')).resolve()
             extractor_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent',
-                f'../runner/krunner-extractor.sh')).resolve()
+                '../runner/krunner-extractor.sh')).resolve()
             proc = await asyncio.create_subprocess_exec(*[
                 'docker', 'run', '--rm', '-i',
                 '-v', f'{archive_path}:/root/archive.tar.xz',

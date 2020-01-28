@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from decimal import Decimal
+import json
 import logging
 import os
 from pathlib import Path
@@ -26,13 +27,22 @@ from aiozmq import rpc
 import attr
 from async_timeout import timeout
 import zmq
+import trafaret as t
 
 from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
+import aiotools
 
-from ai.backend.common.docker import ImageRef
+from ai.backend.common.docker import (
+    ImageRef,
+    MIN_KERNELSPEC,
+    MAX_KERNELSPEC,
+)
+from ai.backend.common.exception import ImageNotAvailable
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import (
+    AutoPullBehavior,
+    ImageRegistry,
     KernelCreationConfig,
     KernelCreationResult,
     KernelId,
@@ -43,11 +53,14 @@ from ai.backend.common.types import (
     MountTypes,
     ResourceSlot,
     ServicePort,
+    SessionTypes,
+    ServicePortProtocols,
+    current_resource_slots,
 )
 from .kernel import DockerKernel
 from .resources import detect_resources
-from ..exception import InsufficientResource, InitializationError
-from ..fs import create_tmp_filesystem, destroy_tmp_filesystem
+from ..exception import UnsupportedResource, InsufficientResource
+from ..fs import create_scratch_filesystem, destroy_scratch_filesystem
 from ..kernel import match_krunner_volume, KernelFeatures
 from ..resources import (
     Mount,
@@ -57,8 +70,10 @@ from ..agent import (
     AbstractAgent,
     ipc_base_path,
 )
+from ..proxy import proxy_connection, DomainSocketProxy
 from ..resources import (
     AbstractComputePlugin,
+    known_slot_types,
 )
 from ..server import (
     get_extra_volumes,
@@ -71,7 +86,7 @@ from ..utils import (
     get_kernel_id_from_container,
     host_pid_to_container_pid,
     container_pid_to_host_pid,
-    parse_service_port,
+    parse_service_ports,
 )
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
@@ -87,14 +102,15 @@ class DockerAgent(AbstractAgent):
     scan_images_timer: asyncio.Task
     storage_agent: rpc.rpc.RPCClient
 
-    def __init__(self, config) -> None:
-        super().__init__(config)
+    def __init__(self, config, *, skip_initial_scan: bool = False) -> None:
+        super().__init__(config, skip_initial_scan=skip_initial_scan)
 
     async def __ainit__(self) -> None:
         self.docker = Docker()
-        docker_version = await self.docker.version()
-        log.info('running with Docker {0} with API {1}',
-                 docker_version['Version'], docker_version['ApiVersion'])
+        if not self._skip_initial_scan:
+            docker_version = await self.docker.version()
+            log.info('running with Docker {0} with API {1}',
+                     docker_version['Version'], docker_version['ApiVersion'])
 
         # Connect to scratch storage agent RPC.
         if self.config['container']['scratch-type'] == 'storage-agent':
@@ -157,6 +173,9 @@ class DockerAgent(AbstractAgent):
                 await container.show()
                 image = container['Config']['Image']
                 labels = container['Config']['Labels']
+                kernelspec = int(labels.get('ai.backend.kernelspec', '1'))
+                if not (MIN_KERNELSPEC <= kernelspec <= MAX_KERNELSPEC):
+                    continue
                 ports = container['NetworkSettings']['Ports']
                 port_map = {}
                 for private_port, host_ports in ports.items():
@@ -185,19 +204,32 @@ class DockerAgent(AbstractAgent):
                     else:
                         assert container._id == resource_spec.container_id, \
                                 'Container ID from the container must match!'
-                service_ports = []
-                for item in labels.get('ai.backend.service-ports', '').split(','):
-                    if not item:
-                        continue
-                    service_port = parse_service_port(item)
-                    service_port['host_port'] = \
-                        port_map.get(service_port['container_port'], None)
+                # TODO: restore internal_data
+                #       -> could we get this from the manager again?
+                service_ports: List[ServicePort] = []
+                service_ports.append({
+                    'name': 'sshd',
+                    'protocol': ServicePortProtocols('tcp'),
+                    'container_ports': (2200,),
+                    'host_ports': (port_map.get(2200, None),),
+                })
+                service_ports.append({
+                    'name': 'ttyd',
+                    'protocol': ServicePortProtocols('http'),
+                    'container_ports': (7681,),
+                    'host_ports': (port_map.get(7681, None),),
+                })
+                for service_port in parse_service_ports(labels.get('ai.backend.service-ports', '')):
+                    service_port['host_ports'] = tuple(
+                        port_map.get(cport, None) for cport in service_port['container_ports']
+                    )
                     service_ports.append(service_port)
+                block_service_ports = labels.get('ai.backend.internal.block-service-ports', '0')
                 self.kernel_registry[kernel_id] = await DockerKernel.new(
                     kernel_id,
                     ImageRef(image),
-                    int(labels.get('ai.backend.kernelspec', '1')),
-                    config=self.config,
+                    kernelspec,
+                    agent_config=self.config,
                     resource_spec=resource_spec,
                     service_ports=service_ports,
                     data={
@@ -209,11 +241,12 @@ class DockerAgent(AbstractAgent):
                         'stdin_port': port_map.get(2002, 0),
                         'stdout_port': port_map.get(2003, 0),
                         'host_ports': [*port_map.values()],
+                        'block_service_ports': t.ToBool().check(block_service_ports),
                     })
             elif status in {'exited', 'dead', 'removing'}:
                 log.info('detected terminated kernel: {0}', kernel_id)
-                await self.send_event('kernel_terminated', kernel_id,
-                                      'self-terminated', None)
+                await self.produce_event('kernel_terminated', str(kernel_id),
+                                         'self-terminated', None)
 
         log.info('starting with resource allocations')
         for computer_name, computer_ctx in self.computers.items():
@@ -231,7 +264,10 @@ class DockerAgent(AbstractAgent):
                     continue
                 img_detail = await self.docker.images.inspect(repo_tag)
                 labels = img_detail['Config']['Labels']
-                if labels and 'ai.backend.kernelspec' in labels:
+                if labels is None or 'ai.backend.kernelspec' not in labels:
+                    continue
+                kernelspec = int(labels['ai.backend.kernelspec'])
+                if MIN_KERNELSPEC <= kernelspec <= MAX_KERNELSPEC:
                     updated_images[repo_tag] = img_detail['Id']
         for added_image in (updated_images.keys() - self.images.keys()):
             log.debug('found kernel image: {0}', added_image)
@@ -311,52 +347,71 @@ class DockerAgent(AbstractAgent):
         finally:
             agent_sock.close()
 
+    async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry) -> None:
+        auth_config = None
+        reg_user = registry_conf.get('username')
+        reg_passwd = registry_conf.get('password')
+        if reg_user and reg_passwd:
+            encoded_creds = base64.b64encode(
+                f'{reg_user}:{reg_passwd}'.encode('utf-8')) \
+                .decode('ascii')
+            auth_config = {
+                'auth': encoded_creds,
+            }
+        log.info('pulling image {} from registry', image_ref.canonical)
+        await self.docker.images.pull(
+            image_ref.canonical,
+            auth=auth_config)
+
+    async def check_image(self, image_ref: ImageRef, image_id: str, auto_pull: AutoPullBehavior) -> bool:
+        try:
+            image_info = await self.docker.images.inspect(image_ref.canonical)
+            if auto_pull == AutoPullBehavior.DIGEST:
+                if image_info['Id'] != image_id:
+                    return True
+            log.info('found the local up-to-date image for {}', image_ref.canonical)
+        except DockerError as e:
+            if e.status == 404:
+                if auto_pull == AutoPullBehavior.DIGEST:
+                    return True
+                elif auto_pull == AutoPullBehavior.TAG:
+                    return True
+                elif auto_pull == AutoPullBehavior.NONE:
+                    raise ImageNotAvailable(image_ref)
+            else:
+                raise
+        return False
+
+    async def get_service_ports_from_label(self, image_ref: ImageRef) -> str:
+        image_info = await self.docker.images.inspect(image_ref.canonical)
+        return image_info['Config']['Labels']['ai.backend.service-ports']
+
     async def create_kernel(self, kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
                             restarting: bool = False) -> KernelCreationResult:
 
-        await self.send_event('kernel_preparing', kernel_id)
+        await self.produce_event('kernel_preparing', str(kernel_id))
 
+        log.debug('Kernel Creation Config: {0}', json.dumps(kernel_config))
         # Read image-specific labels and settings
         image_ref = ImageRef(
             kernel_config['image']['canonical'],
             [kernel_config['image']['registry']['name']])
         environ: MutableMapping[str, str] = {**kernel_config['environ']}
         extra_mount_list = await get_extra_volumes(self.docker, image_ref.short)
+        internal_data: Mapping[str, Any] = kernel_config.get('internal_data') or {}
 
-        try:
-            # Find the exact image using a digest reference
-            digest_ref = f"{kernel_config['image']['digest']}"
-            await self.docker.images.inspect(digest_ref)
-            log.info('found the local up-to-date image for {}', image_ref.canonical)
-        except DockerError as e:
-            if e.status == 404:
-                await self.send_event('kernel_pulling',
-                                      kernel_id, image_ref.canonical)
-                auth_config = None
-                dreg_user = kernel_config['image']['registry'].get('username')
-                dreg_passwd = kernel_config['image']['registry'].get('password')
-                if dreg_user and dreg_passwd:
-                    encoded_creds = base64.b64encode(
-                        f'{dreg_user}:{dreg_passwd}'.encode('utf-8')) \
-                        .decode('ascii')
-                    auth_config = {
-                        'auth': encoded_creds,
-                    }
-                log.info('pulling image {} from registry', image_ref.canonical)
-                repo_digest = kernel_config['image'].get('repo_digest')
-                if repo_digest is not None:
-                    await self.docker.images.pull(
-                        f'{image_ref.short}@{repo_digest}',
-                        auth=auth_config)
-                else:
-                    await self.docker.images.pull(
-                        image_ref.canonical,
-                        auth=auth_config)
-            else:
-                raise
-        await self.send_event('kernel_creating', kernel_id)
+        do_pull = await self.check_image(
+            image_ref,
+            kernel_config['image']['digest'],
+            AutoPullBehavior(kernel_config.get('auto_pull', 'digest')),
+        )
+        if do_pull:
+            await self.produce_event('kernel_pulling',
+                                     str(kernel_id), image_ref.canonical)
+            await self.pull_image(image_ref, kernel_config['image']['registry'])
+
+        await self.produce_event('kernel_creating', str(kernel_id))
         image_labels = kernel_config['image']['labels']
-
         version = int(image_labels.get('ai.backend.kernelspec', '1'))
         label_envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
         envs_corecount = label_envs_corecount.split(',') if label_envs_corecount else []
@@ -380,9 +435,19 @@ class DockerAgent(AbstractAgent):
                 resource_spec = KernelResourceSpec.read_from_file(f)
             resource_opts = None
         else:
-            # resource_slots is already sanitized by the manager.
             slots = ResourceSlot.from_json(kernel_config['resource_slots'])
+            # accept unknown slot type with zero values
+            # but reject if they have non-zero values.
+            for st, sv in slots.items():
+                if st not in known_slot_types and sv != Decimal(0):
+                    raise UnsupportedResource(st)
+            # sanitize the slots
+            current_resource_slots.set(known_slot_types)
+            slots = slots.normalize_slots(ignore_unknown=True)
             vfolders = kernel_config['mounts']
+            vfolder_mount_map: Mapping[str, str] = {}
+            if 'mount_map' in kernel_config.keys():
+                vfolder_mount_map = kernel_config['mount_map']
             resource_spec = KernelResourceSpec(
                 container_id='',
                 allocations={},
@@ -406,7 +471,7 @@ class DockerAgent(AbstractAgent):
         mounts: List[Mount] = [
             Mount(MountTypes.BIND, config_dir, '/home/config',
                   MountPermission.READ_ONLY),
-            Mount(MountTypes.BIND, work_dir, '/home/work/',
+            Mount(MountTypes.BIND, work_dir, '/home/work',
                   MountPermission.READ_WRITE),
         ]
         if (sys.platform.startswith('linux') and
@@ -461,17 +526,43 @@ class DockerAgent(AbstractAgent):
 
             # Realize vfolder mounts.
             for vfolder in vfolders:
-                if len(vfolder) == 4:
+                if len(vfolder) == 5:
+                    folder_name, folder_host, folder_id, folder_perm, host_path_raw = vfolder
+                    if host_path_raw:
+                        host_path = Path(host_path_raw)
+                    else:
+                        host_path = (self.config['vfolder']['mount'] / folder_host /
+                                     self.config['vfolder']['fsprefix'] / folder_id)
+                elif len(vfolder) == 4:  # for backward compatibility
                     folder_name, folder_host, folder_id, folder_perm = vfolder
+                    host_path = (self.config['vfolder']['mount'] / folder_host /
+                                 self.config['vfolder']['fsprefix'] / folder_id)
                 elif len(vfolder) == 3:  # legacy managers
                     folder_name, folder_host, folder_id = vfolder
                     folder_perm = 'rw'
+                    host_path = (self.config['vfolder']['mount'] / folder_host /
+                                 self.config['vfolder']['fsprefix'] / folder_id)
                 else:
                     raise RuntimeError(
                         'Unexpected number of vfolder mount detail tuple size')
-                host_path = (self.config['vfolder']['mount'] / folder_host /
-                             self.config['vfolder']['fsprefix'] / folder_id)
-                kernel_path = Path(f'/home/work/{folder_name}')
+                if internal_data.get('prevent_vfolder_mounts', False):
+                    # Only allow mount of ".logs" directory to prevent expose
+                    # internal-only information, such as Docker credentials to user's ".docker" vfolder
+                    # in image importer kernels.
+                    if folder_name != '.logs':
+                        continue
+                # TODO: Remove `type: ignore` when mypy supports type inference for walrus operator
+                # Check https://github.com/python/mypy/issues/7316
+                # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
+                # Check https://gitlab.com/pycqa/flake8/issues/599
+                if kernel_path_raw := vfolder_mount_map.get(folder_name):
+                    if not kernel_path_raw.startswith('/home/work/'):  # type: ignore
+                        raise ValueError(
+                            f'Error while mounting {folder_name} to {kernel_path_raw}: '
+                            'all vfolder mounts should be under /home/work')
+                    kernel_path = Path(kernel_path_raw)  # type: ignore
+                else:
+                    kernel_path = Path(f'/home/work/{folder_name}')
                 folder_perm = MountPermission(folder_perm)
                 if folder_perm == MountPermission.RW_DELETE:
                     # TODO: enforce readable/writable but not deletable
@@ -499,18 +590,41 @@ class DockerAgent(AbstractAgent):
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         matched_distro, krunner_volume = match_krunner_volume(
             self.config['container']['krunner-volumes'], distro)
+        matched_libc_style = 'glibc'
+        if matched_distro.startswith('alpine'):
+            matched_libc_style = 'musl'
         log.debug('selected krunner: {}', matched_distro)
+        log.debug('selected libc style: {}', matched_libc_style)
         log.debug('krunner volume: {}', krunner_volume)
         arch = platform.machine()
         entrypoint_sh_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/entrypoint.sh'))
-        suexec_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/su-exec.{matched_distro}.bin'))
+        if matched_distro == 'centos6.10':
+            # special case for image importer kernel (manylinux2010 is based on CentOS 6)
+            suexec_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', f'../runner/su-exec.centos7.6.{arch}.bin'))
+            hook_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', f'../runner/libbaihook.centos7.6.{arch}.so'))
+            sftp_server_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/sftp-server.centos7.6.{arch}.bin'))
+            scp_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/scp.centos7.6.{arch}.bin'))
+        else:
+            suexec_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', f'../runner/su-exec.{matched_distro}.{arch}.bin'))
+            hook_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', f'../runner/libbaihook.{matched_distro}.{arch}.so'))
+            sftp_server_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/sftp-server.{matched_distro}.{arch}.bin'))
+            scp_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent',
+                f'../runner/scp.{matched_distro}.{arch}.bin'))
         if self.config['container']['sandbox-type'] == 'jail':
             jail_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent', f'../runner/jail.{matched_distro}.bin'))
-        hook_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/libbaihook.{matched_distro}.{arch}.so'))
         kernel_pkg_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../kernel'))
         helpers_pkg_path = Path(pkg_resources.resource_filename(
@@ -524,12 +638,33 @@ class DockerAgent(AbstractAgent):
         font_italic_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/roboto-italic.ttf'))
 
+        dropbear_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent',
+            f'../runner/dropbear.{matched_libc_style}.{arch}.bin'))
+        dropbearconv_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent',
+            f'../runner/dropbearconvert.{matched_libc_style}.{arch}.bin'))
+        dropbearkey_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent',
+            f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
+
+        bashrc_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/.bashrc'))
+        vimrc_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/.vimrc'))
+
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
         _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
         if self.config['container']['sandbox-type'] == 'jail':
             _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
+
+        _mount(MountTypes.BIND, dropbear_path.resolve(), '/opt/kernel/dropbear')
+        _mount(MountTypes.BIND, dropbearconv_path.resolve(), '/opt/kernel/dropbearconvert')
+        _mount(MountTypes.BIND, dropbearkey_path.resolve(), '/opt/kernel/dropbearkey')
+        _mount(MountTypes.BIND, sftp_server_path.resolve(), '/usr/libexec/sftp-server')
+        _mount(MountTypes.BIND, scp_path.resolve(), '/usr/bin/scp')
 
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
@@ -552,11 +687,28 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, font_path.resolve(), '/home/work/.jupyter/custom/roboto.ttf')
         _mount(MountTypes.BIND, font_italic_path.resolve(),
                                 '/home/work/.jupyter/custom/roboto-italic.ttf')
+        _mount(MountTypes.BIND, bashrc_path.resolve(), '/home/work/.bashrc')
+        _mount(MountTypes.BIND, vimrc_path.resolve(), '/home/work/.vimrc')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
         if self.config['debug']['coredump']['enabled']:
             _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
                                     self.config['debug']['coredump']['core_path'],
                                     perm='rw')
+
+        domain_socket_proxies = []
+        for host_sock_path in internal_data.get('domain_socket_proxies', []):
+            (ipc_base_path / 'proxy').mkdir(parents=True, exist_ok=True)
+            host_proxy_path = ipc_base_path / 'proxy' / f'{secrets.token_hex(12)}.sock'
+            proxy_server = await asyncio.start_unix_server(
+                aiotools.apartial(proxy_connection, host_sock_path),
+                str(host_proxy_path))
+            host_proxy_path.chmod(0o666)
+            domain_socket_proxies.append(DomainSocketProxy(
+                Path(host_sock_path),
+                host_proxy_path,
+                proxy_server,
+            ))
+            _mount(MountTypes.BIND, host_proxy_path, host_sock_path, perm='rw')
 
         # Inject ComputeDevice-specific env-varibles and hooks
         computer_docker_args: Dict[str, Any] = {}
@@ -602,6 +754,17 @@ class DockerAgent(AbstractAgent):
                 if os.geteuid() == 0:  # only possible when I am root.
                     os.chown(work_dir, uid, gid)
                     os.chown(work_dir / '.jupyter', uid, gid)
+                    os.chown(work_dir / '.jupyter' / 'custom', uid, gid)
+                    os.chown(bashrc_path, uid, gid)
+                    os.chown(vimrc_path, uid, gid)
+            # Create bootstrap.sh into workdir if needed
+            # TODO: Remove `type: ignore` when mypy supports type inference for walrus operator
+            # Check https://github.com/python/mypy/issues/7316
+            # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
+            # Check https://gitlab.com/pycqa/flake8/issues/599
+            if bootstrap := kernel_config.get('bootstrap_script'):  # noqa
+                with open(work_dir / 'bootstrap.sh', 'wb') as fw:
+                    fw.write(base64.b64decode(bootstrap))  # type: ignore
             os.makedirs(config_dir, exist_ok=True)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'environ.txt', 'w') as f:
@@ -618,6 +781,51 @@ class DockerAgent(AbstractAgent):
                         await computer_ctx.klass.generate_resource_data(device_alloc)
                     for k, v in kvpairs.items():
                         f.write(f'{k}={v}\n')
+            with open(config_dir / 'kernel_id.txt', 'w') as f:
+                f.write(kernel_id.hex)
+            docker_creds = internal_data.get('docker_credentials')
+            if docker_creds:
+                (config_dir / 'docker-creds.json').write_text(json.dumps(docker_creds))
+
+        # Create SSH keypair only if ssh_keypair internal_data exists and
+        # /home/work/.ssh folder is not mounted.
+        if internal_data.get('ssh_keypair'):
+            for m in mounts:
+                container_path = str(m).split(':')[1]
+                if container_path == '/home/work/.ssh':
+                    break
+            else:
+                pubkey = internal_data['ssh_keypair']['public_key'].encode('ascii')
+                privkey = internal_data['ssh_keypair']['private_key'].encode('ascii')
+                ssh_dir = work_dir / '.ssh'
+                ssh_dir.mkdir(parents=True, exist_ok=True)
+                ssh_dir.chmod(0o700)
+                (ssh_dir / 'authorized_keys').write_bytes(pubkey)
+                (ssh_dir / 'authorized_keys').chmod(0o600)
+                (work_dir / 'id_container').write_bytes(privkey)
+                (work_dir / 'id_container').chmod(0o600)
+                if KernelFeatures.UID_MATCH in kernel_features:
+                    uid = self.config['container']['kernel-uid']
+                    gid = self.config['container']['kernel-gid']
+                    if os.geteuid() == 0:  # only possible when I am root.
+                        os.chown(ssh_dir, uid, gid)
+                        os.chown(ssh_dir / 'authorized_keys', uid, gid)
+                        os.chown(work_dir / 'id_container', uid, gid)
+
+        for dotfile in internal_data.get('dotfiles', []):
+            file_path: Path = work_dir / dotfile['path']
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(dotfile['data'])
+
+            tmp = Path(file_path)
+            while tmp != work_dir:
+                tmp.chmod(int(dotfile['perm'], 8))
+                # only possible when I am root.
+                if KernelFeatures.UID_MATCH in kernel_features and os.geteuid() == 0:
+                    uid = self.config['container']['kernel-uid']
+                    gid = self.config['container']['kernel-gid']
+                    os.chown(tmp, uid, gid)
+                tmp = tmp.parent
 
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
@@ -629,17 +837,31 @@ class DockerAgent(AbstractAgent):
         #     by the plugin implementation.
 
         exposed_ports = [2000, 2001]
-        service_ports: MutableMapping[int, ServicePort] = {}
-        for item in image_labels.get('ai.backend.service-ports', '').split(','):
-            if not item:
-                continue
-            service_port = parse_service_port(item)
-            container_port = service_port['container_port']
-            service_ports[container_port] = service_port
-            exposed_ports.append(container_port)
-        if 'git' in image_ref.name:  # legacy (TODO: remove it!)
-            exposed_ports.append(2002)
-            exposed_ports.append(2003)
+        service_ports = []
+        port_map = {}
+
+        for sport in parse_service_ports(await self.get_service_ports_from_label(image_ref)):
+            port_map[sport['name']] = sport
+        for sport in parse_service_ports(image_labels.get('ai.backend.service-ports', '')):
+            port_map[sport['name']] = sport
+        port_map['sshd'] = {
+            'name': 'sshd',
+            'protocol': ServicePortProtocols('tcp'),
+            'container_ports': (2200,),
+            'host_ports': (None,),
+        }
+
+        port_map['ttyd'] = {
+            'name': 'ttyd',
+            'protocol': ServicePortProtocols('http'),
+            'container_ports': (7681,),
+            'host_ports': (None,),
+        }
+        for sport in port_map.values():
+            service_ports.append(sport)
+            for cport in sport['container_ports']:
+                exposed_ports.append(cport)
+
         log.debug('exposed ports: {!r}', exposed_ports)
 
         kernel_host = self.config['container']['kernel-host']
@@ -679,6 +901,11 @@ class DockerAgent(AbstractAgent):
             'Cmd': cmdargs,
             'Env': [f'{k}={v}' for k, v in environ.items()],
             'WorkingDir': '/home/work',
+            'Labels': {
+                'ai.backend.kernel-id': str(kernel_id),
+                'ai.backend.internal.block-service-ports':
+                    '1' if internal_data.get('block_service_ports', False) else '0'
+            },
             'HostConfig': {
                 'Init': True,
                 'Mounts': [
@@ -694,17 +921,17 @@ class DockerAgent(AbstractAgent):
                 ],
                 'PortBindings': {
                     f'{eport}/tcp': [{'HostPort': str(hport),
-                                      'HostIp': kernel_host}]
+                                      'HostIp': str(kernel_host)}]
                     for eport, hport in zip(exposed_ports, host_ports)
                 },
                 'PublishAllPorts': False,  # we manage port mapping manually!
             },
         }
-        if resource_opts and resource_opts.get('shm-size'):
-            shm_size = resource_opts.get('shm-size')
-            computer_docker_args['HostConfig']['ShmSize'] = shm_size
-            computer_docker_args['HostConfig']['MemorySwap'] -= shm_size
-            computer_docker_args['HostConfig']['Memory'] -= shm_size
+        if resource_opts and resource_opts.get('shmem'):
+            shmem = resource_opts.get('shmem')
+            computer_docker_args['HostConfig']['ShmSize'] = shmem
+            computer_docker_args['HostConfig']['MemorySwap'] -= shmem
+            computer_docker_args['HostConfig']['Memory'] -= shmem
         if self.config['container']['sandbox-type'] == 'jail':
             container_config['HostConfig']['SecurityOpt'] = [
                 'seccomp=unconfined',
@@ -731,10 +958,13 @@ class DockerAgent(AbstractAgent):
                     for k, v in kvpairs.items():
                         f.write(f'{k}={v}\n')
 
-            self.stat_sync_states[cid] = StatSyncState(kernel_id)
+            stat_sync_state = StatSyncState(kernel_id)
+            self.stat_sync_states[cid] = stat_sync_state
             async with spawn_stat_synchronizer(self.config['_src'],
                                                self.stat_sync_sockpath,
-                                               self.stat_ctx.mode, cid):
+                                               self.stat_ctx.mode, cid,
+                                               self.stat_ctx.log_endpoint) as proc:
+                stat_sync_state.sync_proc = proc
                 await container.start()
 
             # Get attached devices information (including model_name).
@@ -762,28 +992,33 @@ class DockerAgent(AbstractAgent):
                 self.computers[dev_name].alloc_map.free(device_alloc)
             raise
 
+        ctnr_host_port_map: MutableMapping[int, int] = {}
         stdin_port = 0
         stdout_port = 0
         for idx, port in enumerate(exposed_ports):
             host_port = int((await container.port(port))[0]['HostPort'])
             assert host_port == host_ports[idx]
-            if port in service_ports:
-                service_ports[port]['host_port'] = host_port
-            elif port == 2000:     # intrinsic
+            if port == 2000:     # intrinsic
                 repl_in_port = host_port
-            elif port == 2001:     # intrinsic
+            elif port == 2001:   # intrinsic
                 repl_out_port = host_port
-            elif port == 2002:     # legacy
+            elif port == 2002:   # legacy
                 stdin_port = host_port
-            elif port == 2003:  # legacy
+            elif port == 2003:   # legacy
                 stdout_port = host_port
+            else:
+                ctnr_host_port_map[port] = host_port
+        for sport in service_ports:
+            sport['host_ports'] = tuple(
+                ctnr_host_port_map[cport] for cport in sport['container_ports']
+            )
 
-        self.kernel_registry[kernel_id] = await DockerKernel.new(
+        kernel_obj = await DockerKernel.new(
             kernel_id,
             image_ref,
             version,
-            config=self.config,
-            service_ports=list(service_ports.values()),
+            agent_config=self.config,
+            service_ports=service_ports,
             resource_spec=resource_spec,
             data={
                 'container_id': container._id,
@@ -794,20 +1029,78 @@ class DockerAgent(AbstractAgent):
                 'stdin_port': stdin_port,    # legacy
                 'stdout_port': stdout_port,  # legacy
                 'host_ports': host_ports,
+                'domain_socket_proxies': domain_socket_proxies,
+                'block_service_ports': internal_data.get('block_service_ports', False)
             })
+        self.kernel_registry[kernel_id] = kernel_obj
         log.debug('kernel repl-in address: {0}:{1}', kernel_host, repl_in_port)
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
-        for service_port in service_ports.values():
+        for service_port in service_ports:
             log.debug('service port: {!r}', service_port)
-        await self.send_event('kernel_started', kernel_id)
+
+        live_services = await kernel_obj.get_service_apps()
+        if live_services['status'] != 'failed':
+            for live_service in live_services['data']:
+                for service_port in service_ports:
+                    if live_service['name'] == service_port['name']:
+                        service_port.update(live_service)
+                        break
+
+        # Finally we are done.
+        await self.produce_event('kernel_started', str(kernel_id))
+
+        # Execute the startup command if the session type is batch.
+        if SessionTypes(kernel_config['session_type']) == SessionTypes.BATCH:
+            log.debug('startup command: {!r}',
+                      (kernel_config['startup_command'] or '')[:60])
+
+            # TODO: make this working after agent restarts
+            async def execute_batch():
+                opts = {
+                    'exec': kernel_config['startup_command'],
+                }
+                while True:
+                    try:
+                        result = await self.execute(
+                            kernel_id,
+                            'batch-job', 'batch', '',
+                            opts=opts,
+                            flush_timeout=1.0,
+                            api_version=3)
+                    except KeyError:
+                        await self.produce_event(
+                            'kernel_terminated',
+                            str(kernel_id), 'self-terminated',
+                            None)
+                        break
+
+                    if result['status'] == 'finished':
+                        if result['exitCode'] == 0:
+                            await self.produce_event(
+                                'kernel_success',
+                                str(kernel_id), 0)
+                        else:
+                            await self.produce_event(
+                                'kernel_failure',
+                                str(kernel_id), result['exitCode'])
+                        break
+                    if result['status'] == 'exec-timeout':
+                        await self.produce_event(
+                            'kernel_failure', str(kernel_id), -2)
+                        break
+                # TODO: store last_stat?
+                await self.destroy_kernel(kernel_id, 'task-finished')
+
+            self.loop.create_task(execute_batch())
+
         return {
-            'id': kernel_id,
-            'kernel_host': kernel_host,
+            'id': str(kernel_id),  # type: ignore  # to make it msgpack-serializable
+            'kernel_host': str(kernel_host),
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,
             'stdin_port': stdin_port,    # legacy
             'stdout_port': stdout_port,  # legacy
-            'service_ports': list(service_ports.values()),
+            'service_ports': service_ports,
             'container_id': container._id,
             'resource_spec': resource_spec.to_json_serializable_dict(),
             'attached_devices': attached_devices,
@@ -818,15 +1111,16 @@ class DockerAgent(AbstractAgent):
         try:
             kernel_obj = self.kernel_registry[kernel_id]
             cid = kernel_obj['container_id']
+            kernel_obj.termination_reason = reason
         except KeyError:
             log.warning('destroy_kernel(k:{0}) kernel missing (already dead?)',
                         kernel_id)
 
             async def force_cleanup():
                 await self.clean_kernel(kernel_id)
-                await self.send_event('kernel_terminated',
-                                      kernel_id, 'self-terminated',
-                                      None)
+                await self.produce_event('kernel_terminated',
+                                         str(kernel_id), reason,
+                                         None)
 
             self.orphan_tasks.discard(asyncio.Task.current_task())
             await asyncio.shield(force_cleanup())
@@ -843,9 +1137,13 @@ class DockerAgent(AbstractAgent):
                 try:
                     with timeout(5):
                         await s.terminated.wait()
+                        if s.sync_proc is not None:
+                            await s.sync_proc.wait()
+                            s.sync_proc = None
+                except ProcessLookupError:
+                    pass
                 except asyncio.TimeoutError:
                     log.warning('stat-collector shutdown sync timeout.')
-                self.stat_sync_states.pop(cid, None)
                 last_stat: MutableMapping[MetricKey, MetricValue] = {
                     key: metric.to_serializable_dict()
                     for key, metric in s.last_stat.items()
@@ -884,7 +1182,7 @@ class DockerAgent(AbstractAgent):
         # The container will be deleted in the docker monitoring coroutine.
         return None
 
-    async def clean_kernel(self, kernel_id: KernelId):
+    async def clean_kernel(self, kernel_id: KernelId, exit_code: int = 255):
         try:
             kernel_obj = self.kernel_registry[kernel_id]
             found = True
@@ -892,10 +1190,36 @@ class DockerAgent(AbstractAgent):
             found = False
         try:
             if found:
+                await self.produce_event(
+                    'kernel_terminated', str(kernel_id),
+                    kernel_obj.termination_reason or 'self-terminated',
+                    exit_code)
                 container_id = kernel_obj['container_id']
                 container = self.docker.containers.container(container_id)
                 if kernel_obj.runner is not None:
                     await kernel_obj.runner.close()
+                stat_sync_state = self.stat_sync_states.pop(container_id, None)
+                if stat_sync_state:
+                    sync_proc = stat_sync_state.sync_proc
+                    try:
+                        if sync_proc is not None:
+                            sync_proc.terminate()
+                            try:
+                                with timeout(2.0):
+                                    await sync_proc.wait()
+                            except asyncio.TimeoutError:
+                                sync_proc.kill()
+                                await sync_proc.wait()
+                    except ProcessLookupError:
+                        pass
+
+                for domain_socket_proxy in kernel_obj.get('domain_socket_proxies', []):
+                    domain_socket_proxy.proxy_server.close()
+                    await domain_socket_proxy.proxy_server.wait_closed()
+                    try:
+                        domain_socket_proxy.host_proxy_path.unlink()
+                    except IOError:
+                        pass
 
                 # When the agent restarts with a different port range, existing
                 # containers' host ports may not belong to the new port range.
@@ -927,7 +1251,7 @@ class DockerAgent(AbstractAgent):
 
             if found:
                 scratch_root = self.config['container']['scratch-root']
-                scratch_dir = scratch_root / kernel_id
+                scratch_dir = scratch_root / str(kernel_id)
                 tmp_dir = scratch_root / f'{kernel_id}_tmp'
                 try:
                     if (sys.platform.startswith('linux') and
@@ -1007,9 +1331,6 @@ class DockerAgent(AbstractAgent):
                     exit_code = evdata['Actor']['Attributes']['exitCode']
                 except KeyError:
                     exit_code = 255
-                await self.send_event('kernel_terminated',
-                                      kernel_id, 'self-terminated',
-                                      exit_code)
                 self.orphan_tasks.add(
-                    self.loop.create_task(self.clean_kernel(kernel_id))
+                    self.loop.create_task(self.clean_kernel(kernel_id, exit_code))
                 )

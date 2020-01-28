@@ -9,7 +9,12 @@ from pathlib import Path
 import signal
 import sys
 import time
-from typing import ClassVar, MutableMapping, Optional
+from typing import (
+    ClassVar,
+    Optional, Union,
+    List,
+    MutableMapping,
+)
 
 import janus
 from jupyter_client import KernelManager
@@ -17,25 +22,35 @@ from jupyter_client.kernelspec import KernelSpecManager
 import msgpack
 import zmq
 
+from .service import ServiceParser
 from .jupyter_client import aexecute_interactive
 from .logging import BraceStyleAdapter, setup_logger
 from .compat import asyncio_run_forever, current_loop
 from .utils import wait_local_port_open
+from .intrinsic import (
+    init_sshd_service, prepare_sshd_service,
+    prepare_ttyd_service,
+)
 
 log = BraceStyleAdapter(logging.getLogger())
 
 
-async def pipe_output(stream, outsock, target):
+async def pipe_output(stream, outsock, target, log_fd):
     assert target in ('stdout', 'stderr')
     target = target.encode('ascii')
-    fd = sys.stdout.fileno() if target == 'stdout' else sys.stderr.fileno()
+    console_fd = sys.stdout.fileno() if target == 'stdout' else sys.stderr.fileno()
+    loop = current_loop()
     try:
         while True:
             data = await stream.read(4096)
             if not data:
                 break
-            os.write(fd, data)
-            await outsock.send_multipart([target, data])
+            await asyncio.gather(
+                loop.run_in_executor(None, os.write, console_fd, data),
+                loop.run_in_executor(None, os.write, log_fd, data),
+                outsock.send_multipart([target, data]),
+                return_exceptions=True,
+            )
     except asyncio.CancelledError:
         pass
     except Exception:
@@ -67,14 +82,15 @@ class BaseRunner(metaclass=ABCMeta):
     kernel_client = None
 
     child_env: MutableMapping[str, str]
-    subproc: asyncio.subprocess.Process
+    subproc: Optional[asyncio.subprocess.Process]
+    service_parser: Optional[ServiceParser]
     runtime_path: Optional[Path]
 
     def __init__(self, loop=None):
-        self.child_env = {**os.environ, **self.default_child_env}
         self.subproc = None
         self.runtime_path = None
 
+        self.child_env = {**os.environ, **self.default_child_env}
         config_dir = Path('/home/config')
         try:
             evdata = (config_dir / 'environ.txt').read_text()
@@ -94,6 +110,7 @@ class BaseRunner(metaclass=ABCMeta):
         self.insock = None
         self.outsock = None
         self.init_done = None
+        self.service_parser = None
         self.task_queue = None
         self.log_queue = None
 
@@ -113,9 +130,20 @@ class BaseRunner(metaclass=ABCMeta):
             self.init_done.clear()
         try:
             await self.init_with_loop()
+            await init_sshd_service(self.child_env)
         except Exception:
-            log.exception('unexpected error')
+            log.exception('Unexpected error!')
+            log.warning('We are skipping the error but the container may not work as expected.')
             return
+
+        service_def_folder = Path('/etc/backend.ai/service-defs')
+        if service_def_folder.is_dir():
+            self.service_parser = ServiceParser({
+                'runtime_path': self.runtime_path
+            })
+
+            await self.service_parser.parse(service_def_folder)
+        log.debug('Service def parse done')
         if self.init_done is not None:
             self.init_done.set()
 
@@ -215,7 +243,7 @@ class BaseRunner(metaclass=ABCMeta):
     async def build_heuristic(self) -> int:
         """Process build step."""
 
-    async def _execute(self, exec_cmd):
+    async def _execute(self, exec_cmd: str):
         ret = 0
         try:
             if exec_cmd is None or exec_cmd == '':
@@ -402,21 +430,45 @@ class BaseRunner(metaclass=ABCMeta):
             if service_info['name'] in self.services_running:
                 result = {'status': 'running'}
                 return
-            print(f"starting service {service_info['name']}")
-            cmdargs, env = await self.start_service(service_info)
+            log.info(f"starting service {service_info['name']}")
+            cwd = Path.cwd()
+            if service_info['name'] == 'ttyd':
+                cmdargs, env = await prepare_ttyd_service(service_info)
+            elif service_info['name'] == 'sshd':
+                cmdargs, env = await prepare_sshd_service(service_info)
+            elif self.service_parser is not None:
+                log.debug(service_info)
+                self.service_parser.variables['ports'] = service_info['port']
+                cmdargs, env = await self.service_parser.start_service(
+                    service_info['name'], self.child_env.keys(), service_info['options'])
+            else:
+                start_info = await self.start_service(service_info)
+                if len(start_info) == 3:
+                    cmdargs, env, cwd = start_info
+                elif len(start_info) == 2:
+                    cmdargs, env = start_info
             if cmdargs is None:
                 log.warning('The service {0} is not supported.',
                             service_info['name'])
                 result = {'status': 'failed',
                           'error': 'unsupported service'}
                 return
+            log.debug('cmdargs: {0}', cmdargs)
+            log.debug('env: {0}', env)
+
             if service_info['protocol'] == 'pty':
                 # TODO: handle pseudo-tty
                 raise NotImplementedError
             else:
+                service_env = {**self.child_env, **env}
+                # avoid conflicts with Python binary used by service apps.
+                if 'LD_LIBRARY_PATH' in service_env:
+                    service_env['LD_LIBRARY_PATH'] = \
+                        service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
                 proc = await asyncio.create_subprocess_exec(
                     *cmdargs,
-                    env={**self.child_env, **env},
+                    env=service_env,
+                    cwd=str(cwd),
                 )
                 self.service_processes.append(proc)
             self.services_running.add(service_info['name'])
@@ -431,9 +483,18 @@ class BaseRunner(metaclass=ABCMeta):
                 json.dumps(result).encode('utf8'),
             ])
 
-    async def run_subproc(self, cmd):
+    async def run_subproc(self, cmd: Union[str, List[str]]):
         """A thin wrapper for an external command."""
         loop = current_loop()
+        if Path('/home/work/.logs').is_dir():
+            kernel_id = Path('/home/config/kernel_id.txt').read_text().strip()
+            log_path = Path(
+                '/home/work/.logs/task/'
+                f'{kernel_id[:2]}/{kernel_id[2:4]}/{kernel_id[4:]}.log'
+            )
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            log_path = Path(os.path.devnull)
         try:
             # errors like "command not found" is handled by the spawned shell.
             # (the subproc will terminate immediately with return code 127)
@@ -441,19 +502,26 @@ class BaseRunner(metaclass=ABCMeta):
                 exec_func = partial(asyncio.create_subprocess_exec, *cmd)
             else:
                 exec_func = partial(asyncio.create_subprocess_shell, cmd)
-            proc = await exec_func(
-                env=self.child_env,
-                stdin=None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            self.subproc = proc
-            pipe_tasks = [
-                loop.create_task(pipe_output(proc.stdout, self.outsock, 'stdout')),
-                loop.create_task(pipe_output(proc.stderr, self.outsock, 'stderr')),
-            ]
-            retcode = await proc.wait()
-            await asyncio.gather(*pipe_tasks)
+            pipe_opts = {}
+            pipe_opts['stdout'] = asyncio.subprocess.PIPE
+            pipe_opts['stderr'] = asyncio.subprocess.PIPE
+            with open(log_path, 'ab') as log_out:
+                proc = await exec_func(
+                    env=self.child_env,
+                    stdin=None,
+                    **pipe_opts,
+                )
+                self.subproc = proc
+                pipe_tasks = [
+                    loop.create_task(
+                        pipe_output(proc.stdout, self.outsock, 'stdout',
+                                    log_out.fileno())),
+                    loop.create_task(
+                        pipe_output(proc.stderr, self.outsock, 'stderr',
+                                    log_out.fileno())),
+                ]
+                retcode = await proc.wait()
+                await asyncio.gather(*pipe_tasks)
             return retcode
         except Exception:
             log.exception('unexpected error')
@@ -510,6 +578,19 @@ class BaseRunner(metaclass=ABCMeta):
             self.log_queue.close()
             await self.log_queue.wait_closed()
 
+    async def _get_apps(self, service_name):
+        result = {'status': 'done', 'data': []}
+        if self.service_parser is not None:
+            if service_name:
+                apps = await self.service_parser.get_apps(selected_service=service_name)
+            else:
+                apps = await self.service_parser.get_apps()
+            result['data'] = apps
+        await self.outsock.send_multipart([
+            b'apps-result',
+            json.dumps(result).encode('utf8'),
+        ])
+
     async def main_loop(self, cmdargs):
         user_input_server = \
             await asyncio.start_server(self.handle_user_input,
@@ -520,6 +601,9 @@ class BaseRunner(metaclass=ABCMeta):
         while True:
             try:
                 data = await self.insock.recv_multipart()
+                if len(data) != 2:
+                    # maybe some garbage data
+                    continue
                 op_type = data[0].decode('ascii')
                 text = data[1].decode('utf8')
                 if op_type == 'clean':
@@ -543,6 +627,8 @@ class BaseRunner(metaclass=ABCMeta):
                 elif op_type == 'start-service':  # activate a service port
                     data = json.loads(text)
                     await self._start_service(data)
+                elif op_type == 'get-apps':
+                    await self._get_apps(text)
             except asyncio.CancelledError:
                 break
             except NotImplementedError:
@@ -550,7 +636,8 @@ class BaseRunner(metaclass=ABCMeta):
                 await asyncio.sleep(0)
             except Exception:
                 log.exception('unexpected error')
-                break
+                # we need to continue anyway unless we are shutting down
+                continue
         user_input_server.close()
         await user_input_server.wait_closed()
         await self.shutdown()
@@ -614,7 +701,6 @@ class BaseRunner(metaclass=ABCMeta):
             self.runtime_path = self.default_runtime_path
         else:
             self.runtime_path = cmdargs.runtime_path
-
         # Replace stdin with a "null" file
         # (trying to read stdin will raise EOFError immediately afterwards.)
         sys.stdin = open(os.devnull, 'rb')

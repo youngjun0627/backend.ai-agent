@@ -1,9 +1,9 @@
 import ctypes, ctypes.util
-import functools
 import os
 import sys
 
-import requests_unixsocket as requnix
+import aiohttp
+import aiotools
 
 _numa_supported = False
 
@@ -31,24 +31,25 @@ class libnuma:
             return 1
 
     @staticmethod
-    @functools.lru_cache(maxsize=1)
-    def get_available_cores():
+    @aiotools.lru_cache(maxsize=1)
+    async def get_available_cores():
         try:
             # Try to get the # cores allocated to Docker first.
-            with requnix.Session() as sess:
-                resp = sess.get('http+unix://%2fvar%2frun%2fdocker.sock/info')
-                assert resp.status_code == 200
-                return {idx for idx in range(resp.json()['NCPU'])}
-        except:
+            unix_conn = aiohttp.UnixConnector('/var/run/docker.sock')
+            async with aiohttp.ClientSession(connector=unix_conn) as sess:
+                async with sess.get('http://docker/info') as resp:
+                    data = await resp.json()
+                    return {idx for idx in range(data['NCPU'])}
+        except aiohttp.ClientError:
             try:
                 return os.sched_getaffinity(os.getpid())
             except AttributeError:
                 return {idx for idx in range(os.cpu_count())}
 
     @staticmethod
-    def get_core_topology(limit_cpus=None):
+    async def get_core_topology(limit_cpus=None):
         topo = tuple([] for _ in range(libnuma.num_nodes()))
-        for c in libnuma.get_available_cores():
+        for c in (await libnuma.get_available_cores()):
             if limit_cpus is not None and c not in limit_cpus:
                 continue
             n = libnuma.node_of_cpu(c)

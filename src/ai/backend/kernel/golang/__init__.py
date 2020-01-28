@@ -1,7 +1,6 @@
 import logging
 import os
 from pathlib import Path
-import shlex
 import tempfile
 from typing import List
 
@@ -38,11 +37,10 @@ class Runner(BaseRunner):
     async def build_heuristic(self) -> int:
         if Path('main.go').is_file():
             go_glob = Path('.').glob('**/*.go')
-            go_files = ' '.join(map(lambda p: shlex.quote(str(p)), go_glob))
             cmd = [
-                self.runtime_path,
+                str(self.runtime_path),
                 'build', '-o', 'main',
-                *DEFAULT_BFLAGS, go_files
+                *DEFAULT_BFLAGS, *map(str, go_glob),
             ]
             return await self.run_subproc(cmd)
         else:
@@ -60,7 +58,7 @@ class Runner(BaseRunner):
         with tempfile.NamedTemporaryFile(suffix='.go', dir='.') as tmpf:
             tmpf.write(code_text.encode('utf8'))
             tmpf.flush()
-            cmd = [self.runtime_path, 'run', tmpf.name]
+            cmd = [str(self.runtime_path), 'run', tmpf.name]
             return await self.run_subproc(cmd)
 
     async def complete(self, data):

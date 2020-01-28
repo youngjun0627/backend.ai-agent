@@ -1,90 +1,112 @@
-import aiodocker
 import asyncio
+import json
+import secrets
+import subprocess
+
+from ai.backend.common.types import HostPortPair
+
+import aiodocker
 import pytest
 
 
 @pytest.fixture(scope='session')
-def prepare_docker_images():
-    event_loop = asyncio.get_event_loop()
+def backend_type():
+    # TODO: change by environment/tox?
+    return 'docker'
+
+
+@pytest.fixture(scope='session')
+def test_id():
+    return f'testing-{secrets.token_urlsafe(8)}'
+
+
+@pytest.fixture(scope='session')
+def prepare_images(backend_type):
 
     async def pull():
-        docker = aiodocker.Docker()
-        images_to_pull = [
-            'alpine:latest',
-            'lablup/kernel-lua:5.3-alpine',
-            'nginx:latest',
-        ]
-        for img in images_to_pull:
-            try:
-                await docker.images.inspect(img)
-            except aiodocker.exceptions.DockerError as e:
-                assert e.status == 404
-                print(f'Pulling image "{img}" for testing...')
-                await docker.pull(img)
-        await docker.close()
+        if backend_type == 'docker':
+            docker = aiodocker.Docker()
+            images_to_pull = [
+                'alpine:3.8',
+                'nginx:1.17-alpine',
+                'redis:5.0.5-alpine',
+            ]
+            for img in images_to_pull:
+                try:
+                    await docker.images.inspect(img)
+                except aiodocker.exceptions.DockerError as e:
+                    assert e.status == 404
+                    print(f'Pulling image "{img}" for testing...')
+                    await docker.pull(img)
+            await docker.close()
+        elif backend_type == 'k8s':
+            raise NotImplementedError
 
-    event_loop.run_until_complete(pull())
+    asyncio.run(pull())
 
 
 @pytest.fixture
-def docker(event_loop, prepare_docker_images):
+async def docker():
     docker = aiodocker.Docker()
-
-    async def finalize():
-        await docker.close()
-
     try:
         yield docker
     finally:
-        event_loop.run_until_complete(finalize())
+        await docker.close()
+
+
+@pytest.fixture(scope='session')
+def redis_container(test_id, backend_type, prepare_images):
+    if backend_type == 'docker':
+        subprocess.run([
+            'docker', 'run',
+            '-d',
+            '-P',
+            '--name', f'{test_id}.redis',
+            'redis:5.0.5-alpine',
+        ], capture_output=True)
+        proc = subprocess.run([
+            'docker', 'inspect',
+            f'{test_id}.redis',
+        ], capture_output=True)
+        container_info = json.loads(proc.stdout)
+        host_port = int(container_info[0]['NetworkSettings']['Ports']['6379/tcp'][0]['HostPort'])
+    elif backend_type == 'k8s':
+        raise NotImplementedError
+
+    try:
+        yield {
+            'addr': HostPortPair('localhost', host_port),
+            'password': None,
+        }
+    finally:
+        if backend_type == 'docker':
+            subprocess.run([
+                'docker', 'rm',
+                '-f',
+                f'{test_id}.redis',
+            ], capture_output=True)
+        elif backend_type == 'k8s':
+            raise NotImplementedError
 
 
 @pytest.fixture
-def container(event_loop, docker):
+async def create_container(test_id, backend_type, docker):
     container = None
-    config = {
-        'Cmd': ['-c', 'echo hello'],
-        'Entrypoint': 'sh',
-        'Image': 'alpine:latest',
-    }
+    cont_id = secrets.token_urlsafe(4)
 
-    async def spawn():
-        nonlocal container
-        container = await docker.containers.create_or_replace(
-            config=config,
-            name='kernel.test-container'
-        )
-        await container.start()
+    if backend_type == 'docker':
+        async def _create_container(config):
+            nonlocal container
+            container = await docker.containers.create_or_replace(
+                config=config,
+                name=f'kernel.{test_id}-{cont_id}',
+            )
+            return container
+    elif backend_type == 'k8s':
+        raise NotImplementedError
 
-    event_loop.run_until_complete(spawn())
-
-    yield container
-
-    async def finalize():
-        nonlocal container
-        if container:
+    try:
+        yield _create_container
+    finally:
+        if container is not None:
             await container.delete(force=True)
-
-    event_loop.run_until_complete(finalize())
-
-
-@pytest.fixture
-def create_container(event_loop, docker):
-    container = None
-
-    async def _create_container(config):
-        nonlocal container
-        container = await docker.containers.create_or_replace(
-            config=config,
-            name='kernel.test-container'
-        )
-        return container
-
-    yield _create_container
-
-    async def finalize():
-        nonlocal container
-        if container:
-            await container.delete(force=True)
-
-    event_loop.run_until_complete(finalize())

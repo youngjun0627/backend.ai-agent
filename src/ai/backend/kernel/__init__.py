@@ -24,5 +24,6 @@ lang_map = {
     'scheme': 'ai.backend.kernel.scheme.Runner',
     'git': 'ai.backend.kernel.git.Runner',
     'vendor.aws_polly': 'ai.backend.kernel.vendor.aws_polly.Runner',
-    'vendor.ngc_digits': 'ai.backend.kernel.vendor.ngc_digits.Runner',
+    'vendor.ngc_matlab': 'ai.backend.kernel.vendor.ngc_matlab.Runner',
+    'vendor.h2o': 'ai.backend.kernel.vendor.h2o.Runner',
 }

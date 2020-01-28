@@ -1,7 +1,6 @@
 import logging
 import os
 from pathlib import Path
-import shlex
 import tempfile
 
 from .. import BaseRunner
@@ -44,12 +43,12 @@ class Runner(BaseRunner):
             cppfiles_glob = list(Path('.').glob('**/*.cpp'))
             ofiles_glob = [Path(p.stem + '.o') for p in sorted(cppfiles_glob)]
             for cppf in cppfiles_glob:
-                cmd = [self.runtime_path, '-c', cppf, *DEFAULT_CFLAGS]
+                cmd = [str(self.runtime_path), '-c', str(cppf), *DEFAULT_CFLAGS]
                 ret = await self.run_subproc(cmd)
                 if ret != 0:  # stop if g++ has failed
                     return ret
-            ofiles = ' '.join(map(lambda p: shlex.quote(str(p)), ofiles_glob))
-            cmd = [self.runtime_path, ofiles, *DEFAULT_CFLAGS, '-o', './main']
+            cmd = [str(self.runtime_path), *map(str, ofiles_glob),
+                   *DEFAULT_CFLAGS, '-o', './main']
             return await self.run_subproc(cmd)
         else:
             log.error('cannot find build script ("Makefile") '
@@ -69,7 +68,7 @@ class Runner(BaseRunner):
         with tempfile.NamedTemporaryFile(suffix='.cpp', dir='.') as tmpf:
             tmpf.write(code_text.encode('utf8'))
             tmpf.flush()
-            cmd = [self.runtime_path, tmpf.name,
+            cmd = [str(self.runtime_path), tmpf.name,
                    *DEFAULT_CFLAGS, '-o', './main', *DEFAULT_LDFLAGS]
             ret = await self.run_subproc(cmd)
             if ret != 0:

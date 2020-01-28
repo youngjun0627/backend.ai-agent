@@ -63,7 +63,7 @@ async def detect_resources(resource_configs: Mapping[str, Any],
         compute_device_types[accel_klass.key] = accel_klass
 
     for key, klass in compute_device_types.items():
-        known_slot_types.update(klass.slot_types)
+        known_slot_types.update(klass.slot_types)  # type: ignore  # (only updated here!)
         resource_slots = await klass.available_slots()
         for sname, sval in resource_slots.items():
             slots[sname] = Decimal(max(0, sval - reserved_slots.get(sname, 0)))

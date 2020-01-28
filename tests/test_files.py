@@ -1,82 +1,10 @@
-import logging
 import os
 from pathlib import Path
 import tempfile
-from unittest import mock
 
-import aiobotocore
-import pytest
-
-from ai.backend.agent.files import (
-    upload_output_files_to_s3, scandir, diff_file_stats
+from ai.backend.agent.docker.files import (
+    scandir, diff_file_stats,
 )
-
-
-def mock_awaitable(return_value):
-    async def mock_coro(*args, **kwargs):
-        return return_value
-    return mock.Mock(wraps=mock_coro)
-
-
-@pytest.fixture
-def fake_s3_keys():
-    import ai.backend.agent.files as files
-    original_access_key = files.s3_access_key
-    original_secret_key = files.s3_secret_key
-    files.s3_access_key = 'fake-access-key'
-    files.s3_secret_key = 'fake-secret-key'
-
-    yield
-
-    files.s3_access_key = original_access_key
-    files.s3_secret_key = original_secret_key
-
-
-@pytest.mark.asyncio
-async def test_upload_output_files_to_s3(fake_s3_keys, mocker):
-    fake_id = 'fake-entry-id'
-    mock_get_session = mocker.patch.object(aiobotocore, 'get_session')
-    mock_session = mock_get_session.return_value = mock.Mock()
-    mock_client = mock_session.create_client.return_value = mock.Mock()
-    mock_client.put_object = mock_awaitable(None)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        fs1 = scandir(tmpdir, 1000)
-
-        file1 = Path(tmpdir) / 'file.txt'
-        file1.write_bytes(b'random-content')
-        subdir = Path(tmpdir) / 'subdir'
-        subdir.mkdir()
-        file2 = subdir / 'file.txt'
-        file2.write_bytes(b'awesome-content')
-
-        fs2 = scandir(tmpdir, 1000)
-        diff = await upload_output_files_to_s3(fs1, fs2, tmpdir, fake_id)
-
-    assert len(diff) == 2
-    mock_client.put_object.assert_any_call(
-        Bucket=mock.ANY, Key=f'bucket/fake-entry-id/file.txt',
-        Body=b'random-content', ACL='public-read'
-    )
-    mock_client.put_object.assert_any_call(
-        Bucket=mock.ANY, Key=f'bucket/fake-entry-id/subdir/file.txt',
-        Body=b'awesome-content', ACL='public-read'
-    )
-
-
-@pytest.mark.asyncio
-async def test_s3_access_key_required(mocker):
-    mock_warn = mocker.patch.object(logging.LoggerAdapter, 'warning')
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        file1 = Path(tmpdir) / 'test.txt'
-        file1.write_bytes(b'something')
-        diff = await upload_output_files_to_s3(
-            {}, {file1: 1}, tmpdir, 'fake-id')
-
-    mock_warn.assert_called_once_with(mock.ANY)
-    assert 'test.txt' == diff[0]['name']
-    assert '#dummy-upload' == diff[0]['url']
 
 
 def test_scandir():

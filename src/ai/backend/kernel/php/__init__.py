@@ -36,7 +36,7 @@ class Runner(BaseRunner):
 
     async def execute_heuristic(self) -> int:
         if Path('main.php').is_file():
-            cmd = [self.runtime_path, 'main.php']
+            cmd = [str(self.runtime_path), 'main.php']
             return await self.run_subproc(cmd)
         else:
             log.error('cannot find executable ("main.php").')
@@ -47,7 +47,7 @@ class Runner(BaseRunner):
             tmpf.write(b'<?php\n\n')
             tmpf.write(code_text.encode('utf8'))
             tmpf.flush()
-            cmd = [self.runtime_path, tmpf.name]
+            cmd = [str(self.runtime_path), tmpf.name]
             return await self.run_subproc(cmd)
 
     async def complete(self, data):

@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-import shlex
 import tempfile
 
 from .. import BaseRunner
@@ -41,16 +40,18 @@ class Runner(BaseRunner):
         return 0
 
     async def build_heuristic(self) -> int:
+        if self.runtime_path is None:
+            raise RuntimeError('Missing runtime path')
         if Path('main.c').is_file():
             cfiles_glob = list(Path('.').glob('**/*.c'))
             ofiles_glob = [Path(p.stem + '.o') for p in sorted(cfiles_glob)]
             for cf in cfiles_glob:
-                cmd = [self.runtime_path, '-c', cf, *DEFAULT_CFLAGS]
+                cmd = [str(self.runtime_path), '-c', str(cf), *DEFAULT_CFLAGS]
                 ret = await self.run_subproc(cmd)
                 if ret != 0:  # stop if gcc has failed
                     return ret
-            ofiles = ' '.join(map(lambda p: shlex.quote(str(p)), ofiles_glob))
-            cmd = [self.runtime_path, ofiles, *DEFAULT_CFLAGS, '-o', './main']
+            cmd = [str(self.runtime_path), *map(str, ofiles_glob),
+                   *DEFAULT_CFLAGS, '-o', './main']
             return await self.run_subproc(cmd)
         else:
             log.error('cannot find build script ("Makefile") '
@@ -70,7 +71,7 @@ class Runner(BaseRunner):
         with tempfile.NamedTemporaryFile(suffix='.c', dir='.') as tmpf:
             tmpf.write(code_text.encode('utf8'))
             tmpf.flush()
-            cmd = [self.runtime_path, tmpf.name,
+            cmd = [str(self.runtime_path), tmpf.name,
                    *DEFAULT_CFLAGS, '-o', './main', *DEFAULT_LDFLAGS]
             ret = await self.run_subproc(cmd)
             if ret != 0:
