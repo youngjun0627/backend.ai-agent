@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from contextvars import ContextVar
 from decimal import Decimal
 import json
 import logging
@@ -13,19 +14,22 @@ import shutil
 import signal
 import struct
 import sys
+import time
 from typing import (
     Any, Optional, Union,
     Dict, Mapping, MutableMapping,
     Set,
     List, Tuple,
-    Type,
+    Type, Callable
 )
 from typing_extensions import Literal
 
 import aiohttp
 from aiozmq import rpc
 import attr
-from async_timeout import timeout
+from async_timeout import timeout as _timeout
+from callosum.rpc import Peer, RPCUserError
+from callosum.lower.zeromq import ZeroMQAddress, ZeroMQRPCTransport
 import zmq
 import trafaret as t
 
@@ -33,6 +37,7 @@ from aiodocker.docker import Docker
 from aiodocker.exceptions import DockerError
 import aiotools
 
+from ai.backend.common import msgpack
 from ai.backend.common.docker import (
     ImageRef,
     MIN_KERNELSPEC,
@@ -59,8 +64,11 @@ from ai.backend.common.types import (
 )
 from .kernel import DockerKernel
 from .resources import detect_resources
-from ..exception import UnsupportedResource, InsufficientResource
-from ..fs import create_scratch_filesystem, destroy_scratch_filesystem
+from ..exception import (
+    UnsupportedResource, InsufficientResource,
+    InitializationError, StorageAgentError
+)
+from ..fs import create_tmp_filesystem, destroy_tmp_filesystem
 from ..kernel import match_krunner_volume, KernelFeatures
 from ..resources import (
     Mount,
@@ -90,6 +98,68 @@ from ..utils import (
 )
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
+agent_peers: MutableMapping[str, zmq.asyncio.Socket] = {}  # agent-addr to socket
+
+
+class PeerInvoker(Peer):
+
+    class _CallStub:
+
+        _cached_funcs: Dict[str, Callable]
+        order_key: ContextVar[Optional[str]]
+
+        def __init__(self, peer: Peer):
+            self._cached_funcs = {}
+            self.peer = peer
+            self.order_key = ContextVar('order_key', default=None)
+
+        def __getattr__(self, name: str):
+            if f := self._cached_funcs.get(name, None):
+                return f
+            else:
+                async def _wrapped(*args, **kwargs):
+                    request_body = {
+                        'args': args,
+                        'kwargs': kwargs,
+                    }
+                    self.peer.last_used = time.monotonic()
+                    ret = await self.peer.invoke(name, request_body,
+                                                 order_key=self.order_key.get())
+                    self.peer.last_used = time.monotonic()
+                    return ret
+                self._cached_funcs[name] = _wrapped
+                return _wrapped
+
+    call: _CallStub
+    last_used: float
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.call = self._CallStub(self)
+        self.last_used = time.monotonic()
+
+
+@aiotools.actxmgr
+async def RPCContext(addr, timeout=None, *, order_key: str = None):
+    global agent_peers
+    peer = agent_peers.get(addr, None)
+    if peer is None:
+        peer = PeerInvoker(
+            connect=ZeroMQAddress(addr),
+            transport=ZeroMQRPCTransport,
+            serializer=msgpack.packb,
+            deserializer=msgpack.unpackb,
+        )
+        await peer.__aenter__()
+        agent_peers[addr] = peer
+    try:
+        with _timeout(timeout):
+            peer.call.order_key.set(order_key)
+            yield peer
+    except RPCUserError as orig_exc:
+        raise StorageAgentError(orig_exc.name, orig_exc.args)
+    except Exception:
+        raise
 
 
 class DockerAgent(AbstractAgent):
@@ -100,7 +170,7 @@ class DockerAgent(AbstractAgent):
     agent_sockpath: Path
     agent_sock_task: asyncio.Task
     scan_images_timer: asyncio.Task
-    storage_agent: rpc.rpc.RPCClient
+    storage_agent_addr: rpc.rpc.RPCClient
 
     def __init__(self, config, *, skip_initial_scan: bool = False) -> None:
         super().__init__(config, skip_initial_scan=skip_initial_scan)
@@ -114,14 +184,10 @@ class DockerAgent(AbstractAgent):
 
         # Connect to scratch storage agent RPC.
         if self.config['container']['scratch-type'] == 'storage-agent':
-            storage_agent_ip = self.config['container']['storage-agent-ip']
-            self.storage_agent = await rpc.connect_rpc(
-                connect=f'tcp://{storage_agent_ip}:6020', error_table={
-                    'concurrent.futures._base.TimeoutError': asyncio.TimeoutError,
-                })
-            self.storage_agent.transport.setsockopt(zmq.LINGER, 1000)
-            if await self.storage_agent.call.hello(self.config['agent']['id']) != 'OLLEH':
-                raise InitializationError('Storage Agent hello not fullfilled')
+            self.storage_agent_addr = self.config['container']['storage-agent-ip']
+            async with RPCContext(self.storage_agent_addr, None) as rpc:
+                if await rpc.call.hello(self.config['agent']['id']) != 'OLLEH':
+                    raise InitializationError('Storage Agent hello not fullfilled')
 
         await super().__ainit__()
         self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
@@ -191,7 +257,8 @@ class DockerAgent(AbstractAgent):
                         container, computer_set.alloc_map)
                 kernel_host = self.config['container']['kernel-host']
                 if self.config['container']['scratch-type'] == 'storage-agent':
-                    scratch_dir = Path(await self.storage_agent.call.get(kernel_id))
+                    async with RPCContext(self.storage_agent_addr, None) as rpc:
+                        scratch_dir = Path(await rpc.call.get(kernel_id))
                 else:
                     scratch_dir = (self.config['container']['scratch-root'] / kernel_id).resolve()
                 config_dir = (scratch_dir / 'config').resolve()
@@ -418,10 +485,11 @@ class DockerAgent(AbstractAgent):
         kernel_features = set(image_labels.get('ai.backend.features', '').split())
 
         if self.config['container']['scratch-type'] == 'storage-agent':
-            scratch_size = self.config['container']['scratch-size']
-            scratch_dir = Path(await self.storage_agent.call.create(
-                kernel_id, str(round(int(scratch_size) / 1024)) + 'k'
-            ))
+            async with RPCContext(self.storage_agent_addr, None) as rpc:
+                scratch_size = self.config['container']['scratch-size']
+                scratch_dir = Path(await rpc.call.create(
+                    kernel_id, str(round(int(scratch_size) / 1024)) + 'k'
+                ))
         else:
             scratch_dir = (self.config['container']['scratch-root'] / kernel_id).resolve()
         tmp_dir = (self.config['container']['scratch-root'] / f'{kernel_id}_tmp').resolve()
@@ -984,7 +1052,8 @@ class DockerAgent(AbstractAgent):
                 shutil.rmtree(tmp_dir)
 
             if self.config['container']['scratch-type'] == 'storage-agent':
-                await self.storage_agent.call.remove(kernel_id)
+                async with RPCContext(self.storage_agent_addr, None) as rpc:
+                    await rpc.call.remove(kernel_id)
             else:
                 shutil.rmtree(scratch_dir)
             self.port_pool.update(host_ports)
@@ -1135,7 +1204,7 @@ class DockerAgent(AbstractAgent):
             if cid in self.stat_sync_states:
                 s = self.stat_sync_states[cid]
                 try:
-                    with timeout(5):
+                    with _timeout(5):
                         await s.terminated.wait()
                         if s.sync_proc is not None:
                             await s.sync_proc.wait()
@@ -1152,7 +1221,8 @@ class DockerAgent(AbstractAgent):
                 return last_stat
             # The container will be deleted in the docker monitoring coroutine.
             if self.config['container']['scratch-type'] == 'storage-agent':
-                await self.storage_agent.call.remove(kernel_id)
+                async with RPCContext(self.storage_agent_addr, None) as rpc:
+                    await rpc.call.remove(kernel_id)
             return None
         except DockerError as e:
             if e.status == 409 and 'is not running' in e.message:
@@ -1205,7 +1275,7 @@ class DockerAgent(AbstractAgent):
                         if sync_proc is not None:
                             sync_proc.terminate()
                             try:
-                                with timeout(2.0):
+                                with _timeout(2.0):
                                     await sync_proc.wait()
                             except asyncio.TimeoutError:
                                 sync_proc.kill()
@@ -1225,7 +1295,7 @@ class DockerAgent(AbstractAgent):
                 # containers' host ports may not belong to the new port range.
                 if not self.config['debug']['skip-container-deletion']:
                     try:
-                        with timeout(20):
+                        with _timeout(20):
                             await container.delete()
                     except DockerError as e:
                         if e.status == 409 and 'already in progress' in e.message:
@@ -1260,7 +1330,8 @@ class DockerAgent(AbstractAgent):
                         await destroy_tmp_filesystem(tmp_dir)
                         shutil.rmtree(tmp_dir)
                     if self.config['container']['scratch-type'] == 'storage-agent':
-                        await self.storage_agent.call.remove(kernel_id)
+                        async with RPCContext(self.storage_agent_addr, None) as rpc:
+                            await rpc.call.remove(kernel_id)
                     else:
                         shutil.rmtree(scratch_dir)
 
