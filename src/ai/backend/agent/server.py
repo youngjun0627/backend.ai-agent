@@ -601,7 +601,6 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
             if cfg['agent']['pid-file'].is_file():
                 # check is_file() to prevent deleting /dev/null!
                 cfg['agent']['pid-file'].unlink()
-            os.unlink(log_sockpath)
     else:
         # Click is going to invoke a subcommand.
         pass
