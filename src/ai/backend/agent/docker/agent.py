@@ -720,6 +720,21 @@ class DockerAgent(AbstractAgent):
                         os.chown(work_dir / '.ssh' / 'authorized_keys', uid, gid)
                         os.chown(work_dir / 'id_container', uid, gid)
 
+        for dotfile in internal_data.get('dotfiles', []):
+            file_path: Path = work_dir / dotfile['path']
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(dotfile['data'])
+
+            tmp = Path(file_path)
+            while tmp != work_dir:
+                tmp.chmod(int(dotfile['perm'], 8))
+                # only possible when I am root.
+                if KernelFeatures.UID_MATCH in kernel_features and os.geteuid() == 0:
+                    uid = self.config['container']['kernel-uid']
+                    gid = self.config['container']['kernel-gid']
+                    os.chown(tmp, uid, gid)
+                tmp = tmp.parent
+
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
                  pformat(attr.asdict(resource_spec)))
