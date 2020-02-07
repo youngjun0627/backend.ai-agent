@@ -41,6 +41,7 @@ from ai.backend.common.types import (
     MetricKey, MetricValue, MovingStatValue,
 )
 from ai.backend.common import msgpack
+from .defs import ipc_base_path
 from .utils import (
     numeric_list, remove_exponent,
 )
@@ -499,7 +500,6 @@ async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
         exec_opts = {}
 
     context = zmq.asyncio.Context()
-    ipc_base_path = Path('/tmp/backend.ai/ipc')
     ipc_base_path.mkdir(parents=True, exist_ok=True)
 
     proc = await asyncio.create_subprocess_exec(*[
@@ -642,15 +642,14 @@ def main(args):
     signal.signal(signal.SIGTERM, handle_stop_signal)
     signal.signal(signal.SIGINT, handle_stop_signal)
 
-    ipc_base_path = Path('/tmp/backend.ai/ipc')
-    signal_sockpath = ipc_base_path / f'stat-start-{mypid}.sock'
+    signal_sockpath = args.sockpath.parent / f'stat-start-{mypid}.sock'
     log.debug('creating signal socket at {}', signal_sockpath)
     signal_sock = context.socket(zmq.PAIR)
     signal_sock.bind('ipc://' + str(signal_sockpath))
     try:
         sync_sock = context.socket(zmq.REQ)
         sync_sock.setsockopt(zmq.LINGER, 2000)
-        sync_sock.connect('ipc://' + args.sockpath)
+        sync_sock.connect('ipc://' + str(args.sockpath))
 
         def ping_agent(msg):
             sync_sock.send_serialized([msg], lambda msgs: [*map(msgpack.packb, msgs)])
@@ -708,7 +707,7 @@ if __name__ == '__main__':
     # The entry point for stat collector daemon
     parser = argparse.ArgumentParser()
     parser.add_argument('config_path', type=str)
-    parser.add_argument('sockpath', type=str)
+    parser.add_argument('sockpath', type=Path)
     parser.add_argument('cid', type=str)
     parser.add_argument('-t', '--type', choices=list(StatModes), type=StatModes,
                         default=StatModes.DOCKER)
