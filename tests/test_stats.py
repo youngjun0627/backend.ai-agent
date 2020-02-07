@@ -1,5 +1,6 @@
 import asyncio
 import os
+from pathlib import Path
 from typing import Mapping, Union
 import sys
 
@@ -8,15 +9,20 @@ import zmq
 import zmq.asyncio
 
 from ai.backend.common import msgpack
-from ai.backend.agent.agent import ipc_base_path
+from ai.backend.agent import defs
 from ai.backend.agent import stats
 
 
+testing_ipc_base_path = Path('/tmp/backend.ai-testing')  # type: ignore
+
+
 @pytest.fixture
-def stats_server():
-    ipc_base_path.mkdir(parents=True, exist_ok=True)
+def stats_server(mocker):
+    mocker.patch('ai.backend.agent.stats.ipc_base_path', testing_ipc_base_path)
+    mocker.patch.object(defs, 'ipc_base_path', testing_ipc_base_path)
+    defs.ipc_base_path.mkdir(parents=True, exist_ok=True)
     zctx = zmq.asyncio.Context()
-    stat_sync_sockpath = ipc_base_path / f'test-stats.{os.getpid()}.sock'
+    stat_sync_sockpath = defs.ipc_base_path / f'test-stats.{os.getpid()}.sock'
     stat_sync_sock = zctx.socket(zmq.REP)
     stat_sync_sock.setsockopt(zmq.LINGER, 1000)
     stat_sync_sock.bind('ipc://' + str(stat_sync_sockpath))
@@ -29,7 +35,7 @@ def stats_server():
 
 
 active_stat_modes = [stats.StatModes.DOCKER]
-if sys.platform.startswith('linux'):
+if sys.platform.startswith('linux') and os.geteuid() == 0:
     active_stat_modes.append(stats.StatModes.CGROUP)
 
 pipe_opts: Mapping[str, Union[None, int]] = {
@@ -69,6 +75,7 @@ def test_numeric_list():
     assert ret == [123, 456]
 
 
+@pytest.mark.skipif('TRAVIS' in os.environ, reason='This test hangs in the Travis CI env.')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stat_mode', active_stat_modes)
 async def test_synchronizer(event_loop,
@@ -78,7 +85,7 @@ async def test_synchronizer(event_loop,
 
     # Create the container but don't start it.
     container = await create_container({
-        'Image': 'nginx:latest',
+        'Image': 'nginx:1.17-alpine',
         'ExposedPorts': {
             '80/tcp': {},
         },
@@ -125,6 +132,7 @@ async def test_synchronizer(event_loop,
     assert msg_list[-1]['status'] == 'terminated'
 
 
+@pytest.mark.skipif('TRAVIS' in os.environ, reason='This test hangs in the Travis CI env.')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stat_mode', active_stat_modes)
 async def test_synchronizer_immediate_death(event_loop,

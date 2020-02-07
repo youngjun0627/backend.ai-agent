@@ -983,7 +983,7 @@ class DockerAgent(AbstractAgent):
             self.loop.create_task(execute_batch())
 
         return {
-            'id': str(kernel_id),
+            'id': KernelId(kernel_id),
             'kernel_host': str(kernel_host),
             'repl_in_port': repl_in_port,
             'repl_out_port': repl_out_port,

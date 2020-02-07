@@ -42,7 +42,7 @@ class Color:
         return rgba.pack(self.red, self.green, self.blue, self.alpha)
 
     def to_rgba(self):
-        return u'rgba({},{},{})'.format(self.red, self.green, self.blue, self.alpha)
+        return 'rgba({},{},{},{})'.format(self.red, self.green, self.blue, self.alpha)
 
 
 class Colors(Color, enum.Enum):

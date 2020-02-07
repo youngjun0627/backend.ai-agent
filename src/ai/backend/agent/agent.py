@@ -14,7 +14,6 @@ from typing import (
     Set,
     Tuple,
 )
-from typing_extensions import Final
 
 import attr
 import aioredis
@@ -37,6 +36,7 @@ from ai.backend.common.types import (
     MetricKey, MetricValue,
 )
 from . import __version__ as VERSION
+from .defs import ipc_base_path
 from .kernel import AbstractKernel
 from .utils import current_loop
 from .resources import (
@@ -50,7 +50,6 @@ from .stats import (
 )
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.agent'))
-ipc_base_path: Final = Path('/tmp/backend.ai/ipc')
 
 
 @attr.s(auto_attribs=True, slots=True)

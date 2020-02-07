@@ -198,9 +198,9 @@ async def get_subnet_ip(etcd: AsyncEtcd, network: str, fallback_addr: str = '0.0
 async def host_pid_to_container_pid(container_id: str, host_pid: HostPID) -> ContainerPID:
     kernel_ver = Path('/proc/version').read_text()
     m = re.match(r'Linux version (\d+)\.(\d+)\..*', kernel_ver)
-    if m:
-        kernel_ver = m.groups()
-        if kernel_ver < ('4', '1'):
+    if m is not None:
+        matched_kernel_ver = tuple(m.groups())
+        if matched_kernel_ver < ('4', '1'):
             # TODO: this should be deprecated when the minimun supported Linux kernel will be 4.1.
             #
             # In CentOs 7, NSPid is not accesible since it is supported from Linux kernel >=4.1.
@@ -283,7 +283,7 @@ async def host_pid_to_container_pid(container_id: str, host_pid: HostPID) -> Con
                         break
                 else:
                     raise IndexError
-                container_pid = int(container_table[process_idx][pid_idx])
+                container_pid = ContainerPID(container_table[process_idx][pid_idx])
                 log.debug('host pid {} is mapped to container pid {}', host_pid, container_pid)
                 return container_pid
             except asyncio.CancelledError:

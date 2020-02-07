@@ -456,7 +456,7 @@ class BaseRunner(metaclass=ABCMeta):
                 json.dumps(result).encode('utf8'),
             ])
 
-    async def run_subproc(self, cmd: Union[str, Sequence[str]]):
+    async def run_subproc(self, cmd: Sequence[Union[str, Path, None]]):
         """A thin wrapper for an external command."""
         loop = current_loop()
         if Path('/home/work/.logs').is_dir():
@@ -472,9 +472,9 @@ class BaseRunner(metaclass=ABCMeta):
             # errors like "command not found" is handled by the spawned shell.
             # (the subproc will terminate immediately with return code 127)
             if isinstance(cmd, (list, tuple)):
-                exec_func = partial(asyncio.create_subprocess_exec, *cmd)
+                exec_func = partial(asyncio.create_subprocess_exec, *map(str, cmd))
             else:
-                exec_func = partial(asyncio.create_subprocess_shell, cmd)
+                exec_func = partial(asyncio.create_subprocess_shell, str(cmd))
             pipe_opts = {}
             pipe_opts['stdout'] = asyncio.subprocess.PIPE
             pipe_opts['stderr'] = asyncio.subprocess.PIPE
