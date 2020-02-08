@@ -10,9 +10,13 @@ The Backend.AI Agent is a small daemon that does:
 
 * `ai.backend`
   - `agent`: The agent package
+    - `docker`: A docker-based backend implementation for the kernel lifecycle interface.
     - `server`: The agent daemon which communicates with the manager and the Docker daemon
     - `watcher`: A side-by-side daemon which provides a separate HTTP endpoint for accessing the status
       information of the agent daemon and manipulation of the agent's systemd service
+  - `helpers`: A utility package that is available as `ai.backend.helpers` *inside* Python-based containers
+  - `kernel`: Language-specific runtimes (mostly ipykernel client adaptor) which run *inside* containers
+  - `runner`: Auxiliary components (usually self-contained binaries) mounted *inside* contaienrs
 
 
 ## Installation
