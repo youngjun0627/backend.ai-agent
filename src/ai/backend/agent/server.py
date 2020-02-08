@@ -215,8 +215,20 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         log.info('rpc::create_kernel(k:{0}, img:{1})',
                  kernel_id, config['image']['canonical'])
         async with self.handle_rpc_exception():
-            return await self.agent.create_kernel(
+            result = await self.agent.create_kernel(
                 KernelId(UUID(kernel_id)), cast(KernelCreationConfig, config))
+            return {
+                'id': str(result['id']),
+                'kernel_host': result['kernel_host'],
+                'repl_in_port': result['repl_in_port'],
+                'repl_out_port': result['repl_out_port'],
+                'stdin_port': result['stdin_port'],    # legacy
+                'stdout_port': result['stdout_port'],  # legacy
+                'service_ports': result['service_ports'],
+                'container_id': result['container_id'],
+                'resource_spec': result['resource_spec'],
+                'attached_devices': result['attached_devices'],
+            }
 
     @aiozmq.rpc.method
     @update_last_used
