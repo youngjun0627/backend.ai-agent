@@ -81,7 +81,7 @@ async def prepare_ttyd_service(service_info):
 
     cmdargs = ['/opt/backend.ai/bin/ttyd', f'/bin/{shell}']
     if shell != 'ash':
-        cmdargs.append(['-c',
-                        '/opt/kernel/tmux -2 attach -t backendai '
-                        '|| /opt/kernel/tmux -2 new -s backendai'])
+        cmdargs += ['-c',
+                    '/opt/kernel/tmux -2 attach -t backendai '
+                    '|| /opt/kernel/tmux -2 new -s backendai']
     return cmdargs, {}
