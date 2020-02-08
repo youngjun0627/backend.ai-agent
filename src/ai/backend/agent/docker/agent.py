@@ -622,12 +622,21 @@ class DockerAgent(AbstractAgent):
         dropbearkey_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent',
             f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
+        tmux_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', f'../runner/tmux.{matched_libc_style}.{arch}.bin'))
 
         bashrc_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/.bashrc'))
         vimrc_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/.vimrc'))
+        tmux_conf_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/.tmux.conf'))
 
+        if matched_libc_style == 'musl':
+            terminfo_path = Path(pkg_resources.resource_filename(
+                'ai.backend.agent', '../runner/terminfo.alpine3.8'
+            ))
+            _mount(MountTypes.BIND, terminfo_path.resolve(), '/home/work/.terminfo')
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
         _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
@@ -638,6 +647,7 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, dropbear_path.resolve(), '/opt/kernel/dropbear')
         _mount(MountTypes.BIND, dropbearconv_path.resolve(), '/opt/kernel/dropbearconvert')
         _mount(MountTypes.BIND, dropbearkey_path.resolve(), '/opt/kernel/dropbearkey')
+        _mount(MountTypes.BIND, tmux_path.resolve(), '/opt/kernel/tmux')
         _mount(MountTypes.BIND, sftp_server_path.resolve(), '/usr/libexec/sftp-server')
         _mount(MountTypes.BIND, scp_path.resolve(), '/usr/bin/scp')
 
@@ -664,6 +674,7 @@ class DockerAgent(AbstractAgent):
                                 '/home/work/.jupyter/custom/roboto-italic.ttf')
         _mount(MountTypes.BIND, bashrc_path.resolve(), '/home/work/.bashrc')
         _mount(MountTypes.BIND, vimrc_path.resolve(), '/home/work/.vimrc')
+        _mount(MountTypes.BIND, tmux_conf_path.resolve(), '/home/work/.tmux.conf')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
         if self.config['debug']['coredump']['enabled']:
             _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],

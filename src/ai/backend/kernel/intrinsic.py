@@ -83,10 +83,15 @@ async def prepare_sshd_service(service_info):
 
 
 async def prepare_ttyd_service(service_info):
-    shell_path = '/bin/sh'
+    shell = 'sh'
     if Path('/bin/bash').exists():
-        shell_path = '/bin/bash'
+        shell = 'bash'
     elif Path('/bin/ash').exists():
-        shell_path = '/bin/ash'
-    cmdargs, env = ['/opt/backend.ai/bin/ttyd', shell_path], {}
-    return cmdargs, env
+        shell = 'ash'
+
+    cmdargs = ['/opt/backend.ai/bin/ttyd', f'/bin/{shell}']
+    if shell != 'ash':
+        cmdargs.append(['-c',
+                        '/opt/kernel/tmux -2 attach -t backendai '
+                        '|| /opt/kernel/tmux -2 new -s backendai'])
+    return cmdargs, {}
