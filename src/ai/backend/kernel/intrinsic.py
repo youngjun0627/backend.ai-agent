@@ -80,8 +80,9 @@ async def prepare_ttyd_service(service_info):
         shell = 'ash'
 
     cmdargs = ['/opt/backend.ai/bin/ttyd', f'/bin/{shell}']
-    if shell != 'ash':
-        cmdargs += ['-c',
-                    '/opt/kernel/tmux -2 attach -t backendai '
-                    '|| /opt/kernel/tmux -2 new -s backendai']
+    # FIXME: tmux is temporarily disabled for Agent v19.09.12 release
+    # if shell != 'ash':
+    #     cmdargs += ['-c',
+    #                 '/opt/kernel/tmux -2 attach -t backendai '
+    #                 '|| /opt/kernel/tmux -2 new -s backendai']
     return cmdargs, {}
