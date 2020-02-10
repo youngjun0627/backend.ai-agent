@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.09.12 (2020-02-10)
+---------------------
+
+* NEW: Add support for user-specific dotfiles population in session containers (#166)
+
+* MAINTENANCE: Revamp the CI/CD pipelines (#173)
+
 19.09.11 (2020-01-20)
 ---------------------
 
