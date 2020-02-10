@@ -36,6 +36,20 @@ Changes
 * IMPROVE: ResourceSlots are now more permissive. Agent still checks the validity of known slots
   but also allows zero-valued unknown slots as well. (#162)
 
+19.09.13 (2020-02-10)
+---------------------
+
+* NEW: ttyd terminals now use a shared tmux session by default, making the container's shell session
+  persistent across browser refreshes and intermittent connection failures, and also allowing
+  pair-programming by sharing the ttyd session. (#168, #178)
+
+19.09.12 (2020-02-10)
+---------------------
+
+* NEW: Add support for user-specific dotfiles population in session containers (#166)
+
+* MAINTENANCE: Revamp the CI/CD pipelines (#173)
+
 19.09.11 (2020-01-20)
 ---------------------
 

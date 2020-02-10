@@ -286,7 +286,7 @@ async def host_pid_to_container_pid(container_id: str, host_pid: HostPID) -> Con
                         break
                 else:
                     raise IndexError
-                container_pid = int(container_table[process_idx][pid_idx])
+                container_pid = ContainerPID(container_table[process_idx][pid_idx])
                 log.debug('host pid {} is mapped to container pid {}', host_pid, container_pid)
                 return ContainerPID(PID(container_pid))
             except asyncio.CancelledError:
