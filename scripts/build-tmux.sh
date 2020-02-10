@@ -7,14 +7,14 @@ distros=("glibc" "musl")
 glibc_builder_dockerfile=$(cat <<'EOF'
 FROM ubuntu:18.04
 RUN apt-get update
-RUN apt-get install -y make gcc g++
+RUN apt-get install -y make gcc g++ bison flex
 RUN apt-get install -y pkg-config
 EOF
 )
 
 musl_builder_dockerfile=$(cat <<'EOF'
 FROM alpine:3.8
-RUN apk add --no-cache make gcc g++ musl-dev file
+RUN apk add --no-cache make gcc g++ musl-dev file bison flex
 RUN apk add --no-cache pkgconfig
 EOF
 )
@@ -39,7 +39,7 @@ CPPFLAGS="-P" ./configure --prefix $TARGETDIR \
 && make && make install
 make clean
 cd ..
-cd tmux-2.3
+cd tmux-3.0a
 PKG_CONFIG_PATH=$TARGETDIR/lib/pkgconfig \
     CFLAGS="-I$TARGETDIR/include/event2 -I$TARGETDIR/include/ncurses" \
     LDFLAGS="-L$TARGETDIR/lib" \
@@ -72,8 +72,8 @@ curl -LO https://github.com/libevent/libevent/releases/download/release-2.0.22-s
 tar -zxvf libevent-2.0.22-stable.tar.gz
 curl -LO https://mirror.yongbok.net/gnu/ncurses/ncurses-6.0.tar.gz
 tar zxvf ncurses-6.0.tar.gz
-curl -LO https://github.com/tmux/tmux/releases/download/2.3/tmux-2.3.tar.gz
-tar zxvf tmux-2.3.tar.gz
+curl -LO https://github.com/tmux/tmux/releases/download/3.0a/tmux-3.0a.tar.gz
+tar zxvf tmux-3.0a.tar.gz
 
 for distro in "${distros[@]}"; do
   docker run --rm -it \
