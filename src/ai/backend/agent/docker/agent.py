@@ -627,6 +627,8 @@ class DockerAgent(AbstractAgent):
 
         bashrc_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/.bashrc'))
+        bash_profile_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/.bash_profile'))
         vimrc_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/.vimrc'))
         tmux_conf_path = Path(pkg_resources.resource_filename(
@@ -673,6 +675,7 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, font_italic_path.resolve(),
                                 '/home/work/.jupyter/custom/roboto-italic.ttf')
         _mount(MountTypes.BIND, bashrc_path.resolve(), '/home/work/.bashrc')
+        _mount(MountTypes.BIND, bash_profile_path.resolve(), '/home/work/.bash_profile')
         _mount(MountTypes.BIND, vimrc_path.resolve(), '/home/work/.vimrc')
         _mount(MountTypes.BIND, tmux_conf_path.resolve(), '/home/work/.tmux.conf')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
@@ -740,6 +743,7 @@ class DockerAgent(AbstractAgent):
                     os.chown(work_dir / '.jupyter', uid, gid)
                     os.chown(work_dir / '.jupyter' / 'custom', uid, gid)
                     os.chown(bashrc_path, uid, gid)
+                    os.chown(bash_profile_path, uid, gid)
                     os.chown(vimrc_path, uid, gid)
             # Create bootstrap.sh into workdir if needed
             # TODO: Remove `type: ignore` when mypy supports type inference for walrus operator
