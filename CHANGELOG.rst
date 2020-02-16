@@ -1,6 +1,14 @@
 Changes
 =======
 
+19.09.14 (2020-02-17)
+---------------------
+
+* FIX: Corruption of resource allocation maps due to abnormal termination of containers and/or
+  race conditions of resource cleanup handlers. (#180)
+
+* FIX: .bashrc not loaded by the tmux session which is default-enabled in the ttyd intrinsic app.
+
 19.09.13 (2020-02-10)
 ---------------------
 
