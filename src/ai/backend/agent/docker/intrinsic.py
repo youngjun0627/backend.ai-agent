@@ -228,8 +228,10 @@ class CPUPlugin(AbstractComputePlugin):
         resource_spec = await get_resource_spec_from_container(container)
         if resource_spec is None:
             return
-        alloc_map.allocations[SlotName('cpu')].update(
-            resource_spec.allocations[DeviceName('cpu')][SlotName('cpu')])
+        alloc_map.apply_allocation({
+            SlotName('cpu'):
+                resource_spec.allocations[DeviceName('cpu')][SlotName('cpu')],
+        })
 
     @classmethod
     async def get_attached_devices(cls, device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]) \
@@ -510,8 +512,8 @@ class MemoryPlugin(AbstractComputePlugin):
         memory = sum(device_alloc['mem'].values())
         return {
             'HostConfig': {
-                'MemorySwap': memory,  # prevent using swap!
-                'Memory': memory,
+                'MemorySwap': int(memory),  # prevent using swap!
+                'Memory': int(memory),
             }
         }
 
@@ -520,7 +522,9 @@ class MemoryPlugin(AbstractComputePlugin):
                                      alloc_map: AbstractAllocMap) -> None:
         assert isinstance(alloc_map, DiscretePropertyAllocMap)
         memory_limit = container['HostConfig']['Memory']
-        alloc_map.allocations[SlotName('mem')][DeviceId('root')] += memory_limit
+        alloc_map.apply_allocation({
+            SlotName('mem'): {DeviceId('root'): memory_limit},
+        })
 
     @classmethod
     async def get_attached_devices(cls, device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]) \
