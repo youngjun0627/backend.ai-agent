@@ -16,8 +16,8 @@ import sys
 from typing import (
     Any, Optional, Union,
     Dict, Mapping, MutableMapping,
-    Set,
-    List, Tuple,
+    Set, FrozenSet,
+    Sequence, List, Tuple,
     Type,
 )
 from typing_extensions import Literal
@@ -28,7 +28,7 @@ from async_timeout import timeout
 import zmq
 import trafaret as t
 
-from aiodocker.docker import Docker
+from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
 import aiotools
 
@@ -104,6 +104,7 @@ class DockerAgent(AbstractAgent):
         super().__init__(config, skip_initial_scan=skip_initial_scan)
 
     async def __ainit__(self) -> None:
+        self.resource_lock = asyncio.Lock()
         self.docker = Docker()
         if not self._skip_initial_scan:
             docker_version = await self.docker.version()
@@ -146,93 +147,137 @@ class DockerAgent(AbstractAgent):
                                ]:
         return await detect_resources(resource_configs, plugin_configs)
 
-    async def scan_running_kernels(self) -> None:
+    async def enumerate_containers(
+        self,
+        status_filter: FrozenSet[str] = frozenset(['running', 'restarting', 'paused']),
+    ) -> Sequence[Tuple[KernelId, str, DockerContainer]]:
+        result = []
+        fetch_tasks = []
         for container in (await self.docker.containers.list()):
-            kernel_id = await get_kernel_id_from_container(container)
-            if kernel_id is None:
-                continue
-            # NOTE: get_kernel_id_from_containers already performs .show() on
-            #       the returned container objects.
-            status = container['State']['Status']
-            if status in {'running', 'restarting', 'paused'}:
-                log.info('detected running kernel: {0}', kernel_id)
-                await container.show()
-                image = container['Config']['Image']
-                labels = container['Config']['Labels']
-                kernelspec = int(labels.get('ai.backend.kernelspec', '1'))
-                if not (MIN_KERNELSPEC <= kernelspec <= MAX_KERNELSPEC):
-                    continue
-                ports = container['NetworkSettings']['Ports']
-                port_map = {}
-                for private_port, host_ports in ports.items():
-                    private_port = int(private_port.split('/')[0])
-                    if host_ports is None:
-                        public_port = 0
-                    else:
-                        public_port = int(host_ports[0]['HostPort'])
-                        self.port_pool.discard(public_port)
-                    port_map[private_port] = public_port
+
+            async def _fetch_container_info(container):
+                try:
+                    kernel_id = await get_kernel_id_from_container(container)
+                    if kernel_id is None:
+                        return
+                    status = container['State']['Status']
+                    if status in status_filter:
+                        await container.show()
+                        result.append((kernel_id, status, container))
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.error('error while fetching container information (cid: {})',
+                              container._id)
+
+            fetch_tasks.append(_fetch_container_info(container))
+
+        await asyncio.gather(*fetch_tasks, return_exceptions=True)
+        return result
+
+    async def rescan_resource_usage(self) -> None:
+        async with self.resource_lock:
+            for computer_set in self.computers.values():
+                computer_set.alloc_map.clear()
+            for kernel_id, status, container in (await self.enumerate_containers()):
                 for computer_set in self.computers.values():
                     await computer_set.klass.restore_from_container(
-                        container, computer_set.alloc_map)
-                kernel_host = self.config['container']['kernel-host']
-                config_dir = (self.config['container']['scratch-root'] /
-                              str(kernel_id) / 'config').resolve()
-                with open(config_dir / 'resource.txt', 'r') as f:
-                    resource_spec = KernelResourceSpec.read_from_file(f)
-                    # legacy handling
-                    if resource_spec.container_id is None:
-                        resource_spec.container_id = container._id
-                    else:
-                        assert container._id == resource_spec.container_id, \
-                                'Container ID from the container must match!'
-                # TODO: restore internal_data
-                #       -> could we get this from the manager again?
-                service_ports: List[ServicePort] = []
-                service_ports.append({
-                    'name': 'sshd',
-                    'protocol': ServicePortProtocols('tcp'),
-                    'container_ports': (2200,),
-                    'host_ports': (port_map.get(2200, None),),
-                })
-                service_ports.append({
-                    'name': 'ttyd',
-                    'protocol': ServicePortProtocols('http'),
-                    'container_ports': (7681,),
-                    'host_ports': (port_map.get(7681, None),),
-                })
-                for service_port in parse_service_ports(labels.get('ai.backend.service-ports', '')):
-                    service_port['host_ports'] = tuple(
-                        port_map.get(cport, None) for cport in service_port['container_ports']
+                        container,
+                        computer_set.alloc_map,
                     )
-                    service_ports.append(service_port)
-                block_service_ports = labels.get('ai.backend.internal.block-service-ports', '0')
-                self.kernel_registry[kernel_id] = await DockerKernel.new(
-                    kernel_id,
-                    ImageRef(image),
-                    kernelspec,
-                    agent_config=self.config,
-                    resource_spec=resource_spec,
-                    service_ports=service_ports,
-                    data={
-                        'container_id': container._id,
-                        'kernel_host': kernel_host,
-                        'repl_in_port': port_map[2000],
-                        'repl_out_port': port_map[2001],
-                        'stdin_port': port_map.get(2002, 0),
-                        'stdout_port': port_map.get(2003, 0),
-                        'host_ports': [*port_map.values()],
-                        'block_service_ports': t.ToBool().check(block_service_ports),
+
+    async def scan_running_kernels(self) -> None:
+        active_status_set = frozenset([
+            'running', 'restarting', 'paused',
+        ])
+        dead_status_set = frozenset([
+            'exited', 'dead', 'removing',
+        ])
+        async with self.resource_lock:
+            for kernel_id, status, container in (await self.enumerate_containers(
+                active_status_set | dead_status_set,
+            )):
+                if status in active_status_set:
+                    log.info('detected running kernel: {0}', kernel_id)
+                    image = container['Config']['Image']
+                    labels = container['Config']['Labels']
+                    kernelspec = int(labels.get('ai.backend.kernelspec', '1'))
+                    if not (MIN_KERNELSPEC <= kernelspec <= MAX_KERNELSPEC):
+                        continue
+                    ports = container['NetworkSettings']['Ports']
+                    port_map = {}
+                    for private_port, host_ports in ports.items():
+                        private_port = int(private_port.split('/')[0])
+                        if host_ports is None:
+                            public_port = 0
+                        else:
+                            public_port = int(host_ports[0]['HostPort'])
+                            self.port_pool.discard(public_port)
+                        port_map[private_port] = public_port
+                    for computer_set in self.computers.values():
+                        await computer_set.klass.restore_from_container(
+                            container,
+                            computer_set.alloc_map,
+                        )
+                    kernel_host = self.config['container']['kernel-host']
+                    config_dir = (self.config['container']['scratch-root'] /
+                                  str(kernel_id) / 'config').resolve()
+                    with open(config_dir / 'resource.txt', 'r') as f:
+                        resource_spec = KernelResourceSpec.read_from_file(f)
+                        # legacy handling
+                        if resource_spec.container_id is None:
+                            resource_spec.container_id = container._id
+                        else:
+                            assert container._id == resource_spec.container_id, \
+                                    'Container ID from the container must match!'
+                    # TODO: restore internal_data
+                    #       -> could we get this from the manager again?
+                    service_ports: List[ServicePort] = []
+                    service_ports.append({
+                        'name': 'sshd',
+                        'protocol': ServicePortProtocols('tcp'),
+                        'container_ports': (2200,),
+                        'host_ports': (port_map.get(2200, None),),
                     })
-            elif status in {'exited', 'dead', 'removing'}:
-                log.info('detected terminated kernel: {0}', kernel_id)
-                await self.produce_event('kernel_terminated', str(kernel_id),
-                                         'self-terminated', None)
+                    service_ports.append({
+                        'name': 'ttyd',
+                        'protocol': ServicePortProtocols('http'),
+                        'container_ports': (7681,),
+                        'host_ports': (port_map.get(7681, None),),
+                    })
+                    for service_port in parse_service_ports(labels.get('ai.backend.service-ports', '')):
+                        service_port['host_ports'] = tuple(
+                            port_map.get(cport, None) for cport in service_port['container_ports']
+                        )
+                        service_ports.append(service_port)
+                    block_service_ports = labels.get('ai.backend.internal.block-service-ports', '0')
+                    self.kernel_registry[kernel_id] = await DockerKernel.new(
+                        kernel_id,
+                        ImageRef(image),
+                        kernelspec,
+                        agent_config=self.config,
+                        resource_spec=resource_spec,
+                        service_ports=service_ports,
+                        data={
+                            'container_id': container._id,
+                            'kernel_host': kernel_host,
+                            'repl_in_port': port_map[2000],
+                            'repl_out_port': port_map[2001],
+                            'stdin_port': port_map.get(2002, 0),
+                            'stdout_port': port_map.get(2003, 0),
+                            'host_ports': [*port_map.values()],
+                            'block_service_ports': t.ToBool().check(block_service_ports),
+                        })
+                elif status in dead_status_set:
+                    log.info('detected terminated kernel: {0}', kernel_id)
+                    await self.produce_event('kernel_terminated', str(kernel_id),
+                                             'self-terminated', None)
 
         log.info('starting with resource allocations')
         for computer_name, computer_ctx in self.computers.items():
-            log.info('{}: {!r}', computer_name,
-                        dict(computer_ctx.alloc_map.allocations))
+            log.info('{}: {!r}',
+                     computer_name,
+                     dict(computer_ctx.alloc_map.allocations))
 
     async def scan_images(self, interval: float = None) -> None:
         all_images = await self.docker.images.list()
@@ -480,24 +525,25 @@ class DockerAgent(AbstractAgent):
                 dev_name = slot_name.split('.', maxsplit=1)[0]
                 dev_names.add(dev_name)
 
-            try:
-                for dev_name in dev_names:
-                    computer_set = self.computers[dev_name]
-                    device_specific_slots = {
-                        slot_name: alloc
-                        for slot_name, alloc in slots.items()
-                        if slot_name.startswith(dev_name)
-                    }
-                    resource_spec.allocations[dev_name] = \
-                        computer_set.alloc_map.allocate(
-                            device_specific_slots,
-                            context_tag=dev_name)
-            except InsufficientResource:
-                log.info('insufficient resource: {} of {}\n'
-                         '(alloc map: {})',
-                         device_specific_slots, dev_name,
-                         computer_set.alloc_map.allocations)
-                raise
+            async with self.resource_lock:
+                try:
+                    for dev_name in dev_names:
+                        computer_set = self.computers[dev_name]
+                        device_specific_slots = {
+                            slot_name: alloc
+                            for slot_name, alloc in slots.items()
+                            if slot_name.startswith(dev_name)
+                        }
+                        resource_spec.allocations[dev_name] = \
+                            computer_set.alloc_map.allocate(
+                                device_specific_slots,
+                                context_tag=dev_name)
+                except InsufficientResource:
+                    log.info('insufficient resource: {} of {}\n'
+                             '(alloc map: {})',
+                             device_specific_slots, dev_name,
+                             computer_set.alloc_map.allocations)
+                    raise
 
             # Realize vfolder mounts.
             for vfolder in vfolders:
@@ -916,7 +962,7 @@ class DockerAgent(AbstractAgent):
             },
         }
         if resource_opts and resource_opts.get('shmem'):
-            shmem = resource_opts.get('shmem')
+            shmem = int(resource_opts.get('shmem', '0'))
             computer_docker_args['HostConfig']['ShmSize'] = shmem
             computer_docker_args['HostConfig']['MemorySwap'] -= shmem
             computer_docker_args['HostConfig']['Memory'] -= shmem
@@ -1137,14 +1183,16 @@ class DockerAgent(AbstractAgent):
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
                 log.warning('destroy_kernel(k:{0}) already dead', kernel_id)
-                kernel_obj.release_slots(self.computers)
+                # kernel_obj.release_slots(self.computers)
+                await self.rescan_resource_usage()
                 await kernel_obj.close()
                 self.kernel_registry.pop(kernel_id, None)
             elif e.status == 404:
                 # missing
                 log.warning('destroy_kernel(k:{0}) kernel missing, '
                             'forgetting this kernel', kernel_id)
-                kernel_obj.release_slots(self.computers)
+                # kernel_obj.release_slots(self.computers)
+                await self.rescan_resource_usage()
                 await kernel_obj.close()
                 self.kernel_registry.pop(kernel_id, None)
             else:
@@ -1241,7 +1289,8 @@ class DockerAgent(AbstractAgent):
                     shutil.rmtree(scratch_dir)
                 except FileNotFoundError:
                     pass
-                kernel_obj.release_slots(self.computers)
+                # kernel_obj.release_slots(self.computers)
+                await self.rescan_resource_usage()
                 await kernel_obj.close()
                 self.kernel_registry.pop(kernel_id, None)
         except Exception:

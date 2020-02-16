@@ -335,18 +335,23 @@ class AbstractAllocMap(metaclass=ABCMeta):
     device_mask: FrozenSet[DeviceId]
     allocations: MutableMapping[SlotName, MutableMapping[DeviceId, Decimal]]
 
-    def __init__(self, *,
-                 devices: Iterable[AbstractComputeDevice] = None,
-                 device_mask: Iterable[DeviceId] = None):
+    def __init__(
+        self, *,
+        devices: Iterable[AbstractComputeDevice] = None,
+        device_mask: Iterable[DeviceId] = None,
+    ) -> None:
         self.devices = {dev.device_id: dev for dev in devices} if devices is not None else {}
         self.device_mask = frozenset(device_mask) if device_mask is not None else frozenset()
         self.allocations = {}
+
+    def clear(self) -> None:
+        self.allocations.clear()
 
     @abstractmethod
     def allocate(self, slots: Mapping[SlotName, Decimal], *,
                  context_tag: str = None) \
                  -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
-        '''
+        """
         Allocate the given amount of resources.
 
         For a slot type, there may be multiple different devices which can allocate resources
@@ -354,15 +359,28 @@ class AbstractAllocMap(metaclass=ABCMeta):
         remaining capacities of those devices.
 
         Returns a mapping from each requested slot to the allocations per device.
-        '''
+        """
         pass
 
     @abstractmethod
-    def free(self, existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]):
-        '''
+    def apply_allocation(
+        self,
+        existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
+    ) -> None:
+        """
+        Apply the given allocation restored from disk or other persistent storages.
+        """
+        pass
+
+    @abstractmethod
+    def free(
+        self,
+        existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
+    ) -> None:
+        """
         Free the allocated resources using the token returned when the allocation
         occurred.
-        '''
+        """
         pass
 
 
@@ -387,12 +405,12 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
     (no fractions allowed)
     '''
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         self.property_func = kwargs.pop('prop_func')
         super().__init__(*args, **kwargs)
         assert callable(self.property_func)
         self.allocations = defaultdict(lambda: {
-            dev_id: 0 for dev_id in self.devices.keys()
+            dev_id: Decimal(0) for dev_id in self.devices.keys()
         })
 
     def allocate(self, slots: Mapping[SlotName, Decimal], *,
@@ -401,7 +419,7 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
         allocation = {}
         for slot_name, alloc in slots.items():
             slot_allocation: MutableMapping[DeviceId, Decimal] = {}
-            remaining_alloc = int(alloc)
+            remaining_alloc = Decimal(alloc).normalize()
 
             # fill up starting from the most free devices
             sorted_dev_allocs = sorted(
@@ -428,7 +446,7 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
                 allocatable = (self.property_func(self.devices[dev_id]) -
                                current_alloc)
                 if allocatable > 0:
-                    allocated = min(remaining_alloc, allocatable)
+                    allocated = Decimal(min(remaining_alloc, allocatable))
                     slot_allocation[dev_id] = allocated
                     self.allocations[slot_name][dev_id] += allocated
                     remaining_alloc -= allocated
@@ -437,7 +455,18 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
             allocation[slot_name] = slot_allocation
         return allocation
 
-    def free(self, existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]):
+    def apply_allocation(
+        self,
+        existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
+    ) -> None:
+        for slot_name, per_device_alloc in existing_alloc.items():
+            for dev_id, alloc in per_device_alloc.items():
+                self.allocations[slot_name][dev_id] += alloc
+
+    def free(
+        self,
+        existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
+    ) -> None:
         for slot_name, per_device_alloc in existing_alloc.items():
             for dev_id, alloc in per_device_alloc.items():
                 self.allocations[slot_name][dev_id] -= alloc
@@ -445,7 +474,7 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
 
 class FractionAllocMap(AbstractAllocMap):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         self.shares_per_device = kwargs.pop('shares_per_device')
         super().__init__(*args, **kwargs)
         self.allocations = defaultdict(lambda: {
@@ -493,7 +522,18 @@ class FractionAllocMap(AbstractAllocMap):
             allocation[slot_name] = slot_allocation
         return allocation
 
-    def free(self, existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]):
+    def apply_allocation(
+        self,
+        existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
+    ) -> None:
+        for slot_name, per_device_alloc in existing_alloc.items():
+            for dev_id, alloc in per_device_alloc.items():
+                self.allocations[slot_name][dev_id] += alloc
+
+    def free(
+        self,
+        existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
+    ) -> None:
         for slot_name, per_device_alloc in existing_alloc.items():
             for dev_id, alloc in per_device_alloc.items():
                 self.allocations[slot_name][dev_id] -= alloc
