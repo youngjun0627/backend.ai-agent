@@ -83,7 +83,7 @@ def parse_service_ports(s: str) -> Sequence[ServicePort]:
             if protocol == 'pty':
                 # unsupported, skip
                 continue
-            if protocol not in ('tcp', 'http'):
+            if protocol not in ('tcp', 'http', 'preopen'):
                 raise ValueError(f'Unsupported service port protocol: {protocol}')
             ports = tuple(map(int, match.group('ports').strip('[]').split(',')))
             for p in ports:
@@ -91,6 +91,8 @@ def parse_service_ports(s: str) -> Sequence[ServicePort]:
                     raise ValueError(f'The port {p} is already used by another service port.')
                 if p <= 1024:
                     raise ValueError(f'The service port number {p} must be larger than 1024.')
+                if p >= 65535:
+                    raise ValueError(f'The service port number {p} must be smaller than 65535.')
                 if p in (2000, 2001, 2002, 2003):
                     raise ValueError('The service ports 2000 to 2003 are reserved for internal use.')
                 used_ports.add(p)

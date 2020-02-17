@@ -873,6 +873,7 @@ class DockerAgent(AbstractAgent):
         exposed_ports = [2000, 2001]
         service_ports = []
         port_map = {}
+        preopen_ports = kernel_config.get('preopen_ports', [])
 
         for sport in parse_service_ports(await self.get_service_ports_from_label(image_ref)):
             port_map[sport['name']] = sport
@@ -891,6 +892,16 @@ class DockerAgent(AbstractAgent):
             'container_ports': (7681,),
             'host_ports': (None,),
         }
+        for port_no in preopen_ports:
+            sport = {
+                'name': str(port_no),
+                'protocol': ServicePortProtocols('preopen'),
+                'container_ports': (port_no,),
+                'host_ports': (None,),
+            }
+            service_ports.append(sport)
+            for cport in sport['container_ports']:
+                exposed_ports.append(cport)
         for sport in port_map.values():
             service_ports.append(sport)
             for cport in sport['container_ports']:
@@ -971,6 +982,9 @@ class DockerAgent(AbstractAgent):
                 'seccomp=unconfined',
                 'apparmor=unconfined',
             ]
+        encoded_preopen_ports = ','.join(f'{port_no}:preopen:{port_no}' for port_no in preopen_ports)
+        container_config['Labels']['ai.backend.service-ports'] = \
+                image_labels['ai.backend.service-ports'] + ',' + encoded_preopen_ports
         update_nested_dict(container_config, computer_docker_args)
         kernel_name = f"kernel.{image_ref.name.split('/')[-1]}.{kernel_id}"
         log.debug('container config: {!r}', container_config)

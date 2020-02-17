@@ -436,6 +436,8 @@ class BaseRunner(metaclass=ABCMeta):
                 cmdargs, env = await prepare_ttyd_service(service_info)
             elif service_info['name'] == 'sshd':
                 cmdargs, env = await prepare_sshd_service(service_info)
+            elif service_info['protocol'] == 'preopen':
+                cmdargs, env = [], {}
             elif self.service_parser is not None:
                 log.debug(service_info)
                 self.service_parser.variables['ports'] = service_info['port']
@@ -465,14 +467,15 @@ class BaseRunner(metaclass=ABCMeta):
                 if 'LD_LIBRARY_PATH' in service_env:
                     service_env['LD_LIBRARY_PATH'] = \
                         service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
-                proc = await asyncio.create_subprocess_exec(
-                    *cmdargs,
-                    env=service_env,
-                    cwd=str(cwd),
-                )
-                self.service_processes.append(proc)
-            self.services_running.add(service_info['name'])
-            await wait_local_port_open(service_info['port'])
+                if service_info['protocol'] != 'preopen':
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmdargs,
+                        env=service_env,
+                        cwd=str(cwd),
+                    )
+                    self.service_processes.append(proc)
+                    self.services_running.add(service_info['name'])
+                    await wait_local_port_open(service_info['port'])
             result = {'status': 'started'}
         except Exception as e:
             log.exception('unexpected error')
