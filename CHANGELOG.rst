@@ -1,6 +1,12 @@
 Changes
 =======
 
+19.09.15 (2020-02-21)
+---------------------
+
+* HOTFIX: Remove duplicate code block causing agent startup crashes, which is originated from
+  a merge error.
+
 19.09.14 (2020-02-17)
 ---------------------
 
