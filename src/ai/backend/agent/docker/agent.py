@@ -258,29 +258,6 @@ class DockerAgent(AbstractAgent):
                             'host_ports': [*port_map.values()],
                             'block_service_ports': t.StrBool().check(block_service_ports),
                         })
-                    for service_port in parse_service_ports(labels.get('ai.backend.service-ports', '')):
-                        service_port['host_ports'] = tuple(
-                            port_map.get(cport, None) for cport in service_port['container_ports']
-                        )
-                        service_ports.append(service_port)
-                    block_service_ports = labels.get('ai.backend.internal.block-service-ports', '0')
-                    self.kernel_registry[kernel_id] = await DockerKernel.new(
-                        kernel_id,
-                        ImageRef(image),
-                        kernelspec,
-                        agent_config=self.config,
-                        resource_spec=resource_spec,
-                        service_ports=service_ports,
-                        data={
-                            'container_id': container._id,
-                            'kernel_host': kernel_host,
-                            'repl_in_port': port_map[2000],
-                            'repl_out_port': port_map[2001],
-                            'stdin_port': port_map.get(2002, 0),
-                            'stdout_port': port_map.get(2003, 0),
-                            'host_ports': [*port_map.values()],
-                            'block_service_ports': t.ToBool().check(block_service_ports),
-                        })
                 elif status in dead_status_set:
                     log.info('detected terminated kernel: {0}', kernel_id)
                     await self.produce_event('kernel_terminated', str(kernel_id),
