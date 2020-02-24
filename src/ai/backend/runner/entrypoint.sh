@@ -27,6 +27,9 @@ if [ $USER_ID -eq 0 ]; then
     /home/work/bootstrap.sh
   fi
 
+  # Extract dotfiles
+  /opt/backend.ai/bin/python /opt/kernel/extract_dotfiles.py
+
   echo "Executing the main program..."
   exec "$@"
 
@@ -82,6 +85,9 @@ else
     chmod +x /home/work/bootstrap.sh
     /opt/kernel/su-exec $USER_ID:$GROUP_ID /home/work/bootstrap.sh
   fi
+
+  # Extract dotfiles
+  /opt/kernel/su-exec $USER_ID:$GROUP_ID /opt/backend.ai/bin/python /opt/kernel/extract_dotfiles.py
 
   echo "Executing the main program..."
   exec /opt/kernel/su-exec $USER_ID:$GROUP_ID "$@"

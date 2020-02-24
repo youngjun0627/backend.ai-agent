@@ -607,6 +607,18 @@ class DockerAgent(AbstractAgent):
             nonlocal mounts
             mounts.append(Mount(type, src, target, MountPermission(perm), opts=opts))
 
+        async def _copy(src: Union[str, Path], target: Union[str, Path]):
+            def sync():
+                shutil.copy(src, target)
+                if KernelFeatures.UID_MATCH in kernel_features:
+                    uid = self.config['container']['kernel-uid']
+                    gid = self.config['container']['kernel-gid']
+                    if os.geteuid() == 0:  # only possible when I am root.
+                        os.chown(ssh_dir, uid, gid)
+                        os.chown(ssh_dir / 'authorized_keys', uid, gid)
+                        os.chown(work_dir / 'id_container', uid, gid)
+
+            await self.loop.run_in_executor(None, sync)
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         matched_distro, krunner_volume = match_krunner_volume(
@@ -680,12 +692,17 @@ class DockerAgent(AbstractAgent):
         tmux_conf_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/.tmux.conf'))
 
+        dotfile_extractor_path = Path(pkg_resources.resource_filename(
+            'ai.backend.agent', '../runner/extract_dotfiles.py'
+        ))
+
         if matched_libc_style == 'musl':
             terminfo_path = Path(pkg_resources.resource_filename(
                 'ai.backend.agent', '../runner/terminfo.alpine3.8'
             ))
             _mount(MountTypes.BIND, terminfo_path.resolve(), '/home/work/.terminfo')
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
+        _mount(MountTypes.BIND, dotfile_extractor_path.resolve(), '/opt/kernel/extract_dotfiles.py')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
         _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
         if self.config['container']['sandbox-type'] == 'jail':
@@ -709,21 +726,16 @@ class DockerAgent(AbstractAgent):
         # we need to touch them first to avoid their "ghost" files are created
         # as root in the host-side filesystem, which prevents deletion of scratch
         # directories when the agent is running as non-root.
-        (work_dir / '.jupyter' / 'custom').mkdir(parents=True, exist_ok=True)
-        (work_dir / '.jupyter' / 'custom' / 'custom.css').write_bytes(b'')
-        (work_dir / '.jupyter' / 'custom' / 'logo.svg').write_bytes(b'')
-        (work_dir / '.jupyter' / 'custom' / 'roboto.ttf').write_bytes(b'')
-        (work_dir / '.jupyter' / 'custom' / 'roboto-italic.ttf').write_bytes(b'')
-        _mount(MountTypes.BIND, jupyter_custom_css_path.resolve(),
-                                '/home/work/.jupyter/custom/custom.css')
-        _mount(MountTypes.BIND, logo_path.resolve(), '/home/work/.jupyter/custom/logo.svg')
-        _mount(MountTypes.BIND, font_path.resolve(), '/home/work/.jupyter/custom/roboto.ttf')
-        _mount(MountTypes.BIND, font_italic_path.resolve(),
-                                '/home/work/.jupyter/custom/roboto-italic.ttf')
-        _mount(MountTypes.BIND, bashrc_path.resolve(), '/home/work/.bashrc')
-        _mount(MountTypes.BIND, bash_profile_path.resolve(), '/home/work/.bash_profile')
-        _mount(MountTypes.BIND, vimrc_path.resolve(), '/home/work/.vimrc')
-        _mount(MountTypes.BIND, tmux_conf_path.resolve(), '/home/work/.tmux.conf')
+        jupyter_custom_dir = (work_dir / '.jupyter' / 'custom')
+        jupyter_custom_dir.mkdir(parents=True, exist_ok=True)
+        await _copy(jupyter_custom_css_path.resolve(), jupyter_custom_dir / 'custom.css')
+        await _copy(logo_path.resolve(), jupyter_custom_dir / 'logo.svg')
+        await _copy(font_path.resolve(), jupyter_custom_dir / 'roboto.ttf')
+        await _copy(font_italic_path.resolve(), jupyter_custom_dir / 'roboto-italic.ttf')
+        await _copy(bashrc_path.resolve(), work_dir / '.bashrc')
+        await _copy(bash_profile_path.resolve(), work_dir / '.bash_profile')
+        await _copy(vimrc_path.resolve(), work_dir / '.vimrc')
+        await _copy(tmux_conf_path.resolve(), work_dir / '.tmux.conf')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
         if self.config['debug']['coredump']['enabled']:
             _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
@@ -845,21 +857,12 @@ class DockerAgent(AbstractAgent):
                         os.chown(ssh_dir, uid, gid)
                         os.chown(ssh_dir / 'authorized_keys', uid, gid)
                         os.chown(work_dir / 'id_container', uid, gid)
+        dotfiles = internal_data.get('dotfiles', [])
 
-        for dotfile in internal_data.get('dotfiles', []):
-            file_path: Path = work_dir / dotfile['path']
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(dotfile['data'])
-
-            tmp = Path(file_path)
-            while tmp != work_dir:
-                tmp.chmod(int(dotfile['perm'], 8))
-                # only possible when I am root.
-                if KernelFeatures.UID_MATCH in kernel_features and os.geteuid() == 0:
-                    uid = self.config['container']['kernel-uid']
-                    gid = self.config['container']['kernel-gid']
-                    os.chown(tmp, uid, gid)
-                tmp = tmp.parent
+        def _write_dotfile():
+            with open(config_dir / 'dotfiles.json', 'w') as fw:
+                fw.write(json.dumps(dotfiles))
+        await self.loop.run_in_executor(None, _write_dotfile)
 
         # PHASE 4: Run!
         log.info('kernel {0} starting with resource spec: \n',
