@@ -1,10 +1,14 @@
 Changes
 =======
 
-19.12.0b1 (2020-01-xx)
+19.12.0b1 (2020-02-xx)
 ----------------------
 
-* IMPROVE: Now our manager-to-agent RPC uses `Callosum <https://github.com/lablup/callosum>_` instead of
+* NEW: Add support for pre-open service ports for user-written apps (#167)
+
+* NEW: All CLI commands are now accessible via ``backend.ai ag`` (#165)
+
+* IMPROVE: Now our manager-to-agent RPC uses `Callosum <https://github.com/lablup/callosum>`_ instead of
   aiozmq, supporting Python 3.8 natively. (#157, #63)
 
 * FIX: Detection for manager now works for HA setup seamlessly. (It now determines if at least one
