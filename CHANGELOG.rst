@@ -36,6 +36,17 @@ Changes
 * IMPROVE: ResourceSlots are now more permissive. Agent still checks the validity of known slots
   but also allows zero-valued unknown slots as well. (#162)
 
+19.09.16 (2020-02-27)
+---------------------
+
+* MAINTENANCE: Update dependency packages.
+
+19.09.15 (2020-02-21)
+---------------------
+
+* HOTFIX: Remove duplicate code block causing agent startup crashes, which is originated from
+  a merge error.
+
 19.09.14 (2020-02-17)
 ---------------------
 
