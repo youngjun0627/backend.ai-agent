@@ -1035,8 +1035,9 @@ class DockerAgent(AbstractAgent):
                 shutil.rmtree(tmp_dir)
             shutil.rmtree(scratch_dir)
             self.port_pool.update(host_ports)
-            for dev_name, device_alloc in resource_spec.allocations.items():
-                self.computers[dev_name].alloc_map.free(device_alloc)
+            async with self.resource_lock:
+                for dev_name, device_alloc in resource_spec.allocations.items():
+                    self.computers[dev_name].alloc_map.free(device_alloc)
             raise
 
         ctnr_host_port_map: MutableMapping[int, int] = {}
