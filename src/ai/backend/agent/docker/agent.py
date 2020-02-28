@@ -553,7 +553,6 @@ class DockerAgent(AbstractAgent):
                              self.config['vfolder']['fsprefix'] / folder_id)
                 if group_username:
                     package_host_path = package_host_path / group_username
-                package_host_path.mkdir(parents=True, exist_ok=True)
                 mount = Mount(MountTypes.BIND, package_host_path, kernel_path,
                               MountPermission.READ_WRITE)
                 resource_spec.mounts.append(mount)
