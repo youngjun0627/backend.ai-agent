@@ -546,17 +546,6 @@ class DockerAgent(AbstractAgent):
                 mount = Mount(MountTypes.BIND, host_path, kernel_path, folder_perm)
                 resource_spec.mounts.append(mount)
                 mounts.append(mount)
-            if package_directory := kernel_config['package_directory']:
-                folder_id, group_username, folder_host = package_directory
-                kernel_path = Path('/home/work/.local')
-                package_host_path: Path = (self.config['vfolder']['mount'] / folder_host /
-                             self.config['vfolder']['fsprefix'] / folder_id)
-                if group_username:
-                    package_host_path = package_host_path / group_username
-                mount = Mount(MountTypes.BIND, package_host_path, kernel_path,
-                              MountPermission.READ_WRITE)
-                resource_spec.mounts.append(mount)
-                mounts.append(mount)
             # should no longer be used!
             del vfolders
 
