@@ -11,6 +11,7 @@ from pprint import pformat, pprint
 import signal
 import sys
 import time
+import traceback
 from typing import (
     cast, TYPE_CHECKING,
     Any, Callable,
@@ -105,6 +106,21 @@ def update_last_used(meth: Callable) -> Callable:
         except KeyError:
             pass
         return await meth(self, raw_kernel_id, *args, **kwargs)
+    return _inner
+
+
+def collect_error(meth: Callable) -> Callable:
+    @functools.wraps(meth)
+    async def _inner(self, *args, **kwargs):
+        try:
+            return await meth(self, *args, **kwargs)
+        except Exception:
+            exc_type, exc, tb = sys.exc_info()
+            pretty_message = ''.join(traceback.format_exception_only(exc_type, exc)).strip()
+            pretty_tb = ''.join(traceback.format_tb(tb)).strip()
+            # TODO: Determine severity
+            await self.agent.produce_event('agent_error', pretty_message, pretty_tb)
+            raise
     return _inner
 
 
@@ -250,20 +266,24 @@ class AgentRPCServer(aobject):
         await self.rpc_server.__aexit__(*exc_info)
         await self.agent.shutdown(self._stop_signal)
 
+    @collect_error
     async def update_status(self, status):
         await self.etcd.put('', status, scope=ConfigScopes.NODE)
 
     @rpc_function
+    @collect_error
     async def ping(self, msg: str) -> str:
         return msg
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def ping_kernel(self, kernel_id: str):
         log.debug('rpc::ping_kernel({0})', kernel_id)
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def create_kernel(self, kernel_id: str, config: dict):
         log.info('rpc::create_kernel(k:{0}, img:{1})',
                  kernel_id, config['image']['canonical'])
@@ -284,6 +304,7 @@ class AgentRPCServer(aobject):
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def destroy_kernel(self, kernel_id: str, reason: str = None):
         log.info('rpc::destroy_kernel(k:{0})', kernel_id)
         return await self.agent.destroy_kernel(
@@ -291,12 +312,14 @@ class AgentRPCServer(aobject):
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def interrupt_kernel(self, kernel_id: str):
         log.info('rpc::interrupt_kernel(k:{0})', kernel_id)
         await self.agent.interrupt_kernel(KernelId(UUID(kernel_id)))
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def get_completions(self, kernel_id: str,
                               text: str, opts: dict):
         log.debug('rpc::get_completions(k:{0}, ...)', kernel_id)
@@ -304,12 +327,14 @@ class AgentRPCServer(aobject):
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def get_logs(self, kernel_id: str):
         log.info('rpc::get_logs(k:{0})', kernel_id)
         return await self.agent.get_logs(KernelId(UUID(kernel_id)))
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def restart_kernel(self, kernel_id: str, new_config: dict):
         log.info('rpc::restart_kernel(k:{0})', kernel_id)
         return await self.agent.restart_kernel(
@@ -317,6 +342,7 @@ class AgentRPCServer(aobject):
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def execute(self,
                       kernel_id,          # type: str
                       api_version,        # type: int
@@ -342,6 +368,7 @@ class AgentRPCServer(aobject):
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def start_service(self,
                             kernel_id,   # type: str
                             service,     # type: str
@@ -353,36 +380,42 @@ class AgentRPCServer(aobject):
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
         log.info('rpc::upload_file(k:{0}, fn:{1})', kernel_id, filename)
         await self.agent.accept_file(KernelId(UUID(kernel_id)), filename, filedata)
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def download_file(self, kernel_id: str, filepath: str):
         log.info('rpc::download_file(k:{0}, fn:{1})', kernel_id, filepath)
         return await self.agent.download_file(KernelId(UUID(kernel_id)), filepath)
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def list_files(self, kernel_id: str, path: str):
         log.info('rpc::list_files(k:{0}, fn:{1})', kernel_id, path)
         return await self.agent.list_files(KernelId(UUID(kernel_id)), path)
 
     @rpc_function
     @update_last_used
+    @collect_error
     async def refresh_idle(self, kernel_id: str):
         # update_last_used decorator already implements this. :)
         log.debug('rpc::refresh_idle(k:{})', kernel_id)
         pass
 
     @rpc_function
+    @collect_error
     async def shutdown_agent(self, terminate_kernels: bool):
         # TODO: implement
         log.info('rpc::shutdown_agent()')
         pass
 
     @rpc_function
+    @collect_error
     async def reset_agent(self):
         log.debug('rpc::reset()')
         kernel_ids = tuple(self.agent.kernel_registry.keys())
