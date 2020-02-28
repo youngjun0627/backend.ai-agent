@@ -239,7 +239,6 @@ class AgentRPCServer(aobject):
         log.info('configured vfolder mount base: {0}', self.config['vfolder']['mount'])
         log.info('configured vfolder fs prefix: {0}', self.config['vfolder']['fsprefix'])
 
-
     async def __aenter__(self) -> None:
         await self.rpc_server.__aenter__()
 
