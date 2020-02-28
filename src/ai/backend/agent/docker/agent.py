@@ -32,6 +32,7 @@ from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
 import aiotools
 
+from ai.backend.common import redis
 from ai.backend.common.docker import (
     ImageRef,
     MIN_KERNELSPEC,
@@ -1266,6 +1267,25 @@ class DockerAgent(AbstractAgent):
                     except IOError:
                         pass
 
+                log_length = self.config['logging']['maximum_log_length']
+                chunk_length = self.config['logging']['chunk_size']
+                logs = b''
+                async for line in container.log(stdout=True, stderr=True, follow=True):
+                    encoded = line.encode('utf-8')
+                    if len(logs) + len(encoded) > log_length:
+                        logs += encoded[:log_length - len(logs)]
+                    else:
+                        logs += encoded
+
+                for i in range(0, len(logs), chunk_length):
+                    chunk = logs[i:i + chunk_length]
+                    push_lambda = lambda: self.redis_producer_pool.rpush(
+                        f'containerlog.{container_id}', chunk)
+                    await redis.execute_with_retries(push_lambda)
+                await self.produce_event(
+                    'kernel_log', str(kernel_id), container_id
+                )
+
                 # When the agent restarts with a different port range, existing
                 # containers' host ports may not belong to the new port range.
                 if not self.config['debug']['skip-container-deletion']:
@@ -1348,7 +1368,6 @@ class DockerAgent(AbstractAgent):
             if evdata is None:
                 # fetch_docker_events() will automatically reconnect.
                 continue
-
             # FIXME: Sometimes(?) duplicate event data is received.
             # Just ignore the duplicate ones.
             new_footprint = (

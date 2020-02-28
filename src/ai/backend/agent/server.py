@@ -217,6 +217,15 @@ class AgentRPCServer(aobject):
         self.config['redis'] = redis_config_iv.check(redis_config)
         log.info('configured redis_addr: {0}', self.config['redis']['addr'])
 
+        maximum_log_length = await self.etcd.get('config/logging/max_length')
+        if maximum_log_length is None:
+            maximum_log_length = 10 * 1024 * 1024  # 10MiB
+        chunk_size = await self.etcd.get('config/logging/chunk_size')
+        if chunk_size is None:
+            chunk_size = 64 * 1024  # 64KiB
+        self.config['logging']['maximum_log_length'] = maximum_log_length
+        self.config['logging']['chunk_size'] = chunk_size
+
         vfolder_mount = await self.etcd.get('volumes/_mount')
         if vfolder_mount is None:
             vfolder_mount = '/mnt'
@@ -229,6 +238,7 @@ class AgentRPCServer(aobject):
         }
         log.info('configured vfolder mount base: {0}', self.config['vfolder']['mount'])
         log.info('configured vfolder fs prefix: {0}', self.config['vfolder']['fsprefix'])
+
 
     async def __aenter__(self) -> None:
         await self.rpc_server.__aenter__()
