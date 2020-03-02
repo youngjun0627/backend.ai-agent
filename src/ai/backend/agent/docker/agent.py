@@ -611,15 +611,8 @@ class DockerAgent(AbstractAgent):
         async def _copy(src: Union[str, Path], target: Union[str, Path]):
             def sync():
                 shutil.copy(src, target)
-                if KernelFeatures.UID_MATCH in kernel_features:
-                    uid = self.config['container']['kernel-uid']
-                    gid = self.config['container']['kernel-gid']
-                    if os.geteuid() == 0:  # only possible when I am root.
-                        os.chown(ssh_dir, uid, gid)
-                        os.chown(ssh_dir / 'authorized_keys', uid, gid)
-                        os.chown(work_dir / 'id_container', uid, gid)
-
             await self.loop.run_in_executor(None, sync)
+
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         matched_distro, krunner_volume = match_krunner_volume(
