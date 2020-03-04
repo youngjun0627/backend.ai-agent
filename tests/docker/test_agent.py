@@ -7,7 +7,7 @@ from ai.backend.common.exception import ImageNotAvailable
 from ai.backend.common.types import AutoPullBehavior
 from ai.backend.common.docker import ImageRef
 
-from ai.backend.agent.config import initial_config_iv
+from ai.backend.agent.config import agent_local_config_iv
 from ai.backend.agent.docker.agent import DockerAgent
 
 import pytest
@@ -15,7 +15,7 @@ import pytest
 
 @pytest.fixture
 async def agent(test_id, redis_container):
-    agent = await DockerAgent.new(initial_config_iv.check({
+    agent = await DockerAgent.new(agent_local_config_iv.check({
         'agent': {
             'mode': 'docker',
             'id': f'i-{test_id}',

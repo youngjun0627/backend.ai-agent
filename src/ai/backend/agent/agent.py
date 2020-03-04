@@ -2,6 +2,7 @@ from abc import ABCMeta, abstractmethod
 import asyncio
 from decimal import Decimal
 import hashlib
+from io import BytesIO, SEEK_END
 import logging
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import signal
 import time
 from typing import (
     Any, Collection, Optional, Type,
+    AsyncIterator,
     Mapping, MutableMapping,
     MutableSequence,
     Set,
@@ -281,6 +283,59 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         except Exception:
             log.exception('instance_heartbeat failure')
             self.error_monitor.capture_exception()
+
+    async def collect_logs(
+        self,
+        kernel_id: KernelId,
+        container_id: str,
+        async_log_iterator: AsyncIterator[bytes],
+    ) -> None:
+        max_log_length = self.config['agent']['container-logs']['max-length']
+        max_chunk_length = self.config['agent']['container-logs']['chunk-size']
+        log_key = f'containerlog.{container_id}'
+        log_length = 0
+        chunk_buffer = BytesIO()
+        chunk_length = 0
+        try:
+            async for fragment in async_log_iterator:
+                fragment_length = len(fragment)
+                if log_length + fragment_length > max_log_length:
+                    fragment = fragment[:max_log_length - log_length]
+                chunk_buffer.write(fragment)
+                chunk_length += fragment_length
+                log_length += fragment_length
+                while chunk_length >= max_chunk_length:
+                    cb = chunk_buffer.getbuffer()
+                    stored_chunk = bytes(cb[:max_chunk_length])
+                    await redis.execute_with_retries(
+                        lambda: self.redis_producer_pool.rpush(
+                            log_key, stored_chunk)
+                    )
+                    remaining = cb[max_chunk_length:]
+                    chunk_length = len(remaining)
+                    next_chunk_buffer = BytesIO(remaining)
+                    next_chunk_buffer.seek(0, SEEK_END)
+                    del remaining, cb
+                    chunk_buffer.close()
+                    chunk_buffer = next_chunk_buffer
+            assert chunk_length < max_chunk_length
+            if chunk_length > 0:
+                await redis.execute_with_retries(
+                    lambda: self.redis_producer_pool.rpush(
+                        log_key, chunk_buffer.getvalue())
+                )
+        finally:
+            chunk_buffer.close()
+        # Keep the log for at most one hour in Redis.
+        # This is just a safety measure to prevent memory leak in Redis
+        # for cases when the event delivery has failed or processing
+        # the log data has failed.
+        await redis.execute_with_retries(
+            lambda: self.redis_producer_pool.expire(log_key, 3600.0)
+        )
+        await self.produce_event(
+            'kernel_log', str(kernel_id), container_id
+        )
 
     async def collect_node_stat(self, interval: float):
         try:

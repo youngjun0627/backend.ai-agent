@@ -32,7 +32,6 @@ from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
 import aiotools
 
-from ai.backend.common import redis
 from ai.backend.common.docker import (
     ImageRef,
     MIN_KERNELSPEC,
@@ -967,6 +966,16 @@ class DockerAgent(AbstractAgent):
                     for eport, hport in zip(exposed_ports, host_ports)
                 },
                 'PublishAllPorts': False,  # we manage port mapping manually!
+                'LogConfig': {
+                    'Type': 'local',  # for efficient docker-specific storage
+                    'Config': {
+                        # these fields must be str
+                        # (ref: https://docs.docker.com/config/containers/logging/local/)
+                        'max-size': f"{self.config['agent']['container-logs']['max-length']:s}",
+                        'max-file': '1',
+                        'compress': 'false',
+                    },
+                },
             },
         }
         if resource_opts and resource_opts.get('shmem'):
@@ -1260,24 +1269,16 @@ class DockerAgent(AbstractAgent):
                     except IOError:
                         pass
 
-                log_length = self.config['logging']['maximum_log_length']
-                chunk_length = self.config['logging']['chunk_size']
-                logs = b''
-                async for line in container.log(stdout=True, stderr=True, follow=True):
-                    encoded = line.encode('utf-8')
-                    if len(logs) + len(encoded) > log_length:
-                        logs += encoded[:log_length - len(logs)]
-                    else:
-                        logs += encoded
+                async def log_iter():
+                    async for line in container.log(
+                        stdout=True, stderr=True, follow=True,
+                    ):
+                        yield line.encode('utf-8')
 
-                for i in range(0, len(logs), chunk_length):
-                    chunk = logs[i:i + chunk_length]
-                    push_lambda = lambda: self.redis_producer_pool.rpush(
-                        f'containerlog.{container_id}', chunk)
-                    await redis.execute_with_retries(push_lambda)
-                await self.produce_event(
-                    'kernel_log', str(kernel_id), container_id
-                )
+                try:
+                    await self.collect_logs(kernel_id, container_id, log_iter())
+                except Exception as e:
+                    log.warning('could not store container logs (cid:{})', container_id, exc_info=e)
 
                 # When the agent restarts with a different port range, existing
                 # containers' host ports may not belong to the new port range.

@@ -15,7 +15,7 @@ coredump_defaults = {
     'size-limit': '64M',
 }
 
-initial_config_iv = t.Dict({
+agent_local_config_iv = t.Dict({
     t.Key('agent'): t.Dict({
         t.Key('mode'): t.Enum('docker', 'k8s'),
         t.Key('rpc-listen-addr', default=('', 6001)):
@@ -66,6 +66,18 @@ initial_config_iv = t.Dict({
     }).allow_extra('*'),
 }).merge(config.etcd_config_iv).allow_extra('*')
 
+default_container_logs_config = {
+    'max-length': '10M',  # the maximum tail size
+    'chunk-size': '64K',  # used when storing logs to Redis as a side-channel to the event bus
+}
+
+agent_etcd_config_iv = t.Dict({
+    t.Key('container-logs', default=default_container_logs_config): t.Dict({
+        t.Key('max-length', default=default_container_logs_config['max-length']): tx.BinarySize(),
+        t.Key('chunk-size', default=default_container_logs_config['chunk-size']): tx.BinarySize(),
+    }).allow_extra('*')
+}).allow_extra('*')
+
 k8s_extra_config_iv = t.Dict({
     t.Key('registry'): t.Dict({
         t.Key('type'): t.String
@@ -83,7 +95,7 @@ k8s_extra_config_iv = t.Dict({
         t.Key('capacity'): tx.BinarySize,
         t.Key('options'): t.Null | t.String
     }),
-}).merge(initial_config_iv).allow_extra('*')
+}).merge(agent_local_config_iv).allow_extra('*')
 
 registry_local_config_iv = t.Dict({
     t.Key('type'): t.String,
