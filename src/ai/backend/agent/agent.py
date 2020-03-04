@@ -290,8 +290,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         container_id: str,
         async_log_iterator: AsyncIterator[bytes],
     ) -> None:
-        max_log_length = self.config['agent']['container-logs']['max-length']
-        max_chunk_length = self.config['agent']['container-logs']['chunk-size']
+        chunk_size = self.config['agent']['container-logs']['chunk-size']
         log_key = f'containerlog.{container_id}'
         log_length = 0
         chunk_buffer = BytesIO()
@@ -299,26 +298,24 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         try:
             async for fragment in async_log_iterator:
                 fragment_length = len(fragment)
-                if log_length + fragment_length > max_log_length:
-                    fragment = fragment[:max_log_length - log_length]
                 chunk_buffer.write(fragment)
                 chunk_length += fragment_length
                 log_length += fragment_length
-                while chunk_length >= max_chunk_length:
+                while chunk_length >= chunk_size:
                     cb = chunk_buffer.getbuffer()
-                    stored_chunk = bytes(cb[:max_chunk_length])
+                    stored_chunk = bytes(cb[:chunk_size])
                     await redis.execute_with_retries(
                         lambda: self.redis_producer_pool.rpush(
                             log_key, stored_chunk)
                     )
-                    remaining = cb[max_chunk_length:]
+                    remaining = cb[chunk_size:]
                     chunk_length = len(remaining)
                     next_chunk_buffer = BytesIO(remaining)
                     next_chunk_buffer.seek(0, SEEK_END)
                     del remaining, cb
                     chunk_buffer.close()
                     chunk_buffer = next_chunk_buffer
-            assert chunk_length < max_chunk_length
+            assert chunk_length < chunk_size
             if chunk_length > 0:
                 await redis.execute_with_retries(
                     lambda: self.redis_producer_pool.rpush(

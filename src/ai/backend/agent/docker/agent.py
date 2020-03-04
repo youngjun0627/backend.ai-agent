@@ -41,6 +41,7 @@ from ai.backend.common.exception import ImageNotAvailable
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import (
     AutoPullBehavior,
+    BinarySize,
     ImageRegistry,
     KernelCreationConfig,
     KernelCreationResult,
@@ -929,6 +930,10 @@ class DockerAgent(AbstractAgent):
         ]
         if runtime_path is not None:
             cmdargs.append(runtime_path)
+
+        container_log_size = self.config['agent']['container-logs']['max-length']
+        container_log_file_count = 5
+        container_log_file_size = BinarySize(container_log_size // container_log_file_count)
         container_config: MutableMapping[str, Any] = {
             'Image': image_ref.canonical,
             'Tty': True,
@@ -971,8 +976,8 @@ class DockerAgent(AbstractAgent):
                     'Config': {
                         # these fields must be str
                         # (ref: https://docs.docker.com/config/containers/logging/local/)
-                        'max-size': f"{self.config['agent']['container-logs']['max-length']:s}",
-                        'max-file': '1',
+                        'max-size': f"{container_log_file_size:s}",
+                        'max-file': str(container_log_file_count),
                         'compress': 'false',
                     },
                 },
