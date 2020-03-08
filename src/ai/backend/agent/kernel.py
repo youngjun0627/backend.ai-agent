@@ -102,6 +102,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
     data: Dict[Any, Any]
     last_used: float
     termination_reason: Optional[str]
+    clean_event: Optional[asyncio.Event]
 
     runner: 'AbstractCodeRunner'
 
@@ -119,6 +120,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
         self.data = data
         self.last_used = time.monotonic()
         self.termination_reason = None
+        self.clean_event = None
         self._runner_lock = asyncio.Lock()
         self._tasks: Set[asyncio.Task] = set()
 
@@ -129,6 +131,21 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
         self.runner = await self.create_code_runner(
             client_features=default_client_features,
             api_version=default_api_version)
+
+    def __getstate__(self):
+        props = self.__dict__.copy()
+        del props['agent_config']
+        del props['clean_event']
+        del props['_runner_lock']
+        del props['_tasks']
+        return props
+
+    def __setstate__(self, props):
+        self.__dict__.update(props)
+        # agent_config is set by the pickle.loads() caller.
+        self.clean_event = None
+        self._runner_lock = asyncio.Lock()
+        self._tasks: Set[asyncio.Task] = set()
 
     @abstractmethod
     async def close(self):
@@ -266,6 +283,9 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         self.output_queue = None
         self.pending_queues = OrderedDict()
         self.current_run_id = None
+        self.read_task = None
+        self.status_task = None
+        self.watchdog_task = None
 
     async def __ainit__(self) -> None:
         loop = current_loop()
@@ -279,6 +299,38 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             self.watchdog_task = loop.create_task(self.watchdog())
         else:
             self.watchdog_task = None
+
+    def __getstate__(self):
+        props = self.__dict__.copy()
+        del props['zctx']
+        del props['input_sock']
+        del props['output_sock']
+        del props['completion_queue']
+        del props['service_queue']
+        del props['service_apps_info_queue']
+        del props['status_queue']
+        del props['output_queue']
+        del props['pending_queues']
+        del props['read_task']
+        del props['status_task']
+        del props['watchdog_task']
+        return props
+
+    def __setstate__(self, props):
+        self.__dict__.update(props)
+        self.zctx = zmq.asyncio.Context()
+        self.input_sock = self.zctx.socket(zmq.PUSH)
+        self.output_sock = self.zctx.socket(zmq.PULL)
+        self.completion_queue = asyncio.Queue(maxsize=128)
+        self.service_queue = asyncio.Queue(maxsize=128)
+        self.service_apps_info_queue = asyncio.Queue(maxsize=128)
+        self.status_queue = asyncio.Queue(maxsize=128)
+        self.output_queue = None
+        self.pending_queues = OrderedDict()
+        self.read_task = None
+        self.status_task = None
+        self.watchdog_task = None
+        # __ainit__() is called by the caller.
 
     @abstractmethod
     async def get_repl_in_addr(self) -> str:

@@ -27,6 +27,7 @@ from ai.backend.common.types import (
 from ai.backend.common.logging import BraceStyleAdapter
 from .exception import InsufficientResource
 from .stats import StatContext, NodeMeasurement, ContainerMeasurement
+from .types import Container
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
 
@@ -279,7 +280,7 @@ class AbstractComputePlugin(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    async def restore_from_container(cls, container: Mapping[str, Any],
+    async def restore_from_container(cls, container: Container,
                                      alloc_map: 'AbstractAllocMap') -> None:
         '''
         When the agent restarts, retore the allocation map from the container

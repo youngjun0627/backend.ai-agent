@@ -39,7 +39,7 @@ from ai.backend.common.types import (
     KernelCreationConfig,
 )
 from . import __version__ as VERSION
-from .agent import AbstractAgent, VolumeInfo
+from .agent import AbstractAgent
 from .config import (
     agent_local_config_iv,
     agent_etcd_config_iv,
@@ -47,6 +47,7 @@ from .config import (
     registry_local_config_iv,
     registry_ecr_config_iv,
 )
+from .types import VolumeInfo, LifecycleEvent
 from .utils import current_loop, get_subnet_ip
 
 if TYPE_CHECKING:
@@ -294,8 +295,15 @@ class AgentRPCServer(aobject):
     @collect_error
     async def destroy_kernel(self, kernel_id: str, reason: str = None):
         log.info('rpc::destroy_kernel(k:{0})', kernel_id)
-        return await self.agent.destroy_kernel(
-            KernelId(UUID(kernel_id)), reason or 'user-requested')
+        done = asyncio.Event()
+        await self.agent.inject_container_lifecycle_event(
+            KernelId(UUID(kernel_id)),
+            LifecycleEvent.DESTROY,
+            reason or 'user-requested',
+            done_event=done,
+        )
+        await done.wait()
+        return getattr(done, '_result', None)
 
     @rpc_function
     @update_last_used

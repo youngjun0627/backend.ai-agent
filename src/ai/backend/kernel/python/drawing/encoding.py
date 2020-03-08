@@ -9,4 +9,4 @@ def encode_commands(cmdlist):
 
 def decode_commands(data):
     bindata = base64.b64decode(data)
-    return msgpack.unpackb(bindata, encoding='utf8')
+    return msgpack.unpackb(bindata, raw=False)
