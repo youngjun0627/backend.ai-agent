@@ -1,6 +1,13 @@
 Changes
 =======
 
+19.09.17 (2020-03-08)
+---------------------
+
+* IMPROVE/FIX: Rewrite container lifecycle management using queues and persistent states (#187)
+
+* MAINTENANCE: Update backend.ai-common dependency.
+
 19.09.16 (2020-02-27)
 ---------------------
 
