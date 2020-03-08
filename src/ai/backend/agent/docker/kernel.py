@@ -48,6 +48,15 @@ class DockerKernel(AbstractKernel):
     async def close(self) -> None:
         await self._docker.close()
 
+    def __getstate__(self):
+        props = super().__getstate__()
+        del props['_docker']
+        return props
+
+    def __setstate__(self, props):
+        super().__setstate__(props)
+        self._docker = Docker()
+
     async def create_code_runner(self, *,
                            client_features: FrozenSet[str],
                            api_version: int) -> AbstractCodeRunner:

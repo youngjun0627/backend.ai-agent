@@ -32,9 +32,10 @@ from ai.backend.common.types import (
     KernelCreationConfig,
 )
 from . import __version__ as VERSION
-from .agent import AbstractAgent, VolumeInfo
+from .agent import AbstractAgent
 from .exception import InitializationError
 from .stats import StatModes
+from .types import VolumeInfo, LifecycleEvent
 from .utils import current_loop, get_subnet_ip
 
 if TYPE_CHECKING:
@@ -235,8 +236,15 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
     async def destroy_kernel(self, kernel_id: str, reason: str = None):
         log.info('rpc::destroy_kernel(k:{0})', kernel_id)
         async with self.handle_rpc_exception():
-            return await self.agent.destroy_kernel(
-                KernelId(UUID(kernel_id)), reason or 'user-requested')
+            done = asyncio.Event()
+            await self.agent.inject_container_lifecycle_event(
+                KernelId(UUID(kernel_id)),
+                LifecycleEvent.DESTROY,
+                reason or 'user-requested',
+                done_event=done,
+            )
+            await done.wait()
+            return getattr(done, '_result', None)
 
     @aiozmq.rpc.method
     @update_last_used

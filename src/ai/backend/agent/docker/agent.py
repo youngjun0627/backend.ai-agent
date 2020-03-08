@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import pickle
 import pkg_resources
 import platform
 from pprint import pformat
@@ -14,11 +15,10 @@ import signal
 import struct
 import sys
 from typing import (
-    Any, Optional, Union,
+    Any, Optional, Union, Type,
     Dict, Mapping, MutableMapping,
     Set, FrozenSet,
     Sequence, List, Tuple,
-    Type,
 )
 from typing_extensions import Literal
 
@@ -26,7 +26,6 @@ import aiohttp
 import attr
 from async_timeout import timeout
 import zmq
-import trafaret as t
 
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
@@ -42,6 +41,7 @@ from ai.backend.common.types import (
     KernelCreationConfig,
     KernelCreationResult,
     KernelId,
+    ContainerId,
     DeviceName,
     SlotName,
     MetricKey, MetricValue,
@@ -62,6 +62,7 @@ from ..resources import (
 )
 from ..agent import (
     AbstractAgent,
+    ACTIVE_STATUS_SET,
     ipc_base_path,
 )
 from ..proxy import proxy_connection, DomainSocketProxy
@@ -74,6 +75,10 @@ from ..server import (
 from ..stats import (
     spawn_stat_synchronizer, StatSyncState
 )
+from ..types import (
+    Container, Port, ContainerStatus,
+    ContainerLifecycleEvent, LifecycleEvent,
+)
 from ..utils import (
     update_nested_dict,
     get_kernel_id_from_container,
@@ -83,6 +88,27 @@ from ..utils import (
 )
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
+
+
+def container_from_docker_container(src: DockerContainer) -> Container:
+    ports = []
+    for private_port, host_ports in src['NetworkSettings']['Ports'].items():
+        private_port = int(private_port.split('/')[0])
+        if host_ports is None:
+            host_ip = '127.0.0.1'
+            host_port = 0
+        else:
+            host_ip = host_ports[0]['HostIp']
+            host_port = int(host_ports[0]['HostPort'])
+        ports.append(Port(host_ip, private_port, host_port))
+    return Container(
+        id=src._id,
+        status=src['State']['Status'],
+        image=src['Config']['Image'],
+        labels=src['Config']['Labels'],
+        ports=ports,
+        backend_obj=src,
+    )
 
 
 class DockerAgent(AbstractAgent):
@@ -98,7 +124,6 @@ class DockerAgent(AbstractAgent):
         super().__init__(config)
 
     async def __ainit__(self) -> None:
-        self.resource_lock = asyncio.Lock()
         self.docker = Docker()
         docker_version = await self.docker.version()
         log.info('running with Docker {0} with API {1}',
@@ -142,8 +167,8 @@ class DockerAgent(AbstractAgent):
 
     async def enumerate_containers(
         self,
-        status_filter: FrozenSet[str] = frozenset(['running', 'restarting', 'paused']),
-    ) -> Sequence[Tuple[KernelId, str, DockerContainer]]:
+        status_filter: FrozenSet[ContainerStatus] = ACTIVE_STATUS_SET,
+    ) -> Sequence[Tuple[KernelId, Container]]:
         result = []
         fetch_tasks = []
         for container in (await self.docker.containers.list()):
@@ -153,123 +178,27 @@ class DockerAgent(AbstractAgent):
                     kernel_id = await get_kernel_id_from_container(container)
                     if kernel_id is None:
                         return
-                    status = container['State']['Status']
-                    if status in status_filter:
+                    if container['State']['Status'] in status_filter:
                         await container.show()
-                        result.append((kernel_id, status, container))
+                        result.append(
+                            (
+                                kernel_id,
+                                container_from_docker_container(container),
+                            )
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    log.error('error while fetching container information (cid: {})',
-                              container._id)
+                    log.exception(
+                        'error while fetching container information (cid: {})',
+                        container._id)
 
             fetch_tasks.append(_fetch_container_info(container))
 
         await asyncio.gather(*fetch_tasks, return_exceptions=True)
         return result
 
-    async def rescan_resource_usage(self) -> None:
-        async with self.resource_lock:
-            for computer_set in self.computers.values():
-                computer_set.alloc_map.clear()
-            for kernel_id, status, container in (await self.enumerate_containers()):
-                for computer_set in self.computers.values():
-                    await computer_set.klass.restore_from_container(
-                        container,
-                        computer_set.alloc_map,
-                    )
-
-    async def scan_running_kernels(self) -> None:
-        active_status_set = frozenset([
-            'running', 'restarting', 'paused',
-        ])
-        dead_status_set = frozenset([
-            'exited', 'dead', 'removing',
-        ])
-        async with self.resource_lock:
-            for kernel_id, status, container in (await self.enumerate_containers(
-                active_status_set | dead_status_set,
-            )):
-                if status in active_status_set:
-                    image = container['Config']['Image']
-                    labels = container['Config']['Labels']
-                    kernelspec = int(labels.get('ai.backend.kernelspec', '1'))
-                    if not (MIN_KERNELSPEC <= kernelspec <= MAX_KERNELSPEC):
-                        continue
-                    ports = container['NetworkSettings']['Ports']
-                    port_map = {}
-                    for private_port, host_ports in ports.items():
-                        private_port = int(private_port.split('/')[0])
-                        if host_ports is None:
-                            public_port = 0
-                        else:
-                            public_port = int(host_ports[0]['HostPort'])
-                            self.port_pool.discard(public_port)
-                        port_map[private_port] = public_port
-                    for computer_set in self.computers.values():
-                        await computer_set.klass.restore_from_container(
-                            container, computer_set.alloc_map)
-                    kernel_host = self.config['container']['kernel-host']
-                    config_dir = (self.config['container']['scratch-root'] /
-                                  str(kernel_id) / 'config').resolve()
-                    with open(config_dir / 'resource.txt', 'r') as f:
-                        resource_spec = KernelResourceSpec.read_from_file(f)
-                        # legacy handling
-                        if resource_spec.container_id is None:
-                            resource_spec.container_id = container._id
-                        else:
-                            assert container._id == resource_spec.container_id, \
-                                    'Container ID from the container must match!'
-                    # TODO: restore internal_data
-                    #       -> could we get this from the manager again?
-                    service_ports: List[ServicePort] = []
-                    service_ports.append({
-                        'name': 'sshd',
-                        'protocol': 'tcp',
-                        'container_ports': (2200,),
-                        'host_ports': (port_map.get(2200, None),),
-                    })
-                    service_ports.append({
-                        'name': 'ttyd',
-                        'protocol': 'http',
-                        'container_ports': (7681,),
-                        'host_ports': (port_map.get(7681, None),),
-                    })
-                    for service_port in parse_service_ports(labels.get('ai.backend.service-ports', '')):
-                        service_port['host_ports'] = tuple(
-                            port_map.get(cport, None) for cport in service_port['container_ports']
-                        )
-                        service_ports.append(service_port)
-                    block_service_ports = labels.get('ai.backend.internal.block-service-ports', '0')
-                    self.kernel_registry[kernel_id] = await DockerKernel.new(
-                        kernel_id,
-                        ImageRef(image),
-                        kernelspec,
-                        agent_config=self.config,
-                        resource_spec=resource_spec,
-                        service_ports=service_ports,
-                        data={
-                            'container_id': container._id,
-                            'kernel_host': kernel_host,
-                            'repl_in_port': port_map[2000],
-                            'repl_out_port': port_map[2001],
-                            'stdin_port': port_map.get(2002, 0),
-                            'stdout_port': port_map.get(2003, 0),
-                            'host_ports': [*port_map.values()],
-                            'block_service_ports': t.StrBool().check(block_service_ports),
-                        })
-                elif status in dead_status_set:
-                    log.info('detected terminated kernel: {0}', kernel_id)
-                    await self.produce_event('kernel_terminated', str(kernel_id),
-                                             'self-terminated', None)
-
-        log.info('starting with resource allocations')
-        for computer_name, computer_ctx in self.computers.items():
-            log.info('{}: {!r}',
-                     computer_name,
-                     dict(computer_ctx.alloc_map.allocations))
-
-    async def scan_images(self, interval: float = None) -> None:
+    async def scan_images(self) -> Mapping[str, str]:
         all_images = await self.docker.images.list()
         updated_images = {}
         for image in all_images:
@@ -289,7 +218,7 @@ class DockerAgent(AbstractAgent):
             log.debug('found kernel image: {0}', added_image)
         for removed_image in (self.images.keys() - updated_images.keys()):
             log.debug('removed kernel image: {0}', removed_image)
-        self.images = updated_images
+        return updated_images
 
     async def handle_agent_socket(self):
         '''
@@ -735,6 +664,8 @@ class DockerAgent(AbstractAgent):
                     os.chown(vimrc_path, uid, gid)
             os.makedirs(config_dir, exist_ok=True)
             # Store custom environment variables for kernel runner.
+            with open(config_dir / 'kconfig.dat', 'wb') as fb:
+                pickle.dump(kernel_config, fb)
             with open(config_dir / 'environ.txt', 'w') as f:
                 for k, v in environ.items():
                     f.write(f'{k}={v}\n')
@@ -1036,7 +967,17 @@ class DockerAgent(AbstractAgent):
                             'kernel_failure', str(kernel_id), -2)
                         break
                 # TODO: store last_stat?
-                await self.destroy_kernel(kernel_id, 'task-finished')
+                destroyed = asyncio.Event()
+                self.container_lifecycle_events.put(
+                    ContainerLifecycleEvent(
+                        kernel_id,
+                        kernel_obj['container_id'],
+                        LifecycleEvent.TERMINATED,
+                        'task-finished',
+                        destroyed,
+                    )
+                )
+                await destroyed.wait()
 
             self.loop.create_task(execute_batch())
 
@@ -1053,34 +994,19 @@ class DockerAgent(AbstractAgent):
             'attached_devices': attached_devices,
         }
 
-    async def destroy_kernel(self, kernel_id: KernelId, reason: str) \
-            -> Optional[Mapping[MetricKey, MetricValue]]:
-        try:
-            kernel_obj = self.kernel_registry[kernel_id]
-            cid = kernel_obj['container_id']
-            kernel_obj.termination_reason = reason
-        except KeyError:
-            log.warning('destroy_kernel(k:{0}) kernel missing (already dead?)',
-                        kernel_id)
-
-            async def force_cleanup():
-                await self.clean_kernel(kernel_id)
-                await self.produce_event('kernel_terminated',
-                                         str(kernel_id), reason,
-                                         None)
-
-            self.orphan_tasks.discard(asyncio.Task.current_task())
-            await asyncio.shield(force_cleanup())
+    async def destroy_kernel(
+        self,
+        kernel_id: KernelId,
+        container_id: Optional[ContainerId],
+    ) -> Optional[Mapping[MetricKey, MetricValue]]:
+        if container_id is None:
             return None
-
-        container = self.docker.containers.container(cid)
-        if kernel_obj.runner is not None:
-            await kernel_obj.runner.close()
         try:
+            container = self.docker.containers.container(container_id)
             await container.kill()
             # Collect the last-moment statistics.
-            if cid in self.stat_sync_states:
-                s = self.stat_sync_states[cid]
+            if container_id in self.stat_sync_states:
+                s = self.stat_sync_states[container_id]
                 try:
                     with timeout(5):
                         await s.terminated.wait()
@@ -1101,122 +1027,82 @@ class DockerAgent(AbstractAgent):
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
                 log.warning('destroy_kernel(k:{0}) already dead', kernel_id)
-                # kernel_obj.release_slots(self.computers)
                 await self.rescan_resource_usage()
-                await kernel_obj.close()
-                self.kernel_registry.pop(kernel_id, None)
             elif e.status == 404:
                 # missing
                 log.warning('destroy_kernel(k:{0}) kernel missing, '
                             'forgetting this kernel', kernel_id)
-                # kernel_obj.release_slots(self.computers)
                 await self.rescan_resource_usage()
-                await kernel_obj.close()
-                self.kernel_registry.pop(kernel_id, None)
             else:
                 log.exception('destroy_kernel(k:{0}) kill error', kernel_id)
                 self.error_monitor.capture_exception()
-        except asyncio.CancelledError:
-            log.exception('destroy_kernel(k:{0}) operation cancelled', kernel_id)
-            raise
-        except Exception:
-            log.exception('destroy_kernel(k:{0}) unexpected error', kernel_id)
-            self.error_monitor.capture_exception()
-        finally:
-            self.orphan_tasks.discard(asyncio.Task.current_task())
-        # The container will be deleted in the docker monitoring coroutine.
         return None
 
-    async def clean_kernel(self, kernel_id: KernelId, exit_code: int = 255):
-        try:
-            kernel_obj = self.kernel_registry[kernel_id]
-            found = True
-        except KeyError:
-            found = False
-        try:
-            if found:
-                await self.produce_event(
-                    'kernel_terminated', str(kernel_id),
-                    kernel_obj.termination_reason or 'self-terminated',
-                    exit_code)
-                container_id = kernel_obj['container_id']
-                container = self.docker.containers.container(container_id)
-                if kernel_obj.runner is not None:
-                    await kernel_obj.runner.close()
-                stat_sync_state = self.stat_sync_states.pop(container_id, None)
-                if stat_sync_state:
-                    sync_proc = stat_sync_state.sync_proc
-                    try:
-                        if sync_proc is not None:
-                            sync_proc.terminate()
-                            try:
-                                with timeout(2.0):
-                                    await sync_proc.wait()
-                            except asyncio.TimeoutError:
-                                sync_proc.kill()
-                                await sync_proc.wait()
-                    except ProcessLookupError:
-                        pass
-
-                for domain_socket_proxy in kernel_obj.get('domain_socket_proxies', []):
-                    domain_socket_proxy.proxy_server.close()
-                    await domain_socket_proxy.proxy_server.wait_closed()
-                    try:
-                        domain_socket_proxy.host_proxy_path.unlink()
-                    except IOError:
-                        pass
-
-                # When the agent restarts with a different port range, existing
-                # containers' host ports may not belong to the new port range.
-                if not self.config['debug']['skip-container-deletion']:
-                    try:
-                        with timeout(20):
-                            await container.delete()
-                    except DockerError as e:
-                        if e.status == 409 and 'already in progress' in e.message:
-                            pass
-                        elif e.status == 404:
-                            pass
-                        else:
-                            log.exception(
-                                'unexpected docker error while deleting container (k:{}, c:{})',
-                                kernel_id, container_id)
-                    except asyncio.TimeoutError:
-                        log.warning('container deletion timeout (k:{}, c:{})',
-                                    kernel_id, container_id)
-                    finally:
-                        port_range = self.config['container']['port-range']
-                        restored_ports = [*filter(
-                            lambda p: port_range[0] <= p <= port_range[1],
-                            kernel_obj['host_ports'])]
-                        self.port_pool.update(restored_ports)
-
-            if kernel_id in self.restarting_kernels:
-                self.restarting_kernels[kernel_id].destroy_event.set()
-
-            if found:
-                scratch_root = self.config['container']['scratch-root']
-                scratch_dir = scratch_root / str(kernel_id)
-                tmp_dir = scratch_root / f'{kernel_id}_tmp'
+    async def clean_kernel(
+        self,
+        kernel_id: KernelId,
+        container_id: Optional[ContainerId],
+        restarting: bool,
+    ) -> None:
+        if container_id is not None:
+            stat_sync_state = self.stat_sync_states.pop(container_id, None)
+            if stat_sync_state:
+                sync_proc = stat_sync_state.sync_proc
                 try:
-                    if (sys.platform.startswith('linux') and
-                        self.config['container']['scratch-type'] == 'memory'):
-                        await destroy_scratch_filesystem(scratch_dir)
-                        await destroy_scratch_filesystem(tmp_dir)
-                        shutil.rmtree(tmp_dir)
-                    shutil.rmtree(scratch_dir)
-                except FileNotFoundError:
+                    if sync_proc is not None:
+                        sync_proc.terminate()
+                        try:
+                            with timeout(2.0):
+                                await sync_proc.wait()
+                        except asyncio.TimeoutError:
+                            sync_proc.kill()
+                            await sync_proc.wait()
+                except ProcessLookupError:
                     pass
-                # kernel_obj.release_slots(self.computers)
-                await self.rescan_resource_usage()
-                await kernel_obj.close()
-                self.kernel_registry.pop(kernel_id, None)
-        except Exception:
-            log.exception('unexpected error while cleaning up kernel (k:{})', kernel_id)
-        finally:
-            self.orphan_tasks.discard(asyncio.Task.current_task())
-            if kernel_id in self.blocking_cleans:
-                self.blocking_cleans[kernel_id].set()
+
+        kernel_obj = self.kernel_registry.get(kernel_id)
+        if kernel_obj is not None:
+            for domain_socket_proxy in kernel_obj.get('domain_socket_proxies', []):
+                domain_socket_proxy.proxy_server.close()
+                await domain_socket_proxy.proxy_server.wait_closed()
+                try:
+                    domain_socket_proxy.host_proxy_path.unlink()
+                except IOError:
+                    pass
+
+        # When the agent restarts with a different port range, existing
+        # containers' host ports may not belong to the new port range.
+        if not self.config['debug']['skip-container-deletion'] and container_id is not None:
+            container = self.docker.containers.container(container_id)
+            try:
+                with timeout(20):
+                    await container.delete()
+            except DockerError as e:
+                if e.status == 409 and 'already in progress' in e.message:
+                    pass
+                elif e.status == 404:
+                    pass
+                else:
+                    log.exception(
+                        'unexpected docker error while deleting container (k:{}, c:{})',
+                        kernel_id, container_id)
+            except asyncio.TimeoutError:
+                log.warning('container deletion timeout (k:{}, c:{})',
+                            kernel_id, container_id)
+
+        if not restarting:
+            scratch_root = self.config['container']['scratch-root']
+            scratch_dir = scratch_root / str(kernel_id)
+            tmp_dir = scratch_root / f'{kernel_id}_tmp'
+            try:
+                if (sys.platform.startswith('linux') and
+                    self.config['container']['scratch-type'] == 'memory'):
+                    await destroy_scratch_filesystem(scratch_dir)
+                    await destroy_scratch_filesystem(tmp_dir)
+                    shutil.rmtree(tmp_dir)
+                shutil.rmtree(scratch_dir)
+            except FileNotFoundError:
+                pass
 
     async def fetch_docker_events(self):
         while True:
@@ -1269,12 +1155,20 @@ class DockerAgent(AbstractAgent):
                 kernel_id = await get_kernel_id_from_container(container_name)
                 if kernel_id is None:
                     continue
+                reason = None
+                kernel_obj = self.kernel_registry.get(kernel_id)
+                if kernel_obj is not None:
+                    reason = kernel_obj.termination_reason
                 try:
                     exit_code = evdata['Actor']['Attributes']['exitCode']
                 except KeyError:
                     exit_code = 255
-                self.orphan_tasks.add(
-                    self.loop.create_task(self.clean_kernel(kernel_id, exit_code))
+                await self.inject_container_lifecycle_event(
+                    kernel_id,
+                    LifecycleEvent.CLEAN,
+                    reason or 'self-terminated',
+                    container_id=ContainerId(evdata['Actor']['ID']),
+                    exit_code=exit_code,
                 )
 
         await asyncio.sleep(0.5)

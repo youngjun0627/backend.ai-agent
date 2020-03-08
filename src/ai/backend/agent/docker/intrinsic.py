@@ -24,6 +24,7 @@ from ai.backend.common.types import (
     SlotName, SlotTypes,
     MetricKey,
 )
+from .agent import Container
 from .resources import (
     get_resource_spec_from_container,
 )
@@ -220,12 +221,12 @@ class CPUPlugin(AbstractComputePlugin):
         }
 
     @classmethod
-    async def restore_from_container(cls, container: Mapping[str, Any],
+    async def restore_from_container(cls, container: Container,
                                      alloc_map: AbstractAllocMap) -> None:
         assert isinstance(alloc_map, DiscretePropertyAllocMap)
         # Docker does not return the original cpuset.... :(
         # We need to read our own records.
-        resource_spec = await get_resource_spec_from_container(container)
+        resource_spec = await get_resource_spec_from_container(container.backend_obj)
         if resource_spec is None:
             return
         alloc_map.apply_allocation({
@@ -518,10 +519,10 @@ class MemoryPlugin(AbstractComputePlugin):
         }
 
     @classmethod
-    async def restore_from_container(cls, container: Mapping[str, Any],
+    async def restore_from_container(cls, container: Container,
                                      alloc_map: AbstractAllocMap) -> None:
         assert isinstance(alloc_map, DiscretePropertyAllocMap)
-        memory_limit = container['HostConfig']['Memory']
+        memory_limit = container.backend_obj['HostConfig']['Memory']
         alloc_map.apply_allocation({
             SlotName('mem'): {DeviceId('root'): memory_limit},
         })

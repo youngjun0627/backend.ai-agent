@@ -5,24 +5,29 @@ import hashlib
 import logging
 import os
 from pathlib import Path
+import pickle
 import signal
 import time
 from typing import (
-    Any, Collection, Optional, Type,
-    Mapping, MutableMapping,
-    MutableSequence,
-    Set,
-    Tuple,
+    Any, Collection, Optional, Type, Union,
+    Mapping, MutableMapping, Dict,
+    Set, FrozenSet,
+    Sequence, MutableSequence, Tuple,
+    cast,
 )
 
-import attr
 import aioredis
 import aiotools
 from async_timeout import timeout
+import attr
 import snappy
 import zmq, zmq.asyncio
 
 from ai.backend.common import msgpack, redis
+from ai.backend.common.docker import (
+    MIN_KERNELSPEC,
+    MAX_KERNELSPEC,
+)
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
 from ai.backend.common.plugin import install_plugins
@@ -34,11 +39,14 @@ from ai.backend.common.types import (
     KernelCreationConfig,
     KernelCreationResult,
     MetricKey, MetricValue,
+    Sentinel,
 )
 from . import __version__ as VERSION
 from .defs import ipc_base_path
 from .kernel import AbstractKernel
-from .utils import current_loop
+from .utils import (
+    current_loop,
+)
 from .resources import (
     AbstractComputeDevice,
     AbstractComputePlugin,
@@ -48,15 +56,28 @@ from .stats import (
     StatContext, StatModes,
     spawn_stat_synchronizer, StatSyncState
 )
+from .types import (
+    Container,
+    ContainerStatus,
+    ContainerLifecycleEvent,
+    LifecycleEvent,
+)
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.agent'))
 
+_sentinel = Sentinel()
 
-@attr.s(auto_attribs=True, slots=True)
-class VolumeInfo:
-    name: str             # volume name
-    container_path: str   # in-container path as str
-    mode: str             # 'rw', 'ro', 'rwm'
+ACTIVE_STATUS_SET = frozenset([
+    ContainerStatus.RUNNING,
+    ContainerStatus.RESTARTING,
+    ContainerStatus.PAUSED,
+])
+
+DEAD_STATUS_SET = frozenset([
+    ContainerStatus.EXITED,
+    ContainerStatus.DEAD,
+    ContainerStatus.REMOVING,
+])
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -87,9 +108,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
     zmq_ctx: zmq.asyncio.Context
 
     restarting_kernels: MutableMapping[KernelId, RestartTracker]
-    blocking_cleans: MutableMapping[KernelId, asyncio.Event]
     timer_tasks: MutableSequence[asyncio.Task]
-    orphan_tasks: Set[asyncio.Task]
+    container_lifecycle_queue: 'asyncio.Queue[Union[ContainerLifecycleEvent, Sentinel]]'
 
     stat_ctx: StatContext
     stat_sync_sockpath: Path
@@ -104,10 +124,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.computers = {}
         self.images = {}  # repoTag -> digest
         self.restarting_kernels = {}
-        self.blocking_cleans = {}
         self.stat_ctx = StatContext(self, mode=StatModes(config['container']['stats-type']))
         self.timer_tasks = []
-        self.orphan_tasks = set()
         self.port_pool = set(range(
             config['container']['port-range'][0],
             config['container']['port-range'][1] + 1,
@@ -125,6 +143,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         An implementation of AbstractAgent would define its own ``__ainit__()`` method.
         It must call this super method in an appropriate order, only once.
         '''
+        self.resource_lock = asyncio.Lock()
+        self.container_lifecycle_queue = asyncio.Queue()
         self.producer_lock = asyncio.Lock()
         self.redis_producer_pool = await redis.connect_with_retries(
             self.config['redis']['addr'].as_sockaddr(),
@@ -152,8 +172,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             alloc_map = await klass.create_alloc_map()
             self.computers[name] = ComputerContext(klass, devices, alloc_map)
 
-        await self.scan_images(None)
-        self.timer_tasks.append(aiotools.create_timer(self.scan_images, 60.0))
+        self.images = await self.scan_images()
+        self.timer_tasks.append(aiotools.create_timer(self._scan_images_wrapper, 20.0))
         await self.scan_running_kernels()
 
         self.timer_tasks.append(aiotools.create_timer(self.collect_node_stat, 2.0))
@@ -177,7 +197,10 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.timer_tasks.append(aiotools.create_timer(self.heartbeat, 3.0))
 
         # Prepare auto-cleaning of idle kernels.
-        self.timer_tasks.append(aiotools.create_timer(self.clean_old_kernels, 1.0))
+        self.timer_tasks.append(aiotools.create_timer(self.sync_container_lifecycles, 3.0))
+
+        loop = current_loop()
+        self.container_lifecycle_handler = loop.create_task(self.process_lifecycle_events())
 
         # Notify the gateway.
         await self.produce_event('instance_started', 'self-started')
@@ -192,10 +215,6 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             if kernel_obj.runner is not None:
                 await kernel_obj.runner.close()
             await kernel_obj.close()
-
-        # Await for any orphan tasks such as cleaning/destroying kernels
-        await asyncio.gather(*self.orphan_tasks, return_exceptions=True)
-
         if stop_signal == signal.SIGTERM:
             await self.clean_all_kernels(blocking=True)
 
@@ -213,6 +232,10 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             await self.stat_sync_task
         self.redis_stat_pool.close()
         await self.redis_stat_pool.wait_closed()
+
+        # Stop lifecycle event handler.
+        await self.container_lifecycle_queue.put(_sentinel)
+        await self.container_lifecycle_handler
 
         # Notify the gateway.
         await self.produce_event('instance_terminated', 'shutdown')
@@ -321,7 +344,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 except zmq.ZMQError:
                     log.exception('zmq socket error with {}', self.stat_sync_sockpath)
                 except Exception:
-                    log.exception('unexpected-error')
+                    log.exception('unhandled exception while syncing container stats')
+                    self.error_monitor.capture_exception()
         finally:
             stat_sync_sock.close()
             try:
@@ -329,36 +353,219 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             except IOError:
                 pass
 
-    async def clean_old_kernels(self, interval: float):
-        now = time.monotonic()
-        tasks = []
-        for kernel_id, kernel_obj in self.kernel_registry.items():
-            idle_timeout = kernel_obj.resource_spec.idle_timeout
-            if idle_timeout is None:
-                continue
-            if idle_timeout > 0 and now - kernel_obj.last_used > idle_timeout:
-                tasks.append(self.destroy_kernel(kernel_id, 'idle-timeout'))
-        await asyncio.gather(*tasks, return_exceptions=True)
+    async def process_lifecycle_events(self) -> None:
+        while True:
+            ev = await self.container_lifecycle_queue.get()
+            if isinstance(ev, Sentinel):
+                with open(ipc_base_path / f'last_registry.{self.agent_id}.dat', 'wb') as f:
+                    pickle.dump(self.kernel_registry, f)
+                return
+            log.info('lifecycle event: {!r}', ev)
+            result = None
+            if ev.event == LifecycleEvent.DESTROY:
+                try:
+                    kernel_obj = self.kernel_registry.get(ev.kernel_id)
+                    if kernel_obj is None:
+                        log.warning('destroy_kernel(k:{0}) kernel missing (already dead?)',
+                                    ev.kernel_id)
+                        if ev.container_id is None:
+                            await self.rescan_resource_usage()
+                            await self.produce_event(
+                                'kernel_terminated', str(ev.kernel_id),
+                                'self-terminated', None,
+                            )
+                            continue
+                        else:
+                            self.container_lifecycle_queue.put_nowait(
+                                ContainerLifecycleEvent(
+                                    ev.kernel_id,
+                                    ev.container_id,
+                                    LifecycleEvent.CLEAN,
+                                    ev.reason,
+                                )
+                            )
+                    else:
+                        kernel_obj.termination_reason = ev.reason
+                        if kernel_obj.runner is not None:
+                            await kernel_obj.runner.close()
+                    result = await self.destroy_kernel(ev.kernel_id, ev.container_id)
+                except Exception:
+                    log.exception('unhandled exception while processing DESTROY event')
+                    self.error_monitor.capture_exception()
+                finally:
+                    if ev.done_event is not None:
+                        ev.done_event.set()
+                        setattr(ev.done_event, '_result', result)
+            elif ev.event == LifecycleEvent.CLEAN:
+                try:
+                    kernel_obj = self.kernel_registry.get(ev.kernel_id)
+                    if kernel_obj is not None and kernel_obj.runner is not None:
+                        await kernel_obj.runner.close()
+                    result = await self.clean_kernel(
+                        ev.kernel_id,
+                        ev.container_id,
+                        ev.kernel_id in self.restarting_kernels,
+                    )
+                except Exception:
+                    log.exception('unhandled exception while processing CLEAN event')
+                    self.error_monitor.capture_exception()
+                finally:
+                    try:
+                        kernel_obj = self.kernel_registry.get(ev.kernel_id)
+                        if kernel_obj is not None:
+                            # Restore used ports to the port pool.
+                            port_range = self.config['container']['port-range']
+                            restored_ports = [*filter(
+                                lambda p: port_range[0] <= p <= port_range[1],
+                                kernel_obj['host_ports']
+                            )]
+                            self.port_pool.update(restored_ports)
+                            await kernel_obj.close()
+                            # Notify cleanup waiters.
+                            if kernel_obj.clean_event is not None:
+                                kernel_obj.clean_event.set()
+                            # Forget.
+                            self.kernel_registry.pop(ev.kernel_id, None)
+                    finally:
+                        if ev.done_event is not None:
+                            ev.done_event.set()
+                            setattr(ev.done_event, '_result', result)
+                        if ev.kernel_id in self.restarting_kernels:
+                            self.restarting_kernels[ev.kernel_id].destroy_event.set()
+                        else:
+                            await self.rescan_resource_usage()
+                            await self.produce_event(
+                                'kernel_terminated', str(ev.kernel_id),
+                                ev.reason, None,
+                            )
+            else:
+                log.warning('unsupported lifecycle event: {!r}', ev)
+            self.container_lifecycle_queue.task_done()
 
-    async def clean_all_kernels(self, blocking: bool = False):
-        log.info('cleaning all kernels...')
+    async def inject_container_lifecycle_event(
+        self,
+        kernel_id: KernelId,
+        event: LifecycleEvent,
+        reason: str,
+        *,
+        container_id: ContainerId = None,
+        exit_code: int = None,
+        done_event: asyncio.Event = None,
+        clean_event: asyncio.Event = None,
+    ) -> None:
+        try:
+            kernel_obj = self.kernel_registry[kernel_id]
+            if kernel_obj.termination_reason:
+                reason = kernel_obj.termination_reason
+            if kernel_obj.clean_event is not None:
+                # This should not happen!
+                log.warning('overwriting kernel_obj.clean_event (k:{})', kernel_id)
+            kernel_obj.clean_event = clean_event
+            if container_id is not None and container_id != kernel_obj['container_id']:
+                # This should not happen!
+                log.warning('container id mismatch for kernel_obj (k:{}, c:{}) with event (c:{})',
+                            kernel_id, kernel_obj['container_id'], container_id)
+            container_id = kernel_obj['container_id']
+        except KeyError:
+            pass
+        self.container_lifecycle_queue.put_nowait(
+            ContainerLifecycleEvent(
+                kernel_id,
+                container_id,
+                event,
+                reason,
+                done_event,
+                exit_code,
+            )
+        )
+
+    @abstractmethod
+    async def enumerate_containers(
+        self,
+        status_filter: FrozenSet[ContainerStatus] = ACTIVE_STATUS_SET,
+    ) -> Sequence[Tuple[KernelId, Container]]:
+        """
+        Enumerate the containers with the given status filter.
+        """
+
+    async def rescan_resource_usage(self) -> None:
+        async with self.resource_lock:
+            for computer_set in self.computers.values():
+                computer_set.alloc_map.clear()
+            for kernel_id, container in (await self.enumerate_containers()):
+                for computer_set in self.computers.values():
+                    await computer_set.klass.restore_from_container(
+                        container,
+                        computer_set.alloc_map,
+                    )
+
+    async def sync_container_lifecycles(self, interval: float) -> None:
+        """
+        Periodically synchronize the alive/known container sets,
+        for cases when we miss the container lifecycle events from the underlying implementation APIs
+        due to the agent restarts or crashes.
+        """
+        now = time.monotonic()
+        known_kernels: Dict[KernelId, ContainerId] = {}
+        alive_kernels: Dict[KernelId, ContainerId] = {}
+        terminated_kernels = {}
+
+        async with self.resource_lock:
+            for kernel_id, container in (await self.enumerate_containers(ACTIVE_STATUS_SET)):
+                alive_kernels[kernel_id] = container.id
+            for kernel_id, kernel_obj in self.kernel_registry.items():
+                known_kernels[kernel_id] = kernel_obj['container_id']
+            try:
+                # Check if: kernel_registry has the container but it's gone.
+                for kernel_id in (known_kernels.keys() - alive_kernels.keys()):
+                    terminated_kernels[kernel_id] = ContainerLifecycleEvent(
+                        kernel_id,
+                        known_kernels[kernel_id],
+                        LifecycleEvent.CLEAN,
+                        'self-terminated',
+                    )
+                # Check if: there are containers not spawned by me.
+                for kernel_id in (alive_kernels.keys() - known_kernels.keys()):
+                    terminated_kernels[kernel_id] = ContainerLifecycleEvent(
+                        kernel_id,
+                        alive_kernels[kernel_id],
+                        LifecycleEvent.DESTROY,
+                        'terminated-unkonwn-container',
+                    )
+                # Check if: the container's idle timeout is expired.
+                for kernel_id, kernel_obj in self.kernel_registry.items():
+                    idle_timeout = kernel_obj.resource_spec.idle_timeout
+                    if idle_timeout is None or kernel_id not in alive_kernels:
+                        continue
+                    if idle_timeout > 0 and now - kernel_obj.last_used > idle_timeout:
+                        terminated_kernels[kernel_id] = ContainerLifecycleEvent(
+                            kernel_id,
+                            kernel_obj['container_id'],
+                            LifecycleEvent.DESTROY,
+                            'idle-timeout',
+                        )
+            finally:
+                # Enqueue the events.
+                for kernel_id, ev in terminated_kernels.items():
+                    self.container_lifecycle_queue.put_nowait(ev)
+
+    async def clean_all_kernels(self, blocking: bool = False) -> None:
         kernel_ids = [*self.kernel_registry.keys()]
-        tasks = []
+        clean_events = {}
         if blocking:
             for kernel_id in kernel_ids:
-                self.blocking_cleans[kernel_id] = asyncio.Event()
+                clean_events[kernel_id] = asyncio.Event()
         for kernel_id in kernel_ids:
-            task = asyncio.ensure_future(
-                self.destroy_kernel(kernel_id, 'agent-termination'))
-            tasks.append(task)
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for kernel_id, result in zip(kernel_ids, results):
-            log.info('force-terminated kernel: {} (result: {})', kernel_id, result)
+            await self.inject_container_lifecycle_event(
+                kernel_id,
+                LifecycleEvent.DESTROY,
+                'agent-termination',
+                clean_event=clean_events[kernel_id] if blocking else None,
+            )
         if blocking:
-            waiters = [self.blocking_cleans[kernel_id].wait()
+            waiters = [clean_events[kernel_id].wait()
                        for kernel_id in kernel_ids]
             await asyncio.gather(*waiters)
-            self.blocking_cleans.clear()
 
     @staticmethod
     @abstractmethod
@@ -368,30 +575,73 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                                    Mapping[DeviceName, Type[AbstractComputePlugin]],
                                    Mapping[SlotName, Decimal]
                                ]:
-        '''
+        """
         Scan and define the amount of available resource slots in this node.
-        '''
+        """
 
     @abstractmethod
-    async def scan_images(self, interval: float = None) -> None:
-        '''
+    async def scan_images(self) -> Mapping[str, str]:
+        """
         Scan the available kernel images/templates and update ``self.images``.
         This is called periodically to keep the image list up-to-date and allow
         manual image addition and deletions by admins.
-        '''
+        """
 
-    @abstractmethod
+    async def _scan_images_wrapper(self, interval: float) -> None:
+        self.iamges = await self.scan_images()
+
     async def scan_running_kernels(self) -> None:
-        '''
+        """
         Scan currently running kernels and recreate the kernel objects in
         ``self.kernel_registry`` if any missing.
-        '''
-        pass
+        """
+        try:
+            with open(ipc_base_path / f'last_registry.{self.agent_id}.dat', 'rb') as f:
+                self.kernel_registry = pickle.load(f)
+                for kernel_obj in self.kernel_registry.values():
+                    kernel_obj.agent_config = self.config
+                    if kernel_obj.runner is not None:
+                        await kernel_obj.runner.__ainit__()
+        except FileNotFoundError:
+            pass
+        async with self.resource_lock:
+            for kernel_id, container in (await self.enumerate_containers(
+                ACTIVE_STATUS_SET | DEAD_STATUS_SET,
+            )):
+                if container.status in ACTIVE_STATUS_SET:
+                    kernelspec = int(container.labels.get('ai.backend.kernelspec', '1'))
+                    if not (MIN_KERNELSPEC <= kernelspec <= MAX_KERNELSPEC):
+                        continue
+                    # Consume the port pool.
+                    for p in container.ports:
+                        if p.host_port is not None:
+                            self.port_pool.discard(p.host_port)
+                    # Restore compute resources.
+                    for computer_set in self.computers.values():
+                        await computer_set.klass.restore_from_container(
+                            container,
+                            computer_set.alloc_map,
+                        )
+                elif container.status in DEAD_STATUS_SET:
+                    log.info('detected dead container while agent is down (k:{0}, c:{})',
+                             kernel_id, container.id)
+                    await self.inject_container_lifecycle_event(
+                        kernel_id,
+                        LifecycleEvent.CLEAN,
+                        'self-terminated',
+                        container_id=container.id,
+                    )
+
+        log.info('starting with resource allocations')
+        for computer_name, computer_ctx in self.computers.items():
+            log.info('{}: {!r}',
+                     computer_name,
+                     dict(computer_ctx.alloc_map.allocations))
 
     @abstractmethod
     async def create_kernel(self, kernel_id: KernelId, config: KernelCreationConfig, *,
                             restarting: bool = False) -> KernelCreationResult:
-        '''
+        """
         Create a new kernel.
 
         Things to do:
@@ -410,44 +660,47 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         * ``await self.produce_event('kernel_started', kernel_id)``
         * Execute the startup command if the sessino type is batch.
         * Return the kernel creation result.
-        '''
+        """
 
         # TODO: clarify when to ``self.produce_event('kernel_terminated', ...)``
 
     @abstractmethod
-    async def destroy_kernel(self, kernel_id: KernelId, reason: str) \
-            -> Optional[Mapping[MetricKey, MetricValue]]:
-        '''
+    async def destroy_kernel(
+        self,
+        kernel_id: KernelId,
+        container_id: Optional[ContainerId],
+    ) -> Optional[Mapping[MetricKey, MetricValue]]:
+        """
         Initiate destruction of the kernel.
 
         Things to do:
-        * If kernel_obj is not present, schedule ``self.clean_kernel(kernel_id)``
-          and ``await self.produce_event('kernel_terminated', kernel_id, 'self-terminated')``
-        * ``await kernel_obj.runner.close()``
         * Send a forced-kill signal to the kernel
         * Collect last-moment statistics
         * ``await self.stat_sync_states[cid].terminated.wait()``
         * Return the last-moment statistics if availble.
-        '''
+        """
 
     @abstractmethod
-    async def clean_kernel(self, kernel_id: KernelId):
-        '''
+    async def clean_kernel(
+        self,
+        kernel_id: KernelId,
+        container_id: Optional[ContainerId],
+        restarting: bool,
+    ) -> None:
+        """
         Clean up kernel-related book-keepers when the underlying
         implementation detects an event that the kernel has terminated.
 
         Things to do:
-        * ``await kernel_obj.runner.close()``
         * Delete the underlying kernel resource (e.g., container)
-        * ``self.restarting_kernels[kernel_id].destroy_event.set()``
         * Release host-specific resources used for the kernel (e.g., scratch spaces)
-        * ``await kernel_obj.close()``; this releases resource slots from allocation maps.
-        * Delete the kernel object from ``self.kernel_registry``
-        * ``self.blocking_cleans[kernel_id].set()``
 
         This method is intended to be called asynchronously by the implementation-specific
         event monitoring routine.
-        '''
+
+        The ``container_id`` may be ``None`` if the container has already gone away.
+        In such cases, skip container-specific cleanups.
+        """
 
     async def restart_kernel(self, kernel_id: KernelId, new_config: KernelCreationConfig):
         # TODO: check/correct resource release/allocation timings during restarts
@@ -458,26 +711,37 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 request_lock=asyncio.Lock(),
                 destroy_event=asyncio.Event(),
                 done_event=asyncio.Event())
+            self.restarting_kernels[kernel_id] = tracker
+        config_dir = (self.config['container']['scratch-root'] / str(kernel_id) / 'config').resolve()
+        with open(config_dir / 'kconfig.dat', 'rb') as fb:
+            existing_config = pickle.load(fb)
+            new_config = cast(KernelCreationConfig, {**existing_config, **new_config})
         async with tracker.request_lock:
-            if not tracker.done_event.is_set():
-                self.restarting_kernels[kernel_id] = tracker
-                await self.destroy_kernel(kernel_id, 'restarting')
-                # clean_kernel() will set tracker.destroy_event
-                try:
-                    with timeout(30):
-                        await tracker.destroy_event.wait()
-                except asyncio.TimeoutError:
-                    log.warning('timeout detected while restarting kernel {0}!',
-                                kernel_id)
-                    self.restarting_kernels.pop(kernel_id, None)
-                    asyncio.ensure_future(self.clean_kernel(kernel_id))
-                    raise
-                else:
-                    tracker.destroy_event.clear()
-                    await self.create_kernel(
-                        kernel_id, new_config,
-                        restarting=True)
-                    self.restarting_kernels.pop(kernel_id, None)
+            tracker.done_event.clear()
+            await self.inject_container_lifecycle_event(
+                kernel_id,
+                LifecycleEvent.DESTROY,
+                'restarting',
+            )
+            try:
+                with timeout(30):
+                    await tracker.destroy_event.wait()
+            except asyncio.TimeoutError:
+                log.warning('timeout detected while restarting kernel {0}!',
+                            kernel_id)
+                self.restarting_kernels.pop(kernel_id, None)
+                await self.inject_container_lifecycle_event(
+                    kernel_id,
+                    LifecycleEvent.CLEAN,
+                    'restart-timeout',
+                )
+                raise
+            else:
+                tracker.destroy_event.clear()
+                await self.create_kernel(
+                    kernel_id, new_config,
+                    restarting=True)
+                self.restarting_kernels.pop(kernel_id, None)
             tracker.done_event.set()
         kernel_obj = self.kernel_registry[kernel_id]
         return {
@@ -508,17 +772,17 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 flush_timeout=flush_timeout,
                 api_version=api_version)
         except KeyError:
-            await self.produce_event('kernel_terminated',
-                                     str(kernel_id), 'self-terminated',
-                                     None)
+            # This situation is handled in the lifecycle management subsystem.
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
                                 '(might be terminated--try it again)') from None
 
         if result['status'] in ('finished', 'exec-timeout'):
             log.debug('_execute({0}) {1}', kernel_id, result['status'])
         if result['status'] == 'exec-timeout':
-            self.orphan_tasks.add(
-                self.loop.create_task(self.destroy_kernel(kernel_id, 'exec-timeout'))
+            await self.inject_container_lifecycle_event(
+                kernel_id,
+                LifecycleEvent.DESTROY,
+                'exec-timeout',
             )
         return {
             **result,
