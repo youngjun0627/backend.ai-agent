@@ -419,7 +419,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 with open(ipc_base_path / f'last_registry.{self.agent_id}.dat', 'wb') as f:
                     pickle.dump(self.kernel_registry, f)
                 return
-            log.info('lifecycle event: {!r}', ev)
+            log.info(f'process_lifecycle_events: received {ev}')
             result = None
             if ev.event == LifecycleEvent.DESTROY:
                 try:

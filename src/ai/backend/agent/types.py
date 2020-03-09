@@ -60,3 +60,16 @@ class ContainerLifecycleEvent:
     reason: str
     done_event: Optional[asyncio.Event] = None
     exit_code: Optional[int] = None
+
+    def __str__(self):
+        if self.container_id:
+            cid = self.container_id[:13]
+        else:
+            cid = 'unknown'
+        return (
+            f"LifecycleEvent("
+            f"{self.event.name}, "
+            f"k:{self.kernel_id}, "
+            f"c:{cid}, "
+            f"reason:{self.reason!r})"
+        )
