@@ -588,7 +588,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         """
 
     async def _scan_images_wrapper(self, interval: float) -> None:
-        self.iamges = await self.scan_images()
+        self.images = await self.scan_images()
 
     async def scan_running_kernels(self) -> None:
         """
