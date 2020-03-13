@@ -647,7 +647,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         """
 
     async def _scan_images_wrapper(self, interval: float) -> None:
-        self.iamges = await self.scan_images()
+        self.images = await self.scan_images()
 
     @abstractmethod
     async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry) -> None:
