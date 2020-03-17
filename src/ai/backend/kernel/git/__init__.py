@@ -28,8 +28,8 @@ class Runner(BaseRunner):
 
     log_prefix = 'shell-kernel'
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.child_env.update(CHILD_ENV)
 
     async def init_with_loop(self):

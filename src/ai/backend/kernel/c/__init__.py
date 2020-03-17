@@ -27,8 +27,8 @@ class Runner(BaseRunner):
         'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
     }
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     async def init_with_loop(self):
         self.user_input_queue = asyncio.Queue()

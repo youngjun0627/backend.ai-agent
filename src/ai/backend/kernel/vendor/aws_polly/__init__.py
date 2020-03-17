@@ -16,8 +16,8 @@ class Runner(BaseRunner):
 
     log_prefix = 'vendor.aws_polly-kernel'
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.inproc_runner = None
         self.sentinel = object()
         self.input_queue = None

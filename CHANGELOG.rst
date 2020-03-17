@@ -8,6 +8,13 @@ Changes
 
 * NEW: All CLI commands are now accessible via ``backend.ai ag`` (#165)
 
+* IMPROVE: Add "app" kernel-runner runtime type and fix service-port parsing routines to recognize
+  "vnc-web" service ports for GUI containers (#189)
+
+  - Now the kernel-runner runs on the prebuilt Python 3.8 mounted inside containers.
+
+  - Using CentOS 6.10 as the base distribution for importing images is deprecated.
+
 * IMPROVE: Now our manager-to-agent RPC uses `Callosum <https://github.com/lablup/callosum>`_ instead of
   aiozmq, supporting Python 3.8 natively. (#157, #63)
 

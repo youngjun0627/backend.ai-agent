@@ -1,8 +1,13 @@
+"""
+This is a special kernel runner for application-only containers
+which do not provide query/batch-mode code execution.
+"""
+
 import logging
 import os
 from typing import List
 
-from ... import BaseRunner
+from .. import BaseRunner
 
 log = logging.getLogger()
 
@@ -11,8 +16,8 @@ DEFAULT_PYFLAGS: List[str] = []
 
 class Runner(BaseRunner):
 
-    log_prefix = 'matlab-kernel'
-    default_runtime_path = '/usr/bin/python'
+    log_prefix = 'app-kernel'
+    default_runtime_path = '/opt/backend.ai/bin/python'
     default_child_env = {
         'TERM': 'xterm',
         'LANG': 'C.UTF-8',
@@ -33,8 +38,8 @@ class Runner(BaseRunner):
         'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
     }
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     async def init_with_loop(self):
         pass
@@ -48,9 +53,5 @@ class Runner(BaseRunner):
         return 0
 
     async def start_service(self, service_info):
-        if 'vnc' in service_info['name']:
-            return [
-                '/opt/noVNC/utils/launch.sh',
-                '--listen', str(service_info['port']),
-                '--vnc', 'localhost:5901',
-            ], {}
+        # app kernels use service-definition templates.
+        return None, {}

@@ -35,8 +35,8 @@ class Runner(BaseRunner):
         'LD_PRELOAD': os.environ.get('LD_PRELOAD', ''),
     }
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def _code_for_user_input_server(self, code: str) -> str:
         # TODO: More elegant way of not touching user code? This method does not work

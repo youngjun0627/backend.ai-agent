@@ -8,7 +8,7 @@ from pathlib import Path
 import pickle
 import pkg_resources
 import platform
-from pprint import pformat
+import re
 import secrets
 import shutil
 import signal
@@ -37,7 +37,7 @@ from ai.backend.common.docker import (
     MAX_KERNELSPEC,
 )
 from ai.backend.common.exception import ImageNotAvailable
-from ai.backend.common.logging import BraceStyleAdapter
+from ai.backend.common.logging import BraceStyleAdapter, pretty
 from ai.backend.common.types import (
     AutoPullBehavior,
     BinarySize,
@@ -334,10 +334,6 @@ class DockerAgent(AbstractAgent):
                 raise
         return False
 
-    async def get_service_ports_from_label(self, image_ref: ImageRef) -> str:
-        image_info = await self.docker.images.inspect(image_ref.canonical)
-        return image_info['Config']['Labels']['ai.backend.service-ports']
-
     async def create_kernel(self, kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
                             restarting: bool = False) -> KernelCreationResult:
 
@@ -364,6 +360,7 @@ class DockerAgent(AbstractAgent):
 
         await self.produce_event('kernel_creating', str(kernel_id))
         image_labels = kernel_config['image']['labels']
+        log.debug('image labels:\n{}', pretty(image_labels))
         version = int(image_labels.get('ai.backend.kernelspec', '1'))
         label_envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
         envs_corecount = label_envs_corecount.split(',') if label_envs_corecount else []
@@ -533,8 +530,8 @@ class DockerAgent(AbstractAgent):
             nonlocal mounts
             mounts.append(Mount(type, src, target, MountPermission(perm), opts=opts))
 
-        async def _copy(src: Union[str, Path], target: Union[str, Path]):
-            def sync():
+        async def _copy(src: Union[str, Path], target: Union[str, Path]) -> None:
+            def sync() -> None:
                 shutil.copy(src, target)
             await self.loop.run_in_executor(None, sync)
 
@@ -545,9 +542,20 @@ class DockerAgent(AbstractAgent):
         matched_libc_style = 'glibc'
         if matched_distro.startswith('alpine'):
             matched_libc_style = 'musl'
+        krunner_pyver = '3.6'  # fallback
+        if m := re.search(r'^([a-z]+)\d+(\.\d+)*$', matched_distro):
+            matched_distro_type = m.group(1)
+            try:
+                krunner_pyver = Path(pkg_resources.resource_filename(
+                    f'ai.backend.krunner.{matched_distro_type}',
+                    f'krunner-python.{matched_distro}.txt',
+                )).read_text().strip()
+            except FileNotFoundError:
+                pass
         log.debug('selected krunner: {}', matched_distro)
         log.debug('selected libc style: {}', matched_libc_style)
         log.debug('krunner volume: {}', krunner_volume)
+        log.debug('krunner python: {}', krunner_pyver)
         arch = platform.machine()
         entrypoint_sh_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/entrypoint.sh'))
@@ -636,10 +644,11 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, scp_path.resolve(), '/usr/bin/scp')
 
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
+        pylib_path = f'/opt/backend.ai/lib/python{krunner_pyver}/site-packages/'
         _mount(MountTypes.BIND, kernel_pkg_path.resolve(),
-                                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel')
+                                pylib_path + 'ai/backend/kernel')
         _mount(MountTypes.BIND, helpers_pkg_path.resolve(),
-                                '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers')
+                                pylib_path + 'ai/backend/helpers')
 
         # Since these files are bind-mounted inside a bind-mounted directory,
         # we need to touch them first to avoid their "ghost" files are created
@@ -757,8 +766,8 @@ class DockerAgent(AbstractAgent):
         # Create SSH keypair only if ssh_keypair internal_data exists and
         # /home/work/.ssh folder is not mounted.
         if internal_data.get('ssh_keypair'):
-            for m in mounts:
-                container_path = str(m).split(':')[1]
+            for mount in mounts:
+                container_path = str(mount).split(':')[1]
                 if container_path == '/home/work/.ssh':
                     break
             else:
@@ -786,8 +795,8 @@ class DockerAgent(AbstractAgent):
         await self.loop.run_in_executor(None, _write_dotfile)
 
         # PHASE 4: Run!
-        log.info('kernel {0} starting with resource spec: \n',
-                 pformat(attr.asdict(resource_spec)))
+        log.info('kernel starting with resource spec: \n{0}',
+                 pretty(attr.asdict(resource_spec)))
 
         # TODO: Refactor out as separate "Docker execution driver plugin" (#68)
         #   - Refactor volumes/mounts lists to a plugin "mount" API
@@ -799,8 +808,6 @@ class DockerAgent(AbstractAgent):
         port_map = {}
         preopen_ports = kernel_config.get('preopen_ports', [])
 
-        for sport in parse_service_ports(await self.get_service_ports_from_label(image_ref)):
-            port_map[sport['name']] = sport
         for sport in parse_service_ports(image_labels.get('ai.backend.service-ports', '')):
             port_map[sport['name']] = sport
         port_map['sshd'] = {
@@ -925,7 +932,7 @@ class DockerAgent(AbstractAgent):
                 image_labels['ai.backend.service-ports'] + ',' + encoded_preopen_ports
         update_nested_dict(container_config, computer_docker_args)
         kernel_name = f"kernel.{image_ref.name.split('/')[-1]}.{kernel_id}"
-        log.debug('container config: {!r}', container_config)
+        log.debug('full container config: {!r}', pretty(container_config))
 
         # We are all set! Create and start the container.
         try:
@@ -1017,16 +1024,17 @@ class DockerAgent(AbstractAgent):
         self.kernel_registry[kernel_id] = kernel_obj
         log.debug('kernel repl-in address: {0}:{1}', kernel_host, repl_in_port)
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
-        for service_port in service_ports:
-            log.debug('service port: {!r}', service_port)
-
         live_services = await kernel_obj.get_service_apps()
+
+        # Update the service-ports metadata from the image labels
+        # with the extended template metadata from the agent and krunner.
         if live_services['status'] != 'failed':
             for live_service in live_services['data']:
                 for service_port in service_ports:
                     if live_service['name'] == service_port['name']:
                         service_port.update(live_service)
                         break
+        log.debug('service ports:\n{!r}', pretty(service_ports))
 
         # Finally we are done.
         await self.produce_event('kernel_started', str(kernel_id))
@@ -1173,8 +1181,8 @@ class DockerAgent(AbstractAgent):
 
             try:
                 await self.collect_logs(kernel_id, container_id, log_iter())
-            except Exception as e:
-                log.warning('could not store container logs (cid:{})', container_id, exc_info=e)
+            except Exception:
+                log.warning('could not store container logs (cid:{})', container_id)
 
         kernel_obj = self.kernel_registry.get(kernel_id)
         if kernel_obj is not None:

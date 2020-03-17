@@ -27,8 +27,8 @@ class Runner(BaseRunner):
     }
     jupyter_kspec_name = 'julia'
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.input_queue = None
         self.output_queue = None
 

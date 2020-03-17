@@ -1,108 +1,119 @@
+"""
+Parses and interpolates the service-definition templates stored as json in
+``/etc/backend.ai/servce-defs`` of Backend.AI containers.
+
+The service definition is compmosed of JSON following:
+
+.. code-block:: json
+
+    {
+        "prestart": [
+          {
+            "action": "write_tempfile",
+            "args": {
+              "body": "c.NotebookApp.allow_root = True\n"
+            },
+            "ref": "jupyter_cfg"   # <- stores the return value of action (e.g., path of tempfile),
+                                   #    and it can be referred as a variable in later actions and
+                                   #    command.
+          },
+          {
+            "action": "writelines",
+            "args": {
+              "filename": "{jupyter_cfg}",
+              "body": [
+                "c.NotebookApp.ip = \"0.0.0.0\"",
+                "c.NotebookApp.port = {ports[0]}",
+                "c.NotebookApp.token = \"\"",
+                "c.FileContentsManager.delete_to_trash = False"
+              ],
+              "mode": "w+"
+            }
+          }
+        ],
+        "command": [
+            "{runtime_path}", "-m", "jupyterlab",
+            "--no-browser",
+            "--config", "{jupyter_cfg}",
+        ]
+    }
+"""
+
+
 import json
+import logging
 from pathlib import Path
-from typing import Any, List, Union, MutableMapping
+from typing import (
+    Any, Optional, Union,
+    TypedDict,
+    Mapping, MutableMapping, Dict,
+    Sequence, List, Tuple,
+)
+
+import attr
 
 from . import service_actions
+from .logging import BraceStyleAdapter
 from .exception import DisallowedArgument, DisallowedEnvironment, InvalidServiceDefinition
 
-
-# Service Port Template
-'''
-{
-    "prestart": [
-      {
-        "action": "write_tempfile",
-        "args": {
-          "body": "c.NotebookApp.allow_root = True\n"
-        },
-        "ref": "jupyter_cfg"
-      },
-      {
-        "action": "writelines",
-        "args": {
-          "filename": "{jupyter_cfg}",
-          "body": [
-            "c.NotebookApp.ip = \"0.0.0.0\"",
-            "c.NotebookApp.port = {ports[0]}",
-            "c.NotebookApp.token = \"\"",
-            "c.FileContentsManager.delete_to_trash = False"
-          ],
-          "mode": "w+"
-        }
-      }
-    ],
-    "command": "{runtime_path}",
-    "args": "-m jupyterlab --no-browser --config {jupyter_cfg}"
-}
-'''
+log = BraceStyleAdapter(logging.getLogger())
 
 
+class Action(TypedDict):
+    action: str
+    args: Mapping[str, str]
+    ref: Optional[str]
+
+
+@attr.s(auto_attribs=True, slots=True)
 class ServiceDefinition:
-    def __init__(
-            self, prestart_actions: List[Any], noop: bool, command: List[str],
-            env: MutableMapping[str, str], url_template: str, allowed_envs: List[str],
-            allowed_arguments: List[str],
-            default_arguments: MutableMapping[str, Union[None, str, List[str]]]):
-        self.prestart_actions: List[Any] = prestart_actions
-        self.raw_command: List[str] = command
-        self.noop = noop
-        self.raw_env: MutableMapping[str, str] = env
-        self.url_template = url_template
-        self.allowed_envs = allowed_envs
-        self.allowed_arguments = allowed_arguments
-        self.default_arguments = default_arguments
+    command: List[str]
+    noop: bool = False
+    url_template: str = ''
+    prestart_actions: List[Action] = attr.Factory(list)
+    env: Mapping[str, str] = attr.Factory(dict)
+    allowed_envs: List[str] = attr.Factory(list)
+    allowed_arguments: List[str] = attr.Factory(list)
+    default_arguments: Mapping[str, Union[None, str, List[str]]] = attr.Factory(dict)
 
 
 class ServiceParser:
-    def __init__(self, variables: MutableMapping[str, str]):
-        self.variables: MutableMapping[str, str] = variables
-        self.services: MutableMapping[str, ServiceDefinition] = {}
 
-    async def parse(self, path: Path):
+    variables: MutableMapping[str, str]
+    services: MutableMapping[str, ServiceDefinition]
+
+    def __init__(self, variables: MutableMapping[str, str]) -> None:
+        self.variables = variables
+        self.services = {}
+
+    async def parse(self, path: Path) -> None:
         for service_def_file in path.glob('*.json'):
-            print(f'found file {service_def_file}')
-            with open(service_def_file.absolute(), 'r') as fr:
-                service_def = json.loads(fr.read())
-
-            for required in ['command']:
-                if required not in service_def.keys():
-                    print(f'{required} not fullfilled')
-                    raise InvalidServiceDefinition(f'{required} not fullfilled')
-
-            name = service_def_file.name
-            raw_cmd = service_def['command']
-            noop = False
-            prestart_actions: List[Any] = []
-            raw_env: MutableMapping[str, str] = {}
-            raw_url_template: str = ''
-            allowed_envs: List[str] = []
-            allowed_arguments: List[str] = []
-            default_arguments: MutableMapping[str, Union[None, str, List[str]]] = {}
-
-            if 'prestart' in service_def.keys():
-                prestart_actions = service_def['prestart']
-            if 'noop' in service_def.keys():
-                noop = service_def['noop']
-            if 'env' in service_def.keys():
-                raw_env = service_def['env']
-            if 'url_template' in service_def.keys():
-                raw_url_template = service_def['url_template']
-            if 'allowed_envs' in service_def.keys():
-                allowed_envs = service_def['allowed_envs']
-            if 'allowed_arguments' in service_def.keys():
-                allowed_arguments = service_def['allowed_arguments']
-            if 'default_arguments' in service_def.keys():
-                default_arguments = service_def['default_arguments']
-
-            self.services[name.replace('.json', '')] = \
-                ServiceDefinition(
-                    prestart_actions, noop, raw_cmd,
-                    raw_env, raw_url_template, allowed_envs,
-                    allowed_arguments, default_arguments)
+            log.debug(f'loading service-definition from {service_def_file}')
+            try:
+                with open(service_def_file.absolute(), 'rb') as fr:
+                    raw_service_def = json.load(fr)
+                    # translate naming differences
+                    if 'prestart' in raw_service_def:
+                        raw_service_def['prestart_actions'] = raw_service_def['prestart']
+                        del raw_service_def['prestart']
+            except IOError:
+                raise InvalidServiceDefinition(
+                    f'could not read the service-def file: {service_def_file.name}')
+            except json.JSONDecodeError:
+                raise InvalidServiceDefinition(
+                    f'malformed JSON in service-def file: {service_def_file.name}')
+            name = service_def_file.stem
+            try:
+                self.services[name] = ServiceDefinition(**raw_service_def)
+            except TypeError as e:
+                raise InvalidServiceDefinition(e.args[0][11:])  # lstrip "__init__() "
 
     async def start_service(
-                self, service_name: str, default_envs: List[str],
-                opts: MutableMapping[str, Any]):
+        self,
+        service_name: str,
+        frozen_envs: List[str],
+        opts: Mapping[str, Any],
+    ) -> Tuple[Optional[Sequence[str]], Optional[Mapping[str, str]]]:
         if service_name not in self.services.keys():
             return None, None
         service = self.services[service_name]
@@ -110,13 +121,18 @@ class ServiceParser:
             return [], {}
 
         for action in service.prestart_actions:
-            ret = await getattr(service_actions, action['action'])(self.variables, **action['args'])
-            if action.get('ref') is not None:
-                self.variables[action['ref']] = ret
+            try:
+                action_impl = getattr(service_actions, action['action'])
+            except AttributeError:
+                raise InvalidServiceDefinition(
+                    f"Service-def for {service_name} used invalid action: {action['action']}")
+            ret = await action_impl(self.variables, **action['args'])
+            if (ref := action.get('ref')) is not None:
+                self.variables[ref] = ret
 
         cmdargs, env = [], {}
 
-        for arg in service.raw_command:
+        for arg in service.command:
             cmdargs.append(arg.format_map(self.variables))
 
         additional_arguments = dict(service.default_arguments)
@@ -127,7 +143,7 @@ class ServiceParser:
                         f'Argument {argname} not allowed for service {service_name}')
                 additional_arguments[argname] = argvalue
 
-        for env_name, env_value in service.raw_env.items():
+        for env_name, env_value in service.env.items():
             env[env_name.format_map(self.variables)] = env_value.format_map(self.variables)
 
         if 'envs' in opts.keys():
@@ -135,8 +151,9 @@ class ServiceParser:
                 if envname not in service.allowed_envs:
                     raise DisallowedEnvironment(
                         f'Environment variable {envname} not allowed for service {service_name}')
-                elif envname in default_envs:
-                    raise DisallowedEnvironment(f'Environment variable {envname} can\'t be overwritten')
+                elif envname in frozen_envs:
+                    raise DisallowedEnvironment(
+                        f'Environment variable {envname} can\'t be overwritten')
                 env[envname] = envvalue
 
         for arg_name, arg_value in additional_arguments.items():
@@ -148,9 +165,10 @@ class ServiceParser:
 
         return cmdargs, env
 
-    async def get_apps(self, selected_service=''):
-        def _format(service_name):
-            service_info = {'name': service_name}
+    async def get_apps(self, selected_service: str = '') -> Sequence[Mapping[str, Any]]:
+
+        def _format(service_name: str) -> Mapping[str, Any]:
+            service_info: Dict[str, Any] = {'name': service_name}
             service = self.services[service_name]
             if len(service.url_template) > 0:
                 service_info['url_template'] = service.url_template

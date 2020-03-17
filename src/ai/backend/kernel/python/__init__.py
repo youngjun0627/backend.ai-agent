@@ -41,14 +41,14 @@ class Runner(BaseRunner):
     }
     jupyter_kspec_name = 'python'
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.input_queue = None
         self.output_queue = None
 
     async def init_with_loop(self):
-        self.input_queue = janus.Queue(loop=self.loop)
-        self.output_queue = janus.Queue(loop=self.loop)
+        self.input_queue = janus.Queue()
+        self.output_queue = janus.Queue()
 
         # We have interactive input functionality for query mode!
         self._user_input_queue = janus.Queue(loop=self.loop)

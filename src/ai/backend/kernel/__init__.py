@@ -5,9 +5,11 @@ from .terminal import Terminal
 __all__ = (
     'BaseRunner',
     'Terminal',
+    'lang_map',
 )
 
 lang_map = {
+    'app': 'ai.backend.kernel.app.Runner',
     'python': 'ai.backend.kernel.python.Runner',
     'c': 'ai.backend.kernel.c.Runner',
     'cpp': 'ai.backend.kernel.cpp.Runner',
@@ -24,6 +26,5 @@ lang_map = {
     'scheme': 'ai.backend.kernel.scheme.Runner',
     'git': 'ai.backend.kernel.git.Runner',
     'vendor.aws_polly': 'ai.backend.kernel.vendor.aws_polly.Runner',
-    'vendor.ngc_matlab': 'ai.backend.kernel.vendor.ngc_matlab.Runner',
     'vendor.h2o': 'ai.backend.kernel.vendor.h2o.Runner',
 }

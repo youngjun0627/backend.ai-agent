@@ -18,8 +18,8 @@ class Runner(BaseRunner):
 
     log_prefix = 'r-server'
 
-    def __init__(self, loop=None, endpoint=None, credentials=None):
-        super().__init__(loop)
+    def __init__(self, *args, endpoint=None, credentials=None, **kwargs):
+        super().__init__(*args, **kwargs)
         if endpoint is None:
             endpoint = os.environ.get('MRS_ENDPOINT', 'localhost')
         if credentials is None:

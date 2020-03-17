@@ -68,15 +68,15 @@ class Terminal:
     async def do_resize_term(self, args) -> int:
         if self.fd is None:
             return 0
-        origsz = struct.pack('HHHH', 0, 0, 0, 0)
-        origsz = fcntl.ioctl(self.fd, termios.TIOCGWINSZ, origsz)
-        _, _, origx, origy = struct.unpack('HHHH', origsz)
-        newsz = struct.pack('HHHH', args.rows, args.cols, origx, origy)
-        newsz = fcntl.ioctl(self.fd, termios.TIOCSWINSZ, newsz)
-        newr, newc, _, _ = struct.unpack('HHHH', newsz)
+        origsz_in = struct.pack('HHHH', 0, 0, 0, 0)
+        origsz_out = fcntl.ioctl(1, termios.TIOCGWINSZ, origsz_in, False)
+        orig_lines, orig_cols, _, _ = struct.unpack('HHHH', origsz_out)
+        newsz_in = struct.pack('HHHH', args.rows, args.cols, orig_lines, orig_cols)
+        newsz_out = fcntl.ioctl(self.fd, termios.TIOCSWINSZ, newsz_in, False)
+        new_lines, new_cols, _, _ = struct.unpack('HHHH', newsz_out)
         await self.sock_out.send_multipart([
             b'stdout',
-            f'OK; terminal resized to {newr} rows and {newc} cols'.encode(),
+            f'OK; terminal resized to {new_lines} lines and {new_cols} columns'.encode(),
         ])
         return 0
 

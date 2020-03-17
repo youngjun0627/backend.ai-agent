@@ -40,7 +40,8 @@ InOtherContainerPID: Final = ContainerPID(PID(-2))
 NotContainerPID: Final = ContainerPID(PID(-1))
 NotHostPID: Final = HostPID(PID(-1))
 
-_rx_service_ports = re.compile(r'^(?P<name>\w+):(?P<proto>\w+):(?P<ports>\[\d+(?:,\d+)*\]|\d+)(?:,|$)')
+_rx_service_ports = re.compile(
+    r'^(?P<name>[\w-]+):(?P<proto>\w+):(?P<ports>\[\d+(?:,\d+)*\]|\d+)(?:,|$)')
 
 
 def update_nested_dict(dest: MutableMapping, additions: Mapping) -> None:

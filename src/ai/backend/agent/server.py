@@ -441,7 +441,7 @@ async def server_main(loop, pidx, _args):
     config = _args[0]
 
     log.info('Preparing kernel runner environments...')
-    supported_distros = ['alpine3.8', 'ubuntu16.04', 'centos7.6', 'centos6.10']
+    supported_distros = ['alpine3.8', 'ubuntu16.04', 'centos7.6']
     if config['agent']['mode'] == 'docker':
         from .docker.kernel import prepare_krunner_env
         krunner_volumes = {

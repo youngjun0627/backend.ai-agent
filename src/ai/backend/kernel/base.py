@@ -1,3 +1,4 @@
+from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 import asyncio
 import concurrent.futures
@@ -11,9 +12,10 @@ import sys
 import time
 from typing import (
     ClassVar,
-    Optional, Union,
-    List,
-    MutableMapping,
+    Any, Optional, Union,
+    Sequence, List,
+    Mapping, MutableMapping,
+    Set,
 )
 
 import janus
@@ -25,8 +27,8 @@ import zmq
 from .service import ServiceParser
 from .jupyter_client import aexecute_interactive
 from .logging import BraceStyleAdapter, setup_logger
-from .compat import asyncio_run_forever, current_loop
 from .utils import wait_local_port_open
+from .compat import current_loop
 from .intrinsic import (
     init_sshd_service, prepare_sshd_service,
     prepare_ttyd_service,
@@ -57,7 +59,7 @@ async def pipe_output(stream, outsock, target, log_fd):
         log.exception('unexpected error')
 
 
-async def terminate_and_kill(proc):
+async def terminate_and_kill(proc: asyncio.subprocess.Process) -> None:
     proc.terminate()
     try:
         await asyncio.wait_for(proc.wait(), timeout=2.0)
@@ -84,11 +86,19 @@ class BaseRunner(metaclass=ABCMeta):
     child_env: MutableMapping[str, str]
     subproc: Optional[asyncio.subprocess.Process]
     service_parser: Optional[ServiceParser]
-    runtime_path: Optional[Path]
+    runtime_path: Path
 
-    def __init__(self, loop=None):
+    services_running: Set[Mapping[str, Any]]
+    service_processes: Sequence[asyncio.subprocess.Process]
+
+    _build_success: Optional[bool]
+
+    # Set by subclasses.
+    user_input_queue: Optional[asyncio.Queue[str]]
+
+    def __init__(self, runtime_path: Path) -> None:
         self.subproc = None
-        self.runtime_path = None
+        self.runtime_path = runtime_path
 
         self.child_env = {**os.environ, **self.default_child_env}
         config_dir = Path('/home/config')
@@ -103,17 +113,7 @@ class BaseRunner(metaclass=ABCMeta):
         except Exception:
             log.exception('Reading /home/config/environ.txt failed!')
 
-        # initialized after loop creation
-        self.loop = loop if loop is not None else current_loop()
-        self.zctx = zmq.asyncio.Context()
         self.started_at: float = time.monotonic()
-        self.insock = None
-        self.outsock = None
-        self.init_done = None
-        self.service_parser = None
-        self.task_queue = None
-        self.log_queue = None
-
         self.services_running = set()
         self.service_processes = []
 
@@ -125,33 +125,65 @@ class BaseRunner(metaclass=ABCMeta):
         # build status tracker to skip the execute step
         self._build_success = None
 
-    async def _init_with_loop(self):
-        if self.init_done is not None:
-            self.init_done.clear()
-        try:
-            await self.init_with_loop()
-            await init_sshd_service(self.child_env)
-        except Exception:
-            log.exception('Unexpected error!')
-            log.warning('We are skipping the error but the container may not work as expected.')
-            return
+    async def _init(self, cmdargs):
+        self.cmdargs = cmdargs
+        loop = current_loop()
+        # Initialize event loop.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        loop.set_default_executor(executor)
+
+        self.zctx = zmq.asyncio.Context()
+        self.insock = self.zctx.socket(zmq.PULL)
+        self.insock.bind('tcp://*:2000')
+        self.outsock = self.zctx.socket(zmq.PUSH)
+        self.outsock.bind('tcp://*:2001')
+
+        self.log_queue = janus.Queue()
+        self.task_queue = asyncio.Queue()
+        self.init_done = asyncio.Event()
+
+        setup_logger(self.log_queue.sync_q, self.log_prefix, cmdargs.debug)
+        self._log_task = loop.create_task(self._handle_logs())
+        await asyncio.sleep(0)
 
         service_def_folder = Path('/etc/backend.ai/service-defs')
         if service_def_folder.is_dir():
             self.service_parser = ServiceParser({
-                'runtime_path': self.runtime_path
+                'runtime_path': str(self.runtime_path),
             })
-
             await self.service_parser.parse(service_def_folder)
-        log.debug('Service def parse done')
-        if self.init_done is not None:
-            self.init_done.set()
+            log.debug('Loaded new-style service definitions.')
 
-    @abstractmethod
-    async def init_with_loop(self):
-        """Initialize after the event loop is created."""
+        self._main_task = loop.create_task(self.main_loop(cmdargs))
+        self._run_task = loop.create_task(self.run_tasks())
 
-    async def _init_jupyter_kernel(self):
+    async def _shutdown(self):
+        try:
+            self.insock.close()
+            log.debug('shutting down...')
+            self._run_task.cancel()
+            self._main_task.cancel()
+            await self._run_task
+            await self._main_task
+            if self.service_processes:
+                log.debug('terminating service processes...')
+                await asyncio.gather(
+                    *(terminate_and_kill(proc) for proc in self.service_processes),
+                    return_exceptions=True,
+                )
+            log.debug('terminated.')
+        finally:
+            # allow remaining logs to be flushed.
+            await asyncio.sleep(0.1)
+            try:
+                if self.outsock:
+                    self.outsock.close()
+                await self._shutdown_jupyter_kernel()
+            finally:
+                self._log_task.cancel()
+                await self._log_task
+
+    async def _init_jupyter_kernel(self) -> None:
         """Detect ipython kernel spec for backend.ai and start it if found.
 
         Called after `init_with_loop`. `jupyter_kspec_name` should be defined to
@@ -191,7 +223,31 @@ class BaseRunner(metaclass=ABCMeta):
                       'no jupyter kernelspec found')
             self.kernel_mgr = None
 
-    async def _clean(self, clean_cmd):
+    async def _shutdown_jupyter_kernel(self):
+        if self.kernel_mgr and self.kernel_mgr.is_alive():
+            log.info('shutting down ' + self.jupyter_kspec_name + ' kernel...')
+            self.kernel_client.stop_channels()
+            self.kernel_mgr.shutdown_kernel()
+            assert not self.kernel_mgr.is_alive(), 'ipykernel failed to shutdown'
+
+    async def _init_with_loop(self) -> None:
+        if self.init_done is not None:
+            self.init_done.clear()
+        try:
+            await self.init_with_loop()
+            await init_sshd_service(self.child_env)
+        except Exception:
+            log.exception('Unexpected error!')
+            log.warning('We are skipping the error but the container may not work as expected.')
+            return
+        if self.init_done is not None:
+            self.init_done.set()
+
+    @abstractmethod
+    async def init_with_loop(self) -> None:
+        """Initialize after the event loop is created."""
+
+    async def _clean(self, clean_cmd: Optional[str]) -> None:
         ret = 0
         try:
             if clean_cmd is None or clean_cmd == '':
@@ -215,7 +271,7 @@ class BaseRunner(metaclass=ABCMeta):
         # it should not do anything by default.
         return 0
 
-    async def _build(self, build_cmd):
+    async def _build(self, build_cmd: Optional[str]) -> None:
         ret = 0
         try:
             if build_cmd is None or build_cmd == '':
@@ -243,7 +299,7 @@ class BaseRunner(metaclass=ABCMeta):
     async def build_heuristic(self) -> int:
         """Process build step."""
 
-    async def _execute(self, exec_cmd: str):
+    async def _execute(self, exec_cmd: str) -> None:
         ret = 0
         try:
             if exec_cmd is None or exec_cmd == '':
@@ -267,7 +323,7 @@ class BaseRunner(metaclass=ABCMeta):
     async def execute_heuristic(self) -> int:
         """Process execute step."""
 
-    async def _query(self, code_text):
+    async def _query(self, code_text: str) -> None:
         ret = 0
         try:
             ret = await self.query(code_text)
@@ -346,12 +402,12 @@ class BaseRunner(metaclass=ABCMeta):
                 await self.outsock.send_multipart(
                     [b'waiting-input',
                      json.dumps({'is_password': password}).encode('utf-8')])
-                user_input = await self._user_input_queue.async_q.get()
+                user_input = await self.user_input_queue.async_q.get()
                 self.kernel_client.input(user_input)
 
         # Run jupyter kernel's blocking execution method in an executor pool.
-        allow_stdin = False if self._user_input_queue is None else True
-        stdin_hook = None if self._user_input_queue is None else stdin_hook
+        allow_stdin = False if self.user_input_queue is None else True
+        stdin_hook = None if self.user_input_queue is None else stdin_hook  # type: ignore
         try:
             await aexecute_interactive(self.kernel_client, code_text, timeout=None,
                                        output_hook=output_hook,
@@ -439,17 +495,23 @@ class BaseRunner(metaclass=ABCMeta):
             elif service_info['protocol'] == 'preopen':
                 cmdargs, env = [], {}
             elif self.service_parser is not None:
-                log.debug(service_info)
-                self.service_parser.variables['ports'] = service_info['port']
+                self.service_parser.variables['ports'] = service_info['ports']
                 cmdargs, env = await self.service_parser.start_service(
-                    service_info['name'], self.child_env.keys(), service_info['options'])
-            else:
+                    service_info['name'],
+                    self.child_env.keys(),
+                    service_info['options'],
+                )
+            if cmdargs is None:
+                # fall-back to legacy service routine
                 start_info = await self.start_service(service_info)
-                if len(start_info) == 3:
+                if start_info is None:
+                    cmdargs, env = None, {}
+                elif len(start_info) == 3:
                     cmdargs, env, cwd = start_info
                 elif len(start_info) == 2:
                     cmdargs, env = start_info
             if cmdargs is None:
+                # still not found?
                 log.warning('The service {0} is not supported.',
                             service_info['name'])
                 result = {'status': 'failed',
@@ -644,72 +706,3 @@ class BaseRunner(metaclass=ABCMeta):
         user_input_server.close()
         await user_input_server.wait_closed()
         await self.shutdown()
-
-    async def _init(self, cmdargs):
-        self.cmdargs = cmdargs
-        self.loop = current_loop()
-        # Initialize event loop.
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        self.loop.set_default_executor(executor)
-
-        self.insock = self.zctx.socket(zmq.PULL, io_loop=self.loop)
-        self.insock.bind('tcp://*:2000')
-        self.outsock = self.zctx.socket(zmq.PUSH, io_loop=self.loop)
-        self.outsock.bind('tcp://*:2001')
-
-        self.log_queue = janus.Queue(loop=self.loop)
-        self.task_queue = asyncio.Queue(loop=self.loop)
-        self.init_done = asyncio.Event(loop=self.loop)
-
-        setup_logger(self.log_queue.sync_q, self.log_prefix, cmdargs.debug)
-        self._log_task = self.loop.create_task(self._handle_logs())
-        self._main_task = self.loop.create_task(self.main_loop(cmdargs))
-        self._run_task = self.loop.create_task(self.run_tasks())
-
-    async def _shutdown(self):
-        try:
-            self.insock.close()
-            log.debug('shutting down...')
-            self._run_task.cancel()
-            self._main_task.cancel()
-            await self._run_task
-            await self._main_task
-            if self.service_processes:
-                log.debug('terminating service processes...')
-                await asyncio.gather(
-                    *(terminate_and_kill(proc) for proc in self.service_processes),
-                    return_exceptions=True,
-                )
-            log.debug('terminated.')
-        finally:
-            # allow remaining logs to be flushed.
-            await asyncio.sleep(0.1)
-            try:
-                if self.outsock:
-                    self.outsock.close()
-                await self._shutdown_jupyter_kernel()
-            finally:
-                self._log_task.cancel()
-                await self._log_task
-
-    async def _shutdown_jupyter_kernel(self):
-        if self.kernel_mgr and self.kernel_mgr.is_alive():
-            log.info('shutting down ' + self.jupyter_kspec_name + ' kernel...')
-            self.kernel_client.stop_channels()
-            self.kernel_mgr.shutdown_kernel()
-            assert not self.kernel_mgr.is_alive(), 'ipykernel failed to shutdown'
-
-    def run(self, cmdargs):
-        if cmdargs.runtime_path is None:
-            self.runtime_path = self.default_runtime_path
-        else:
-            self.runtime_path = cmdargs.runtime_path
-        # Replace stdin with a "null" file
-        # (trying to read stdin will raise EOFError immediately afterwards.)
-        sys.stdin = open(os.devnull, 'rb')
-
-        # Terminal does not work with uvloop! :(
-        # FIXME: asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-
-        asyncio_run_forever(self._init(cmdargs), self._shutdown(),
-                            stop_signals={signal.SIGINT, signal.SIGTERM})
