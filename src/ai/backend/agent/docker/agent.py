@@ -478,6 +478,11 @@ class DockerAgent(AbstractAgent):
             nonlocal mounts
             mounts.append(Mount(type, src, target, MountPermission(perm), opts=opts))
 
+        async def _copy(src: Union[str, Path], target: Union[str, Path]):
+            def sync():
+                shutil.copy(src, target)
+            await self.loop.run_in_executor(None, sync)
+
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         matched_distro, krunner_volume = match_krunner_volume(
@@ -580,21 +585,16 @@ class DockerAgent(AbstractAgent):
         # we need to touch them first to avoid their "ghost" files are created
         # as root in the host-side filesystem, which prevents deletion of scratch
         # directories when the agent is running as non-root.
-        (work_dir / '.jupyter' / 'custom').mkdir(parents=True, exist_ok=True)
-        (work_dir / '.jupyter' / 'custom' / 'custom.css').write_bytes(b'')
-        (work_dir / '.jupyter' / 'custom' / 'logo.svg').write_bytes(b'')
-        (work_dir / '.jupyter' / 'custom' / 'roboto.ttf').write_bytes(b'')
-        (work_dir / '.jupyter' / 'custom' / 'roboto-italic.ttf').write_bytes(b'')
-        _mount(MountTypes.BIND, jupyter_custom_css_path.resolve(),
-                                '/home/work/.jupyter/custom/custom.css')
-        _mount(MountTypes.BIND, logo_path.resolve(), '/home/work/.jupyter/custom/logo.svg')
-        _mount(MountTypes.BIND, font_path.resolve(), '/home/work/.jupyter/custom/roboto.ttf')
-        _mount(MountTypes.BIND, font_italic_path.resolve(),
-                                '/home/work/.jupyter/custom/roboto-italic.ttf')
-        _mount(MountTypes.BIND, bashrc_path.resolve(), '/home/work/.bashrc')
-        _mount(MountTypes.BIND, bash_profile_path.resolve(), '/home/work/.bash_profile')
-        _mount(MountTypes.BIND, vimrc_path.resolve(), '/home/work/.vimrc')
-        _mount(MountTypes.BIND, tmux_conf_path.resolve(), '/home/work/.tmux.conf')
+        jupyter_custom_dir = (work_dir / '.jupyter' / 'custom')
+        jupyter_custom_dir.mkdir(parents=True, exist_ok=True)
+        await _copy(jupyter_custom_css_path.resolve(), jupyter_custom_dir / 'custom.css')
+        await _copy(logo_path.resolve(), jupyter_custom_dir / 'logo.svg')
+        await _copy(font_path.resolve(), jupyter_custom_dir / 'roboto.ttf')
+        await _copy(font_italic_path.resolve(), jupyter_custom_dir / 'roboto-italic.ttf')
+        await _copy(bashrc_path.resolve(), work_dir / '.bashrc')
+        await _copy(bash_profile_path.resolve(), work_dir / '.bash_profile')
+        await _copy(vimrc_path.resolve(), work_dir / '.vimrc')
+        await _copy(tmux_conf_path.resolve(), work_dir / '.tmux.conf')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
         if self.config['debug']['coredump']['enabled']:
             _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
@@ -659,9 +659,10 @@ class DockerAgent(AbstractAgent):
                     os.chown(work_dir, uid, gid)
                     os.chown(work_dir / '.jupyter', uid, gid)
                     os.chown(work_dir / '.jupyter' / 'custom', uid, gid)
-                    os.chown(bashrc_path, uid, gid)
-                    os.chown(bash_profile_path, uid, gid)
-                    os.chown(vimrc_path, uid, gid)
+                    os.chown(work_dir / '.bashrc', uid, gid)
+                    os.chown(work_dir / '.bash_profile', uid, gid)
+                    os.chown(work_dir / '.vimrc', uid, gid)
+                    os.chown(work_dir / '.tmux.conf', uid, gid)
             os.makedirs(config_dir, exist_ok=True)
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'kconfig.dat', 'wb') as fb:
