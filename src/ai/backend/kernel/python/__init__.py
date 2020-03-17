@@ -136,5 +136,5 @@ class Runner(BaseRunner):
             extension_dir = Path('/home/work/.vscode-exts')
             extension_dir.mkdir(parents=True, exist_ok=True)
             return [
-                '/usr/local/bin/code-server', '-NHp', '8180', '--extensions-dir', str(extension_dir)
+                '/usr/local/bin/code-server', '--auth', 'none', '--port', '8180', '--extensions-dir', str(extension_dir)
             ], {'PWD': '/home/work'}
