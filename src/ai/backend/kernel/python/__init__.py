@@ -88,7 +88,7 @@ class Runner(BaseRunner):
                 self.runtime_path, *DEFAULT_PYFLAGS,
                 'main.py',
             ]
-            return await self.run_subproc(cmd)
+            return await self.run_subproc(cmd, batch=True)
         else:
             log.error('cannot find the main script ("main.py").')
             return 127
@@ -133,8 +133,12 @@ class Runner(BaseRunner):
                 self.runtime_path, '-m', 'sftpserver', '--port', str(service_info['port'])
             ], {}
         elif service_info['name'] == 'vscode':
+            # NOTE: will be replaced as intrinsic service port
             extension_dir = Path('/home/work/.vscode-exts')
             extension_dir.mkdir(parents=True, exist_ok=True)
             return [
-                '/usr/local/bin/code-server', '--auth', 'none', '--port', '8180', '--extensions-dir', str(extension_dir)
+                '/usr/local/bin/code-server',
+                '--auth', 'none',
+                '--port', '8180',
+                '--extensions-dir', str(extension_dir)
             ], {'PWD': '/home/work'}

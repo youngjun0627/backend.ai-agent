@@ -239,7 +239,7 @@ class BaseRunner(metaclass=ABCMeta):
             elif exec_cmd == '*':
                 ret = await self.execute_heuristic()
             else:
-                ret = await self.run_subproc(exec_cmd)
+                ret = await self.run_subproc(exec_cmd, batch=True)
         except Exception:
             log.exception('unexpected error')
             ret = -1
@@ -456,7 +456,7 @@ class BaseRunner(metaclass=ABCMeta):
                 json.dumps(result).encode('utf8'),
             ])
 
-    async def run_subproc(self, cmd: Sequence[Union[str, Path, None]]):
+    async def run_subproc(self, cmd: Sequence[Union[str, Path, None]], batch: bool = False):
         """A thin wrapper for an external command."""
         loop = current_loop()
         if Path('/home/work/.logs').is_dir():
@@ -479,8 +479,11 @@ class BaseRunner(metaclass=ABCMeta):
             pipe_opts['stdout'] = asyncio.subprocess.PIPE
             pipe_opts['stderr'] = asyncio.subprocess.PIPE
             with open(log_path, 'ab') as log_out:
+                env = {**self.child_env}
+                if batch:
+                    env['_BACKEND_BATCH_MODE'] = '1'
                 proc = await exec_func(
-                    env=self.child_env,
+                    env=env,
                     stdin=None,
                     **pipe_opts,
                 )
