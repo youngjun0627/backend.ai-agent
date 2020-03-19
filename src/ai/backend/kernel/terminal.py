@@ -69,7 +69,7 @@ class Terminal:
         if self.fd is None:
             return 0
         origsz_in = struct.pack('HHHH', 0, 0, 0, 0)
-        origsz_out = fcntl.ioctl(1, termios.TIOCGWINSZ, origsz_in, False)
+        origsz_out = fcntl.ioctl(self.fd, termios.TIOCGWINSZ, origsz_in, False)
         orig_lines, orig_cols, _, _ = struct.unpack('HHHH', origsz_out)
         newsz_in = struct.pack('HHHH', args.rows, args.cols, orig_lines, orig_cols)
         newsz_out = fcntl.ioctl(self.fd, termios.TIOCSWINSZ, newsz_in, False)
