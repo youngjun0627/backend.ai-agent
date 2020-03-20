@@ -32,6 +32,7 @@ from .compat import current_loop
 from .intrinsic import (
     init_sshd_service, prepare_sshd_service,
     prepare_ttyd_service,
+    prepare_vscode_service,
 )
 
 log = BraceStyleAdapter(logging.getLogger())
@@ -101,6 +102,7 @@ class BaseRunner(metaclass=ABCMeta):
         self.runtime_path = runtime_path
 
         self.child_env = {**os.environ, **self.default_child_env}
+        self._service_lock = asyncio.Lock()
         config_dir = Path('/home/config')
         try:
             evdata = (config_dir / 'environ.txt').read_text()
@@ -167,10 +169,11 @@ class BaseRunner(metaclass=ABCMeta):
             await self._main_task
             if self.service_processes:
                 log.debug('terminating service processes...')
-                await asyncio.gather(
-                    *(terminate_and_kill(proc) for proc in self.service_processes),
-                    return_exceptions=True,
-                )
+                async with self._service_lock:
+                    await asyncio.gather(
+                        *(terminate_and_kill(proc) for proc in self.service_processes),
+                        return_exceptions=True,
+                    )
             log.debug('terminated.')
         finally:
             # allow remaining logs to be flushed.
@@ -308,7 +311,7 @@ class BaseRunner(metaclass=ABCMeta):
             elif exec_cmd == '*':
                 ret = await self.execute_heuristic()
             else:
-                ret = await self.run_subproc(exec_cmd)
+                ret = await self.run_subproc(exec_cmd, batch=True)
         except Exception:
             log.exception('unexpected error')
             ret = -1
@@ -492,6 +495,8 @@ class BaseRunner(metaclass=ABCMeta):
                 cmdargs, env = await prepare_ttyd_service(service_info)
             elif service_info['name'] == 'sshd':
                 cmdargs, env = await prepare_sshd_service(service_info)
+            elif service_info['name'] == 'vscode':
+                cmdargs, env = await prepare_vscode_service(service_info)
             elif service_info['protocol'] == 'preopen':
                 cmdargs, env = [], {}
             elif self.service_parser is not None:
@@ -521,24 +526,29 @@ class BaseRunner(metaclass=ABCMeta):
             log.debug('env: {0}', env)
 
             if service_info['protocol'] == 'pty':
-                # TODO: handle pseudo-tty
-                raise NotImplementedError
-            else:
-                service_env = {**self.child_env, **env}
-                # avoid conflicts with Python binary used by service apps.
-                if 'LD_LIBRARY_PATH' in service_env:
-                    service_env['LD_LIBRARY_PATH'] = \
-                        service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
-                if service_info['protocol'] != 'preopen':
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmdargs,
-                        env=service_env,
-                        cwd=str(cwd),
-                    )
-                    self.service_processes.append(proc)
-                    self.services_running.add(service_info['name'])
-                    await wait_local_port_open(service_info['port'])
-            result = {'status': 'started'}
+                result = {'status': 'failed',
+                          'error': 'not implemented yet'}
+                return
+            service_env = {**self.child_env, **env}
+            # avoid conflicts with Python binary used by service apps.
+            if 'LD_LIBRARY_PATH' in service_env:
+                service_env['LD_LIBRARY_PATH'] = \
+                    service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmdargs,
+                    env=service_env,
+                )
+                self.service_processes.append(proc)
+                self.services_running.add(service_info['name'])
+                await wait_local_port_open(service_info['port'])
+                result = {'status': 'started'}
+            except PermissionError:
+                result = {'status': 'failed',
+                          'error': f"the target file is not executable: {cmdargs[0]}"}
+            except FileNotFoundError:
+                result = {'status': 'failed',
+                          'error': f"the executable file is not found: {cmdargs[0]}"}
         except Exception as e:
             log.exception('unexpected error')
             result = {'status': 'failed', 'error': repr(e)}
@@ -548,7 +558,7 @@ class BaseRunner(metaclass=ABCMeta):
                 json.dumps(result).encode('utf8'),
             ])
 
-    async def run_subproc(self, cmd: Union[str, List[str]]):
+    async def run_subproc(self, cmd: Union[str, List[str]], batch: bool = False):
         """A thin wrapper for an external command."""
         loop = current_loop()
         if Path('/home/work/.logs').is_dir():
@@ -571,8 +581,11 @@ class BaseRunner(metaclass=ABCMeta):
             pipe_opts['stdout'] = asyncio.subprocess.PIPE
             pipe_opts['stderr'] = asyncio.subprocess.PIPE
             with open(log_path, 'ab') as log_out:
+                env = {**self.child_env}
+                if batch:
+                    env['_BACKEND_BATCH_MODE'] = '1'
                 proc = await exec_func(
-                    env=self.child_env,
+                    env=env,
                     stdin=None,
                     **pipe_opts,
                 )
@@ -691,7 +704,8 @@ class BaseRunner(metaclass=ABCMeta):
                     await self._send_status()
                 elif op_type == 'start-service':  # activate a service port
                     data = json.loads(text)
-                    await self._start_service(data)
+                    async with self._service_lock:
+                        await self._start_service(data)
                 elif op_type == 'get-apps':
                     await self._get_apps(text)
             except asyncio.CancelledError:

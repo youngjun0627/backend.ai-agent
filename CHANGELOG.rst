@@ -47,6 +47,27 @@ Changes
 * IMPROVE: ResourceSlots are now more permissive. Agent still checks the validity of known slots
   but also allows zero-valued unknown slots as well. (#162)
 
+19.09.18 (2020-03-20)
+---------------------
+
+* IMPROVE: Support code-server 2.x (the web version of VSCode) as an intrinsic service port.
+  (#191, #194)
+
+* FIX: Load sitecustomize.py that hooks user inputs only in the batch-mode execution.
+  Previously it was loaded for all Python processes and prevented user prompts in pip and other tools.
+  (#193)
+
+* BACKPORT/FIX: Allow users to edit/override their dotfiles when spawning new containers. (#192)
+
+* FIX: Image list update regression due to typo in the codes (#188)
+
+19.09.17 (2020-03-08)
+---------------------
+
+* IMPROVE/FIX: Rewrite container lifecycle management using queues and persistent states (#187)
+
+* MAINTENANCE: Update backend.ai-common dependency.
+
 19.09.16 (2020-02-27)
 ---------------------
 
