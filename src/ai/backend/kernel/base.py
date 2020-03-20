@@ -29,6 +29,7 @@ from .utils import wait_local_port_open
 from .intrinsic import (
     init_sshd_service, prepare_sshd_service,
     prepare_ttyd_service,
+    prepare_vscode_service,
 )
 
 log = BraceStyleAdapter(logging.getLogger())
@@ -422,6 +423,8 @@ class BaseRunner(metaclass=ABCMeta):
                 cmdargs, env = await prepare_ttyd_service(service_info)
             elif service_info['name'] == 'sshd':
                 cmdargs, env = await prepare_sshd_service(service_info)
+            elif service_info['name'] == 'vscode':
+                cmdargs, env = await prepare_vscode_service(service_info)
             else:
                 cmdargs, env = await self.start_service(service_info)
             if cmdargs is None:
@@ -431,22 +434,29 @@ class BaseRunner(metaclass=ABCMeta):
                           'error': 'unsupported service'}
                 return
             if service_info['protocol'] == 'pty':
-                # TODO: handle pseudo-tty
-                raise NotImplementedError
-            else:
-                service_env = {**self.child_env, **env}
-                # avoid conflicts with Python binary used by service apps.
-                if 'LD_LIBRARY_PATH' in service_env:
-                    service_env['LD_LIBRARY_PATH'] = \
-                        service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
+                result = {'status': 'failed',
+                          'error': 'not implemented yet'}
+                return
+            service_env = {**self.child_env, **env}
+            # avoid conflicts with Python binary used by service apps.
+            if 'LD_LIBRARY_PATH' in service_env:
+                service_env['LD_LIBRARY_PATH'] = \
+                    service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
+            try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmdargs,
                     env=service_env,
                 )
                 self.service_processes.append(proc)
-            self.services_running.add(service_info['name'])
-            await wait_local_port_open(service_info['port'])
-            result = {'status': 'started'}
+                self.services_running.add(service_info['name'])
+                await wait_local_port_open(service_info['port'])
+                result = {'status': 'started'}
+            except PermissionError:
+                result = {'status': 'failed',
+                          'error': f"the target file is not executable: {cmdargs[0]}"}
+            except FileNotFoundError:
+                result = {'status': 'failed',
+                          'error': f"the executable file is not found: {cmdargs[0]}"}
         except Exception as e:
             log.exception('unexpected error')
             result = {'status': 'failed', 'error': repr(e)}
@@ -558,6 +568,7 @@ class BaseRunner(metaclass=ABCMeta):
         user_input_server = \
             await asyncio.start_server(self.handle_user_input,
                                        '127.0.0.1', 65000)
+        self._service_lock = asyncio.Lock()
         await self._init_with_loop()
         await self._init_jupyter_kernel()
         log.debug('start serving...')
@@ -589,7 +600,8 @@ class BaseRunner(metaclass=ABCMeta):
                     await self._send_status()
                 elif op_type == 'start-service':  # activate a service port
                     data = json.loads(text)
-                    await self._start_service(data)
+                    async with self._service_lock:
+                        await self._start_service(data)
             except asyncio.CancelledError:
                 break
             except NotImplementedError:
@@ -633,11 +645,12 @@ class BaseRunner(metaclass=ABCMeta):
             await self._run_task
             await self._main_task
             if self.service_processes:
-                log.debug('terminating service processes...')
-                await asyncio.gather(
-                    *(terminate_and_kill(proc) for proc in self.service_processes),
-                    return_exceptions=True,
-                )
+                async with self._service_lock:
+                    log.debug('terminating service processes...')
+                    await asyncio.gather(
+                        *(terminate_and_kill(proc) for proc in self.service_processes),
+                        return_exceptions=True,
+                    )
             log.debug('terminated.')
         finally:
             # allow remaining logs to be flushed.
