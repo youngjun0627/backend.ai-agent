@@ -12,10 +12,10 @@ import sys
 import time
 from typing import (
     ClassVar,
-    Any, Optional, Union,
+    Optional, Union,
+    Awaitable,
     Sequence, List,
-    Mapping, MutableMapping,
-    Set,
+    MutableMapping, Dict,
 )
 
 import janus
@@ -60,18 +60,23 @@ async def pipe_output(stream, outsock, target, log_fd):
         log.exception('unexpected error')
 
 
-async def terminate_and_kill(proc: asyncio.subprocess.Process) -> None:
-    proc.terminate()
+async def terminate_and_wait(proc: asyncio.subprocess.Process) -> None:
     try:
-        await asyncio.wait_for(proc.wait(), timeout=2.0)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+    except ProcessLookupError:
+        pass
 
 
 class BaseRunner(metaclass=ABCMeta):
 
     log_prefix: ClassVar[str] = 'generic-kernel'
+    log_queue: janus.Queue[logging.LogRecord]
+    task_queue: asyncio.Queue[Awaitable[None]]
     default_runtime_path: ClassVar[Optional[str]] = None
     default_child_env: ClassVar[MutableMapping[str, str]] = {
         'LANG': 'C.UTF-8',
@@ -89,8 +94,7 @@ class BaseRunner(metaclass=ABCMeta):
     service_parser: Optional[ServiceParser]
     runtime_path: Path
 
-    services_running: Set[Mapping[str, Any]]
-    service_processes: Sequence[asyncio.subprocess.Process]
+    services_running: Dict[str, asyncio.subprocess.Process]
 
     _build_success: Optional[bool]
 
@@ -116,8 +120,7 @@ class BaseRunner(metaclass=ABCMeta):
             log.exception('Reading /home/config/environ.txt failed!')
 
         self.started_at: float = time.monotonic()
-        self.services_running = set()
-        self.service_processes = []
+        self.services_running = {}
 
         # If the subclass implements interatcive user inputs, it should set a
         # asyncio.Queue-like object to self.user_input_queue in the
@@ -127,7 +130,7 @@ class BaseRunner(metaclass=ABCMeta):
         # build status tracker to skip the execute step
         self._build_success = None
 
-    async def _init(self, cmdargs):
+    async def _init(self, cmdargs) -> None:
         self.cmdargs = cmdargs
         loop = current_loop()
         # Initialize event loop.
@@ -159,7 +162,7 @@ class BaseRunner(metaclass=ABCMeta):
         self._main_task = loop.create_task(self.main_loop(cmdargs))
         self._run_task = loop.create_task(self.run_tasks())
 
-    async def _shutdown(self):
+    async def _shutdown(self) -> None:
         try:
             self.insock.close()
             log.debug('shutting down...')
@@ -167,13 +170,14 @@ class BaseRunner(metaclass=ABCMeta):
             self._main_task.cancel()
             await self._run_task
             await self._main_task
-            if self.service_processes:
-                log.debug('terminating service processes...')
-                async with self._service_lock:
-                    await asyncio.gather(
-                        *(terminate_and_kill(proc) for proc in self.service_processes),
-                        return_exceptions=True,
-                    )
+            log.debug('terminating service processes...')
+            running_procs = [*self.services_running.values()]
+            async with self._service_lock:
+                await asyncio.gather(
+                    *(terminate_and_wait(proc) for proc in running_procs),
+                    return_exceptions=True,
+                )
+                await asyncio.sleep(0.01)
             log.debug('terminated.')
         finally:
             # allow remaining logs to be flushed.
@@ -421,15 +425,16 @@ class BaseRunner(metaclass=ABCMeta):
             return 127
         return 0
 
-    async def _complete(self, completion_data):
+    async def _complete(self, completion_data) -> Sequence[str]:
+        result: Sequence[str] = []
         try:
-            return await self.complete(completion_data)
+            result = await self.complete(completion_data)
         except Exception:
             log.exception('unexpected error')
         finally:
-            pass  # no need to "finished" signal
+            return result
 
-    async def complete(self, completion_data):
+    async def complete(self, completion_data) -> Sequence[str]:
         """Return the list of strings to be shown in the auto-complete list.
 
         The default interface is jupyter kernel. To use different interface,
@@ -486,19 +491,26 @@ class BaseRunner(metaclass=ABCMeta):
 
     async def _start_service(self, service_info):
         try:
+            if service_info['protocol'] == 'preopen':
+                # skip subprocess spawning as we assume the user runs it manually.
+                cmdargs, env = [], {}
+                result = {'status': 'started'}
+                return
             if service_info['name'] in self.services_running:
                 result = {'status': 'running'}
                 return
-            log.info(f"starting service {service_info['name']}")
+            if service_info['protocol'] == 'pty':
+                result = {'status': 'failed',
+                          'error': 'not implemented yet'}
+                return
             cwd = Path.cwd()
+            cmdargs = None, {}
             if service_info['name'] == 'ttyd':
                 cmdargs, env = await prepare_ttyd_service(service_info)
             elif service_info['name'] == 'sshd':
                 cmdargs, env = await prepare_sshd_service(service_info)
             elif service_info['name'] == 'vscode':
                 cmdargs, env = await prepare_vscode_service(service_info)
-            elif service_info['protocol'] == 'preopen':
-                cmdargs, env = [], {}
             elif self.service_parser is not None:
                 self.service_parser.variables['ports'] = service_info['ports']
                 cmdargs, env = await self.service_parser.start_service(
@@ -524,11 +536,6 @@ class BaseRunner(metaclass=ABCMeta):
                 return
             log.debug('cmdargs: {0}', cmdargs)
             log.debug('env: {0}', env)
-
-            if service_info['protocol'] == 'pty':
-                result = {'status': 'failed',
-                          'error': 'not implemented yet'}
-                return
             service_env = {**self.child_env, **env}
             # avoid conflicts with Python binary used by service apps.
             if 'LD_LIBRARY_PATH' in service_env:
@@ -539,8 +546,13 @@ class BaseRunner(metaclass=ABCMeta):
                     *cmdargs,
                     env=service_env,
                 )
-                self.service_processes.append(proc)
-                self.services_running.add(service_info['name'])
+
+                async def wait_service_proc(service_name: str, proc: asyncio.subprocess.Process) -> None:
+                    await proc.wait()
+                    self.services_running.pop(service_name, None)
+
+                self.services_running[service_info['name']] = proc
+                asyncio.create_task(wait_service_proc(service_info['name'], proc))
                 await wait_local_port_open(service_info['port'])
                 result = {'status': 'started'}
             except PermissionError:
