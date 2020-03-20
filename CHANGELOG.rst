@@ -4,7 +4,8 @@ Changes
 19.09.18 (2020-03-20)
 ---------------------
 
-* IMPROVE: Support code-server 2.x (the web version of VSCode) as an intrinsic service port. (#191)
+* IMPROVE: Support code-server 2.x (the web version of VSCode) as an intrinsic service port.
+  (#191, #194)
 
 * FIX: Load sitecustomize.py that hooks user inputs only in the batch-mode execution.
   Previously it was loaded for all Python processes and prevented user prompts in pip and other tools.
