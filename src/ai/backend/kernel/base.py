@@ -13,7 +13,7 @@ from typing import (
     ClassVar,
     Optional, Union,
     Sequence,
-    MutableMapping,
+    MutableMapping, Dict,
 )
 
 import janus
@@ -85,6 +85,8 @@ class BaseRunner(metaclass=ABCMeta):
     subproc: Optional[asyncio.subprocess.Process]
     runtime_path: Optional[Path]
 
+    services_running: Dict[str, asyncio.subprocess.Process]
+
     def __init__(self, loop=None):
         self.subproc = None
         self.runtime_path = None
@@ -103,7 +105,6 @@ class BaseRunner(metaclass=ABCMeta):
             log.exception('Reading /home/config/environ.txt failed!')
 
         # initialized after loop creation
-        self.loop = loop if loop is not None else current_loop()
         self.zctx = zmq.asyncio.Context()
         self.started_at: float = time.monotonic()
         self.insock = None
@@ -112,8 +113,7 @@ class BaseRunner(metaclass=ABCMeta):
         self.task_queue = None
         self.log_queue = None
 
-        self.services_running = set()
-        self.service_processes = []
+        self.services_running = {}
 
         # If the subclass implements interatcive user inputs, it should set a
         # asyncio.Queue-like object to self.user_input_queue in the
@@ -418,7 +418,12 @@ class BaseRunner(metaclass=ABCMeta):
             if service_info['name'] in self.services_running:
                 result = {'status': 'running'}
                 return
-            print(f"starting service {service_info['name']}")
+            if service_info['protocol'] == 'pty':
+                result = {'status': 'failed',
+                          'error': 'not implemented yet'}
+                return
+            cwd = Path.cwd()
+            cmdargs = None, {}
             if service_info['name'] == 'ttyd':
                 cmdargs, env = await prepare_ttyd_service(service_info)
             elif service_info['name'] == 'sshd':
@@ -433,23 +438,25 @@ class BaseRunner(metaclass=ABCMeta):
                 result = {'status': 'failed',
                           'error': 'unsupported service'}
                 return
-            if service_info['protocol'] == 'pty':
-                result = {'status': 'failed',
-                          'error': 'not implemented yet'}
-                return
+            log.debug('cmdargs: {0}', cmdargs)
+            log.debug('env: {0}', env)
             service_env = {**self.child_env, **env}
             # avoid conflicts with Python binary used by service apps.
             if 'LD_LIBRARY_PATH' in service_env:
                 service_env['LD_LIBRARY_PATH'] = \
                     service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
+            loop = current_loop()
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmdargs,
                     env=service_env,
+                    cwd=cwd,
                 )
-                self.service_processes.append(proc)
-                self.services_running.add(service_info['name'])
+                self.services_running[service_info['name']] = proc
+                loop.create_task(self._wait_service_proc(service_info['name'], proc))
                 await wait_local_port_open(service_info['port'])
+                log.info("Service {} has started (pid: {}, port: {})",
+                         service_info['name'], proc.pid, service_info['port'])
                 result = {'status': 'started'}
             except PermissionError:
                 result = {'status': 'failed',
@@ -465,6 +472,15 @@ class BaseRunner(metaclass=ABCMeta):
                 b'service-result',
                 json.dumps(result).encode('utf8'),
             ])
+
+    async def _wait_service_proc(
+        self,
+        service_name: str,
+        proc: asyncio.subprocess.Process,
+    ) -> None:
+        exitcode = await proc.wait()
+        log.info(f"Service {service_name} (pid: {proc.pid}) has terminated with exit code: {exitcode}")
+        self.services_running.pop(service_name, None)
 
     async def run_subproc(self, cmd: Sequence[Union[str, Path, None]], batch: bool = False):
         """A thin wrapper for an external command."""
@@ -568,7 +584,6 @@ class BaseRunner(metaclass=ABCMeta):
         user_input_server = \
             await asyncio.start_server(self.handle_user_input,
                                        '127.0.0.1', 65000)
-        self._service_lock = asyncio.Lock()
         await self._init_with_loop()
         await self._init_jupyter_kernel()
         log.debug('start serving...')
@@ -617,24 +632,25 @@ class BaseRunner(metaclass=ABCMeta):
 
     async def _init(self, cmdargs):
         self.cmdargs = cmdargs
-        self.loop = current_loop()
         # Initialize event loop.
+        loop = current_loop()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        self.loop.set_default_executor(executor)
+        loop.set_default_executor(executor)
 
-        self.insock = self.zctx.socket(zmq.PULL, io_loop=self.loop)
+        self.insock = self.zctx.socket(zmq.PULL)
         self.insock.bind('tcp://*:2000')
-        self.outsock = self.zctx.socket(zmq.PUSH, io_loop=self.loop)
+        self.outsock = self.zctx.socket(zmq.PUSH)
         self.outsock.bind('tcp://*:2001')
 
-        self.log_queue = janus.Queue(loop=self.loop)
-        self.task_queue = asyncio.Queue(loop=self.loop)
-        self.init_done = asyncio.Event(loop=self.loop)
+        self.log_queue = janus.Queue()
+        self.task_queue = asyncio.Queue()
+        self.init_done = asyncio.Event()
 
         setup_logger(self.log_queue.sync_q, self.log_prefix, cmdargs.debug)
-        self._log_task = self.loop.create_task(self._handle_logs())
-        self._main_task = self.loop.create_task(self.main_loop(cmdargs))
-        self._run_task = self.loop.create_task(self.run_tasks())
+        self._log_task = loop.create_task(self._handle_logs())
+        self._main_task = loop.create_task(self.main_loop(cmdargs))
+        self._run_task = loop.create_task(self.run_tasks())
+        self._service_lock = asyncio.Lock()
 
     async def _shutdown(self):
         try:
@@ -644,13 +660,14 @@ class BaseRunner(metaclass=ABCMeta):
             self._main_task.cancel()
             await self._run_task
             await self._main_task
-            if self.service_processes:
-                async with self._service_lock:
-                    log.debug('terminating service processes...')
-                    await asyncio.gather(
-                        *(terminate_and_kill(proc) for proc in self.service_processes),
-                        return_exceptions=True,
-                    )
+            log.debug('terminating service processes...')
+            running_procs = [*self.services_running.values()]
+            async with self._service_lock:
+                await asyncio.gather(
+                    *(terminate_and_kill(proc) for proc in running_procs),
+                    return_exceptions=True,
+                )
+                await asyncio.sleep(0.01)
             log.debug('terminated.')
         finally:
             # allow remaining logs to be flushed.

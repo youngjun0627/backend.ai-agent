@@ -1004,7 +1004,9 @@ class DockerAgent(AbstractAgent):
             return None
         try:
             container = self.docker.containers.container(container_id)
-            await container.kill()
+            # The default timeout of the docker stop API is 10 seconds
+            # to kill if container does not self-terminate.
+            await container.stop()
             # Collect the last-moment statistics.
             if container_id in self.stat_sync_states:
                 s = self.stat_sync_states[container_id]
