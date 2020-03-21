@@ -547,6 +547,7 @@ class BaseRunner(metaclass=ABCMeta):
                 proc = await asyncio.create_subprocess_exec(
                     *cmdargs,
                     env=service_env,
+                    cwd=cwd,
                 )
                 self.services_running[service_info['name']] = proc
                 asyncio.create_task(self._wait_service_proc(service_info['name'], proc))
