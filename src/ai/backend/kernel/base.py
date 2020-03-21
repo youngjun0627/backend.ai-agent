@@ -158,6 +158,8 @@ class BaseRunner(metaclass=ABCMeta):
             })
             await self.service_parser.parse(service_def_folder)
             log.debug('Loaded new-style service definitions.')
+        else:
+            self.service_parser = None
 
         self._main_task = loop.create_task(self.main_loop(cmdargs))
         self._run_task = loop.create_task(self.run_tasks())
@@ -546,14 +548,11 @@ class BaseRunner(metaclass=ABCMeta):
                     *cmdargs,
                     env=service_env,
                 )
-
-                async def wait_service_proc(service_name: str, proc: asyncio.subprocess.Process) -> None:
-                    await proc.wait()
-                    self.services_running.pop(service_name, None)
-
                 self.services_running[service_info['name']] = proc
-                asyncio.create_task(wait_service_proc(service_info['name'], proc))
+                asyncio.create_task(self._wait_service_proc(service_info['name'], proc))
                 await wait_local_port_open(service_info['port'])
+                log.info("Service {} has started (pid: {}, port: {})",
+                         service_info['name'], proc.pid, service_info['port'])
                 result = {'status': 'started'}
             except PermissionError:
                 result = {'status': 'failed',
@@ -569,6 +568,15 @@ class BaseRunner(metaclass=ABCMeta):
                 b'service-result',
                 json.dumps(result).encode('utf8'),
             ])
+
+    async def _wait_service_proc(
+        self,
+        service_name: str,
+        proc: asyncio.subprocess.Process,
+    ) -> None:
+        exitcode = await proc.wait()
+        log.info(f"Service {service_name} (pid: {proc.pid}) has terminated with exit code: {exitcode}")
+        self.services_running.pop(service_name, None)
 
     async def run_subproc(self, cmd: Union[str, List[str]], batch: bool = False):
         """A thin wrapper for an external command."""
