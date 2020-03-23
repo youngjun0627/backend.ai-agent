@@ -1,6 +1,11 @@
 Changes
 =======
 
+19.09.19 (2020-03-24)
+---------------------
+
+* HOTFIX: Regression in a majority of kernels due to a missing ``self.loop`` initialization.
+
 19.09.18 (2020-03-21)
 ---------------------
 
