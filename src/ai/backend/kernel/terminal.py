@@ -13,7 +13,6 @@ import traceback
 
 import zmq, zmq.asyncio
 
-from .compat import current_loop
 from .logging import BraceStyleAdapter
 from .utils import safe_close_task
 
@@ -28,7 +27,6 @@ class Terminal:
     def __init__(self, shell_cmd, ev_term, sock_out, *,
                  auto_restart=True, loop=None):
         self._sorna_media = []
-        self.loop = loop if loop else current_loop()
         self.zctx = sock_out.context
 
         self.ev_term = ev_term
@@ -46,7 +44,7 @@ class Terminal:
         self.sock_term_out = None
         self.term_in_task  = None
         self.term_out_task = None
-        self.start_lock = asyncio.Lock(loop=self.loop)
+        self.start_lock = asyncio.Lock()
         self.accept_term_input = False
 
         self.cmdparser = argparse.ArgumentParser()
@@ -121,22 +119,23 @@ class Terminal:
                 self.sock_term_out = self.zctx.socket(zmq.PUB)
                 self.sock_term_out.bind('tcp://*:2003')
 
+            loop = asyncio.get_running_loop()
             term_reader = asyncio.StreamReader()
             term_read_protocol = asyncio.StreamReaderProtocol(term_reader)
-            await self.loop.connect_read_pipe(
+            await loop.connect_read_pipe(
                 lambda: term_read_protocol, os.fdopen(self.fd, 'rb'))
 
             _reader_factory = lambda: asyncio.StreamReaderProtocol(
                 asyncio.StreamReader())
             term_writer_transport, term_writer_protocol = \
-                await self.loop.connect_write_pipe(_reader_factory,
+                await loop.connect_write_pipe(_reader_factory,
                                                    os.fdopen(self.fd, 'wb'))
             term_writer = asyncio.StreamWriter(term_writer_transport,
                                                term_writer_protocol,
-                                               None, self.loop)
+                                               None)
 
-            self.term_in_task = self.loop.create_task(self.term_in(term_writer))
-            self.term_out_task = self.loop.create_task(self.term_out(term_reader))  # noqa
+            self.term_in_task = asyncio.create_task(self.term_in(term_writer))
+            self.term_out_task = asyncio.create_task(self.term_out(term_reader))
             self.accept_term_input = True
             await asyncio.sleep(0)
 
@@ -186,7 +185,7 @@ class Terminal:
                 await self.sock_term_out.send_multipart([b'Terminated.\r\n'])
                 return
             if not self.ev_term.is_set() and self.accept_term_input:
-                self.loop.create_task(self.restart())
+                asyncio.create_task(self.restart())
         except asyncio.CancelledError:
             pass
         except Exception:

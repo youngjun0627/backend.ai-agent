@@ -32,8 +32,8 @@ class Runner(BaseRunner):
             self.child_env.get('AWS_DEFAULT_REGION', 'ap-northeast-2')
 
     async def init_with_loop(self):
-        self.input_queue = janus.Queue(loop=self.loop)
-        self.output_queue = janus.Queue(loop=self.loop)
+        self.input_queue = janus.Queue()
+        self.output_queue = janus.Queue()
 
     async def build_heuristic(self) -> int:
         raise NotImplementedError

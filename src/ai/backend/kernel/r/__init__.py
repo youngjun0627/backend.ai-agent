@@ -31,11 +31,11 @@ class Runner(BaseRunner):
         self.output_queue = None
 
     async def init_with_loop(self):
-        self.input_queue = janus.Queue(loop=self.loop)
-        self.output_queue = janus.Queue(loop=self.loop)
+        self.input_queue = janus.Queue()
+        self.output_queue = janus.Queue()
 
         # We have interactive input functionality!
-        self._user_input_queue = janus.Queue(loop=self.loop)
+        self._user_input_queue = janus.Queue()
         self.user_input_queue = self._user_input_queue.async_q
 
     async def build_heuristic(self):

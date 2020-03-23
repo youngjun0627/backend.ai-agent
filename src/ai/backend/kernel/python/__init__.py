@@ -51,7 +51,7 @@ class Runner(BaseRunner):
         self.output_queue = janus.Queue()
 
         # We have interactive input functionality for query mode!
-        self._user_input_queue = janus.Queue(loop=self.loop)
+        self._user_input_queue = janus.Queue()
         self.user_input_queue = self._user_input_queue.async_q
 
         # Get USER_SITE for runtime python.
