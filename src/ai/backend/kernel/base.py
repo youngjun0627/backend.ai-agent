@@ -636,6 +636,7 @@ class BaseRunner(metaclass=ABCMeta):
         loop = current_loop()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         loop.set_default_executor(executor)
+        self.loop = loop
 
         self.insock = self.zctx.socket(zmq.PULL)
         self.insock.bind('tcp://*:2000')
