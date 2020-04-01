@@ -90,12 +90,11 @@ def parse_service_ports(s: str) -> Sequence[ServicePort]:
             for p in ports:
                 if p in used_ports:
                     raise ValueError(f'The port {p} is already used by another service port.')
-                if p <= 1024:
-                    raise ValueError(f'The service port number {p} must be larger than 1024.')
                 if p >= 65535:
                     raise ValueError(f'The service port number {p} must be smaller than 65535.')
-                if p in (2000, 2001, 2002, 2003):
-                    raise ValueError('The service ports 2000 to 2003 are reserved for internal use.')
+                if p in (2000, 2001, 2002, 2003, 2200, 7681):
+                    raise ValueError('The service ports 2000 to 2003, 2200 and 7681 '
+                                     'are reserved for internal use.')
                 used_ports.add(p)
             items.append({
                 'name': name,

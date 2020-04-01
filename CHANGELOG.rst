@@ -47,6 +47,17 @@ Changes
 * IMPROVE: ResourceSlots are now more permissive. Agent still checks the validity of known slots
   but also allows zero-valued unknown slots as well. (#162)
 
+19.09.20 (2020-04-xx)
+---------------------
+
+* FIX: Update the restricted/reserved list of service port numbers, allowing privileged TCP ports
+  to be used by the kernel image authors. (#195)
+
+19.09.19 (2020-03-24)
+---------------------
+
+* HOTFIX: Regression in a majority of kernels due to a missing ``self.loop`` initialization.
+
 19.09.18 (2020-03-21)
 ---------------------
 
