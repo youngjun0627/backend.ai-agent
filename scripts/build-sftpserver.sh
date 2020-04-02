@@ -2,7 +2,7 @@
 set -e
 
 arch=$(uname -m)
-distros=("ubuntu16.04" "centos7.6" "alpine3.8")
+distros=("ubuntu16.04" "ubuntu18.04" "centos7.6" "alpine3.8")
 
 static_libs_dockerfile_part=$(cat <<'EOF'
 ENV ZLIB_VER=1.2.11 \
@@ -29,8 +29,19 @@ RUN echo "BUILD: OpenSSL" && \
 EOF
 )
 
-ubuntu_builder_dockerfile=$(cat <<'EOF'
+ubuntu1604_builder_dockerfile=$(cat <<'EOF'
 FROM ubuntu:16.04
+RUN apt-get update
+RUN apt-get install -y make gcc
+RUN apt-get install -y autoconf
+RUN apt-get install -y wget
+# below required for sys/mman.h
+RUN apt-get install -y libc6-dev
+EOF
+)
+
+ubuntu1804_builder_dockerfile=$(cat <<'EOF'
+FROM ubuntu:18.04
 RUN apt-get update
 RUN apt-get install -y make gcc
 RUN apt-get install -y autoconf
@@ -81,7 +92,8 @@ temp_dir=$(mktemp -d -t sftpserver-build.XXXXX)
 echo "Using temp directory: $temp_dir"
 echo "$build_script" > "$temp_dir/build.sh"
 chmod +x $temp_dir/*.sh
-echo -e "$ubuntu_builder_dockerfile\n$static_libs_dockerfile_part" > "$SCRIPT_DIR/sftpserver-builder.ubuntu16.04.dockerfile"
+echo -e "$ubuntu1604_builder_dockerfile\n$static_libs_dockerfile_part" > "$SCRIPT_DIR/sftpserver-builder.ubuntu16.04.dockerfile"
+echo -e "$ubuntu1804_builder_dockerfile\n$static_libs_dockerfile_part" > "$SCRIPT_DIR/sftpserver-builder.ubuntu18.04.dockerfile"
 echo -e "$centos_builder_dockerfile\n$static_libs_dockerfile_part" > "$SCRIPT_DIR/sftpserver-builder.centos7.6.dockerfile"
 echo -e "$alpine_builder_dockerfile\n$static_libs_dockerfile_part" > "$SCRIPT_DIR/sftpserver-builder.alpine3.8.dockerfile"
 
