@@ -58,7 +58,7 @@ class Runner(BaseRunner):
         cmd = [self.runtime_path, *DEFAULT_PYFLAGS,
                '-c', 'import site; print(site.USER_SITE)']
         proc = await asyncio.create_subprocess_exec(
-            *cmd, env=self.child_env,
+            *map(str, cmd), env=self.child_env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, _ = await proc.communicate()
         user_site = stdout.decode('utf8').strip()
