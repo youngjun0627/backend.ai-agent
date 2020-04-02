@@ -545,7 +545,7 @@ class BaseRunner(metaclass=ABCMeta):
                     service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmdargs,
+                    *map(str, cmdargs),
                     env=service_env,
                     cwd=cwd,
                 )
