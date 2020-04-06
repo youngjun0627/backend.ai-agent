@@ -1,52 +1,6 @@
 Changes
 =======
 
-19.12.0b1 (2020-02-xx)
-----------------------
-
-* NEW: Add support for pre-open service ports for user-written apps (#167)
-
-* NEW: All CLI commands are now accessible via ``backend.ai ag`` (#165)
-
-* IMPROVE: Add "app" kernel-runner runtime type and fix service-port parsing routines to recognize
-  "vnc-web" service ports for GUI containers (#189)
-
-  - Now the kernel-runner runs on the prebuilt Python 3.8 mounted inside containers.
-
-  - Using CentOS 6.10 as the base distribution for importing images is deprecated.
-
-* IMPROVE: Now our manager-to-agent RPC uses `Callosum <https://github.com/lablup/callosum>`_ instead of
-  aiozmq, supporting Python 3.8 natively. (#157, #63)
-
-* FIX: Detection for manager now works for HA setup seamlessly. (It now determines if at least one
-  manager is running.) (lablup/backend.ai#125)
-
-19.12.0a3 (2019-12-31)
-----------------------
-
-* FIX: Reconcile a bugfix related to /home/work permissions from the 19.09 branch.
-
-19.12.0a2 (2019-12-31)
-----------------------
-
-* NEW-PREVIEW: Now we support ROCM (Radeon Open Compute) accelerators via ``backend.ai-accelerator-rocm``
-  plugin.
-
-* FIX: Update manager detection routine for HA setup (lablup/backend.ai-manager#125)
-
-* FIX: Wrong ownership of .ssh and keypair files when the SSH keypair is set via the ``internal_data``
-  field of the kernel creation config.
-
-19.12.0a1 (2019-12-26)
-----------------------
-
-* MAINTENANCE: Now it runs on Python 3.8 or higher.
-
-* NEW: support for user-defined bootstrap script (e.g., this can be used to clone a git repo) (#161)
-
-* IMPROVE: ResourceSlots are now more permissive. Agent still checks the validity of known slots
-  but also allows zero-valued unknown slots as well. (#162)
-
 19.09.20 (2020-04-xx)
 ---------------------
 
