@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from decimal import Decimal
+from functools import partial
 import json
 import logging
 import os
@@ -54,8 +55,10 @@ from ai.backend.common.types import (
     ResourceSlot,
     SessionTypes,
     ServicePortProtocols,
+    Sentinel,
     current_resource_slots,
 )
+from ai.backend.common.utils import AsyncFileWriter, current_loop
 from .kernel import DockerKernel
 from .resources import detect_resources
 from ..exception import UnsupportedResource, InsufficientResource
@@ -94,6 +97,7 @@ from ..utils import (
 )
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
+eof_sentinel = Sentinel()
 
 
 def container_from_docker_container(src: DockerContainer) -> Container:
@@ -370,12 +374,15 @@ class DockerAgent(AbstractAgent):
         tmp_dir = (self.config['container']['scratch-root'] / f'{kernel_id}_tmp').resolve()
         config_dir = scratch_dir / 'config'
         work_dir = scratch_dir / 'work'
+        loop = current_loop()
 
         # PHASE 1: Read existing resource spec or devise a new resource spec.
 
         if restarting:
-            with open(config_dir / 'resource.txt', 'r') as f:
-                resource_spec = KernelResourceSpec.read_from_file(f)
+            resource_spec = await loop.run_in_executor(
+                None,
+                self._kernel_resource_spec_read,
+                config_dir / 'resource.txt')
             resource_opts = None
         else:
             slots = ResourceSlot.from_json(kernel_config['resource_slots'])
@@ -530,11 +537,6 @@ class DockerAgent(AbstractAgent):
             nonlocal mounts
             mounts.append(Mount(type, src, target, MountPermission(perm), opts=opts))
 
-        async def _copy(src: Union[str, Path], target: Union[str, Path]) -> None:
-            def sync() -> None:
-                shutil.copy(src, target)
-            await self.loop.run_in_executor(None, sync)
-
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         matched_distro, krunner_volume = match_krunner_volume(
@@ -589,15 +591,6 @@ class DockerAgent(AbstractAgent):
             'ai.backend.agent', '../kernel'))
         helpers_pkg_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../helpers'))
-        jupyter_custom_css_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/jupyter-custom.css'))
-        logo_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/logo.svg'))
-        font_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/roboto.ttf'))
-        font_italic_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/roboto-italic.ttf'))
-
         dropbear_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent',
             f'../runner/dropbear.{matched_libc_style}.{arch}.bin'))
@@ -609,16 +602,6 @@ class DockerAgent(AbstractAgent):
             f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
         tmux_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', f'../runner/tmux.{matched_libc_style}.{arch}.bin'))
-
-        bashrc_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/.bashrc'))
-        bash_profile_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/.bash_profile'))
-        vimrc_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/.vimrc'))
-        tmux_conf_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/.tmux.conf'))
-
         dotfile_extractor_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/extract_dotfiles.py'
         ))
@@ -628,6 +611,7 @@ class DockerAgent(AbstractAgent):
                 'ai.backend.agent', '../runner/terminfo.alpine3.8'
             ))
             _mount(MountTypes.BIND, terminfo_path.resolve(), '/home/work/.terminfo')
+
         _mount(MountTypes.BIND, self.agent_sockpath, '/opt/kernel/agent.sock', perm='rw')
         _mount(MountTypes.BIND, dotfile_extractor_path.resolve(), '/opt/kernel/extract_dotfiles.py')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
@@ -635,7 +619,6 @@ class DockerAgent(AbstractAgent):
         if self.config['container']['sandbox-type'] == 'jail':
             _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
-
         _mount(MountTypes.BIND, dropbear_path.resolve(), '/opt/kernel/dropbear')
         _mount(MountTypes.BIND, dropbearconv_path.resolve(), '/opt/kernel/dropbearconvert')
         _mount(MountTypes.BIND, dropbearkey_path.resolve(), '/opt/kernel/dropbearkey')
@@ -650,20 +633,6 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, helpers_pkg_path.resolve(),
                                 pylib_path + 'ai/backend/helpers')
 
-        # Since these files are bind-mounted inside a bind-mounted directory,
-        # we need to touch them first to avoid their "ghost" files are created
-        # as root in the host-side filesystem, which prevents deletion of scratch
-        # directories when the agent is running as non-root.
-        jupyter_custom_dir = (work_dir / '.jupyter' / 'custom')
-        jupyter_custom_dir.mkdir(parents=True, exist_ok=True)
-        await _copy(jupyter_custom_css_path.resolve(), jupyter_custom_dir / 'custom.css')
-        await _copy(logo_path.resolve(), jupyter_custom_dir / 'logo.svg')
-        await _copy(font_path.resolve(), jupyter_custom_dir / 'roboto.ttf')
-        await _copy(font_italic_path.resolve(), jupyter_custom_dir / 'roboto-italic.ttf')
-        await _copy(bashrc_path.resolve(), work_dir / '.bashrc')
-        await _copy(bash_profile_path.resolve(), work_dir / '.bash_profile')
-        await _copy(vimrc_path.resolve(), work_dir / '.vimrc')
-        await _copy(tmux_conf_path.resolve(), work_dir / '.tmux.conf')
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
         if self.config['debug']['coredump']['enabled']:
             _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
@@ -672,12 +641,14 @@ class DockerAgent(AbstractAgent):
 
         domain_socket_proxies = []
         for host_sock_path in internal_data.get('domain_socket_proxies', []):
-            (ipc_base_path / 'proxy').mkdir(parents=True, exist_ok=True)
+            await loop.run_in_executor(
+                None,
+                partial((ipc_base_path / 'proxy').mkdir, parents=True, exist_ok=True))
             host_proxy_path = ipc_base_path / 'proxy' / f'{secrets.token_hex(12)}.sock'
             proxy_server = await asyncio.start_unix_server(
                 aiotools.apartial(proxy_connection, host_sock_path),
                 str(host_proxy_path))
-            host_proxy_path.chmod(0o666)
+            await loop.run_in_executor(None, host_proxy_path.chmod, 0o666)
             domain_socket_proxies.append(DomainSocketProxy(
                 Path(host_sock_path),
                 host_proxy_path,
@@ -713,24 +684,64 @@ class DockerAgent(AbstractAgent):
         if restarting:
             pass
         else:
-            os.makedirs(scratch_dir, exist_ok=True)
-            if (sys.platform.startswith('linux') and
-                self.config['container']['scratch-type'] == 'memory'):
-                os.makedirs(tmp_dir, exist_ok=True)
+            # Create the scratch, config, and work directories.
+            if (
+                sys.platform.startswith('linux')
+                and self.config['container']['scratch-type'] == 'memory'
+            ):
+                await loop.run_in_executor(None, partial(os.makedirs, tmp_dir, exist_ok=True))
                 await create_scratch_filesystem(scratch_dir, 64)
                 await create_scratch_filesystem(tmp_dir, 64)
-            os.makedirs(work_dir, exist_ok=True)
-            os.makedirs(work_dir / '.jupyter', exist_ok=True)
-            if KernelFeatures.UID_MATCH in kernel_features:
-                uid = self.config['container']['kernel-uid']
-                gid = self.config['container']['kernel-gid']
-                if os.geteuid() == 0:  # only possible when I am root.
-                    os.chown(work_dir, uid, gid)
-                    os.chown(work_dir / '.jupyter', uid, gid)
-                    os.chown(work_dir / '.jupyter' / 'custom', uid, gid)
-                    os.chown(bashrc_path, uid, gid)
-                    os.chown(bash_profile_path, uid, gid)
-                    os.chown(vimrc_path, uid, gid)
+            else:
+                await loop.run_in_executor(None, partial(os.makedirs, scratch_dir, exist_ok=True))
+            await loop.run_in_executor(None, partial(os.makedirs, config_dir, exist_ok=True))
+            await loop.run_in_executor(None, partial(os.makedirs, work_dir, exist_ok=True))
+
+            # Since these files are bind-mounted inside a bind-mounted directory,
+            # we need to touch them first to avoid their "ghost" files are created
+            # as root in the host-side filesystem, which prevents deletion of scratch
+            # directories when the agent is running as non-root.
+            def _clone_dotfiles():
+                jupyter_custom_css_path = Path(pkg_resources.resource_filename(
+                    'ai.backend.agent', '../runner/jupyter-custom.css'))
+                logo_path = Path(pkg_resources.resource_filename(
+                    'ai.backend.agent', '../runner/logo.svg'))
+                font_path = Path(pkg_resources.resource_filename(
+                    'ai.backend.agent', '../runner/roboto.ttf'))
+                font_italic_path = Path(pkg_resources.resource_filename(
+                    'ai.backend.agent', '../runner/roboto-italic.ttf'))
+                bashrc_path = Path(pkg_resources.resource_filename(
+                    'ai.backend.agent', '../runner/.bashrc'))
+                bash_profile_path = Path(pkg_resources.resource_filename(
+                    'ai.backend.agent', '../runner/.bash_profile'))
+                vimrc_path = Path(pkg_resources.resource_filename(
+                    'ai.backend.agent', '../runner/.vimrc'))
+                tmux_conf_path = Path(pkg_resources.resource_filename(
+                    'ai.backend.agent', '../runner/.tmux.conf'))
+                jupyter_custom_dir = (work_dir / '.jupyter' / 'custom')
+                jupyter_custom_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy(jupyter_custom_css_path.resolve(), jupyter_custom_dir / 'custom.css')
+                shutil.copy(logo_path.resolve(), jupyter_custom_dir / 'logo.svg')
+                shutil.copy(font_path.resolve(), jupyter_custom_dir / 'roboto.ttf')
+                shutil.copy(font_italic_path.resolve(), jupyter_custom_dir / 'roboto-italic.ttf')
+                shutil.copy(bashrc_path.resolve(), work_dir / '.bashrc')
+                shutil.copy(bash_profile_path.resolve(), work_dir / '.bash_profile')
+                shutil.copy(vimrc_path.resolve(), work_dir / '.vimrc')
+                shutil.copy(tmux_conf_path.resolve(), work_dir / '.tmux.conf')
+                if KernelFeatures.UID_MATCH in kernel_features:
+                    uid = self.config['container']['kernel-uid']
+                    gid = self.config['container']['kernel-gid']
+                    if os.geteuid() == 0:  # only possible when I am root.
+                        os.chown(work_dir, uid, gid)
+                        os.chown(work_dir / '.jupyter', uid, gid)
+                        os.chown(work_dir / '.jupyter' / 'custom', uid, gid)
+                        os.chown(bashrc_path, uid, gid)
+                        os.chown(bash_profile_path, uid, gid)
+                        os.chown(vimrc_path, uid, gid)
+                        os.chown(tmux_conf_path, uid, gid)
+
+            await loop.run_in_executor(None, _clone_dotfiles)
+
             # Create bootstrap.sh into workdir if needed
             # TODO: Remove `type: ignore` when mypy supports type inference for walrus operator
             # Check https://github.com/python/mypy/issues/7316
@@ -738,30 +749,42 @@ class DockerAgent(AbstractAgent):
             # Check https://gitlab.com/pycqa/flake8/issues/599
             if bootstrap := kernel_config.get('bootstrap_script'):  # noqa
                 with open(work_dir / 'bootstrap.sh', 'wb') as fw:
-                    fw.write(base64.b64decode(bootstrap))  # type: ignore
-            os.makedirs(config_dir, exist_ok=True)
+                    await loop.run_in_executor(
+                        None,
+                        fw.write,
+                        base64.b64decode(bootstrap))  # type: ignore
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'kconfig.dat', 'wb') as fb:
                 pickle.dump(kernel_config, fb)
-            with open(config_dir / 'environ.txt', 'w') as f:
+            async with AsyncFileWriter(
+                    loop=loop,
+                    target_filename=config_dir / 'environ.txt',
+                    access_mode='w') as writer:
                 for k, v in environ.items():
-                    f.write(f'{k}={v}\n')
+                    await writer.write(f'{k}={v}\n')
                 accel_envs = computer_docker_args.get('Env', [])
                 for env in accel_envs:
-                    f.write(f'{env}\n')
+                    await writer.write(f'{env}\n')
             with open(config_dir / 'resource.txt', 'w') as f:
-                resource_spec.write_to_file(f)
+                await loop.run_in_executor(None, resource_spec.write_to_file, f)
+            async with AsyncFileWriter(
+                    loop=loop,
+                    target_filename=config_dir / 'resource.txt',
+                    access_mode='a') as writer:
                 for dev_type, device_alloc in resource_spec.allocations.items():
                     computer_ctx = self.computers[dev_type]
                     kvpairs = \
                         await computer_ctx.klass.generate_resource_data(device_alloc)
                     for k, v in kvpairs.items():
-                        f.write(f'{k}={v}\n')
+                        await writer.write(f'{k}={v}\n')
             with open(config_dir / 'kernel_id.txt', 'w') as f:
-                f.write(kernel_id.hex)
+                await loop.run_in_executor(None, f.write, kernel_id.hex)
             docker_creds = internal_data.get('docker_credentials')
             if docker_creds:
-                (config_dir / 'docker-creds.json').write_text(json.dumps(docker_creds))
+                await loop.run_in_executor(
+                    None,
+                    (config_dir / 'docker-creds.json').write_text,
+                    json.dumps(docker_creds))
 
         # Create SSH keypair only if ssh_keypair internal_data exists and
         # /home/work/.ssh folder is not mounted.
@@ -774,25 +797,41 @@ class DockerAgent(AbstractAgent):
                 pubkey = internal_data['ssh_keypair']['public_key'].encode('ascii')
                 privkey = internal_data['ssh_keypair']['private_key'].encode('ascii')
                 ssh_dir = work_dir / '.ssh'
-                ssh_dir.mkdir(parents=True, exist_ok=True)
-                ssh_dir.chmod(0o700)
-                (ssh_dir / 'authorized_keys').write_bytes(pubkey)
-                (ssh_dir / 'authorized_keys').chmod(0o600)
-                (work_dir / 'id_container').write_bytes(privkey)
-                (work_dir / 'id_container').chmod(0o600)
-                if KernelFeatures.UID_MATCH in kernel_features:
+
+                def _populate_ssh_config():
+                    ssh_dir.mkdir(parents=True, exist_ok=True)
+                    ssh_dir.chmod(0o700)
+                    (ssh_dir / 'authorized_keys').write_bytes(pubkey)
+                    (ssh_dir / 'authorized_keys').chmod(0o600)
+                    (work_dir / 'id_container').write_bytes(privkey)
+                    (work_dir / 'id_container').chmod(0o600)
+                    if KernelFeatures.UID_MATCH in kernel_features:
+                        uid = self.config['container']['kernel-uid']
+                        gid = self.config['container']['kernel-gid']
+                        if os.geteuid() == 0:  # only possible when I am root.
+                            os.chown(ssh_dir, uid, gid)
+                            os.chown(ssh_dir / 'authorized_keys', uid, gid)
+                            os.chown(work_dir / 'id_container', uid, gid)
+
+                await loop.run_in_executor(None, _populate_ssh_config)
+
+        for dotfile in internal_data.get('dotfiles', []):
+            file_path: Path = work_dir / dotfile['path']
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            await loop.run_in_executor(
+                None,
+                file_path.write_text,
+                dotfile['data'])
+
+            tmp = Path(file_path)
+            while tmp != work_dir:
+                tmp.chmod(int(dotfile['perm'], 8))
+                # only possible when I am root.
+                if KernelFeatures.UID_MATCH in kernel_features and os.geteuid() == 0:
                     uid = self.config['container']['kernel-uid']
                     gid = self.config['container']['kernel-gid']
-                    if os.geteuid() == 0:  # only possible when I am root.
-                        os.chown(ssh_dir, uid, gid)
-                        os.chown(ssh_dir / 'authorized_keys', uid, gid)
-                        os.chown(work_dir / 'id_container', uid, gid)
-        dotfiles = internal_data.get('dotfiles', [])
-
-        def _write_dotfile():
-            with open(config_dir / 'dotfiles.json', 'w') as fw:
-                fw.write(json.dumps(dotfiles))
-        await self.loop.run_in_executor(None, _write_dotfile)
+                    os.chown(tmp, uid, gid)
+                tmp = tmp.parent
 
         # PHASE 4: Run!
         log.info('kernel starting with resource spec: \n{0}',
@@ -943,13 +982,17 @@ class DockerAgent(AbstractAgent):
             resource_spec.container_id = cid
             # Write resource.txt again to update the contaienr id.
             with open(config_dir / 'resource.txt', 'w') as f:
-                resource_spec.write_to_file(f)
+                await loop.run_in_executor(None, resource_spec.write_to_file, f)
+            async with AsyncFileWriter(
+                    loop=loop,
+                    target_filename=config_dir / 'resource.txt',
+                    access_mode='a') as writer:
                 for dev_name, device_alloc in resource_spec.allocations.items():
                     computer_ctx = self.computers[dev_name]
                     kvpairs = \
                         await computer_ctx.klass.generate_resource_data(device_alloc)
                     for k, v in kvpairs.items():
-                        f.write(f'{k}={v}\n')
+                        await writer.write(f'{k}={v}\n')
 
             stat_sync_state = StatSyncState(kernel_id)
             self.stat_sync_states[cid] = stat_sync_state
@@ -974,8 +1017,8 @@ class DockerAgent(AbstractAgent):
                 self.config['container']['scratch-type'] == 'memory'):
                 await destroy_scratch_filesystem(scratch_dir)
                 await destroy_scratch_filesystem(tmp_dir)
-                shutil.rmtree(tmp_dir)
-            shutil.rmtree(scratch_dir)
+                await loop.run_in_executor(None, shutil.rmtree, tmp_dir)
+            await loop.run_in_executor(None, shutil.rmtree, scratch_dir)
             self.port_pool.update(host_ports)
             async with self.resource_lock:
                 for dev_name, device_alloc in resource_spec.allocations.items():
@@ -1296,3 +1339,8 @@ class DockerAgent(AbstractAgent):
                 )
 
         await asyncio.sleep(0.5)
+
+    def _kernel_resource_spec_read(self, filename):
+        with open(filename, 'r') as f:
+            resource_spec = KernelResourceSpec.read_from_file(f)
+        return resource_spec

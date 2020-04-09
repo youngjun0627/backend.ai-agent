@@ -38,6 +38,7 @@ from ai.backend.common.types import (
     aobject, HostPortPair, KernelId,
     KernelCreationConfig,
 )
+from ai.backend.common.utils import current_loop
 from . import __version__ as VERSION
 from .agent import AbstractAgent
 from .config import (
@@ -48,7 +49,7 @@ from .config import (
     registry_ecr_config_iv,
 )
 from .types import VolumeInfo, LifecycleEvent
-from .utils import current_loop, get_subnet_ip
+from .utils import get_subnet_ip
 
 if TYPE_CHECKING:
     from typing import Any, Dict, Optional  # noqa

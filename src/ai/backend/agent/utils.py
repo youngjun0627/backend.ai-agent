@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import (
     Any, Optional,
-    Callable, Iterable,
+    Iterable,
     Mapping, MutableMapping,
     List, Sequence, Tuple, Union,
     Type, overload,
@@ -30,6 +30,7 @@ from ai.backend.common.types import (
     ServicePort,
     ServicePortProtocols,
 )
+from ai.backend.common.utils import current_loop
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.utils'))
 
@@ -57,13 +58,6 @@ def update_nested_dict(dest: MutableMapping, additions: Mapping) -> None:
                 dest[k].extend(v)
             else:
                 dest[k] = v
-
-
-current_loop: Callable[[], asyncio.AbstractEventLoop]
-if hasattr(asyncio, 'get_running_loop'):
-    current_loop = asyncio.get_running_loop  # type: ignore
-else:
-    current_loop = asyncio.get_event_loop    # type: ignore
 
 
 def numeric_list(s: str) -> List[int]:

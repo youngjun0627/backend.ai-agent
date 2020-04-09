@@ -3,6 +3,8 @@
 USER_ID=${LOCAL_USER_ID:-9001}
 GROUP_ID=${LOCAL_GROUP_ID:-9001}
 
+echo "Kernel started at: $(date -Iseconds -u)"
+
 if [ $USER_ID -eq 0 ]; then
 
   echo "WARNING: Running the user codes as root is not recommended."

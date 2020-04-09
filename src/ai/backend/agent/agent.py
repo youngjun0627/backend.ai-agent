@@ -45,12 +45,10 @@ from ai.backend.common.types import (
     MetricKey, MetricValue,
     Sentinel,
 )
+from ai.backend.common.utils import current_loop
 from . import __version__ as VERSION
 from .defs import ipc_base_path
 from .kernel import AbstractKernel
-from .utils import (
-    current_loop,
-)
 from .resources import (
     AbstractComputeDevice,
     AbstractComputePlugin,

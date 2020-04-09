@@ -3,9 +3,8 @@ from asyncio import Future
 from pathlib import Path
 from typing import Set, Tuple
 
+from ai.backend.common.utils import current_loop
 import attr
-
-from .utils import current_loop
 
 
 @attr.s(auto_attribs=True, slots=True)

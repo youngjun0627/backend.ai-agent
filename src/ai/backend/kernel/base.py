@@ -495,7 +495,6 @@ class BaseRunner(metaclass=ABCMeta):
         try:
             if service_info['protocol'] == 'preopen':
                 # skip subprocess spawning as we assume the user runs it manually.
-                cmdargs, env = [], {}
                 result = {'status': 'started'}
                 return
             if service_info['name'] in self.services_running:
@@ -506,7 +505,7 @@ class BaseRunner(metaclass=ABCMeta):
                           'error': 'not implemented yet'}
                 return
             cwd = Path.cwd()
-            cmdargs = None, {}
+            cmdargs, env = None, {}
             if service_info['name'] == 'ttyd':
                 cmdargs, env = await prepare_ttyd_service(service_info)
             elif service_info['name'] == 'sshd':

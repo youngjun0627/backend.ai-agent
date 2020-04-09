@@ -22,10 +22,9 @@ import zmq
 from ai.backend.common import msgpack
 from ai.backend.common.docker import ImageRef
 from ai.backend.common.types import aobject
-from ai.backend.common.utils import StringSetFlag
+from ai.backend.common.utils import current_loop, StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
 from .resources import KernelResourceSpec
-from .utils import current_loop
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 

@@ -18,9 +18,9 @@ from aiodocker.exceptions import DockerError
 
 from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
+from ai.backend.common.utils import current_loop
 from ..resources import KernelResourceSpec
 from ..kernel import AbstractKernel, AbstractCodeRunner
-from ..utils import current_loop
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 

@@ -17,7 +17,7 @@ from aiodocker.exceptions import DockerError
 import psutil
 
 from ai.backend.common.logging import BraceStyleAdapter
-from ai.backend.common.utils import nmget
+from ai.backend.common.utils import current_loop, nmget
 from ai.backend.common.types import (
     DeviceName, DeviceId,
     DeviceModelInfo,
@@ -39,7 +39,7 @@ from ..stats import (
     StatContext, NodeMeasurement, ContainerMeasurement,
     StatModes, MetricTypes, Measurement,
 )
-from ..utils import read_sysfs, current_loop
+from ..utils import read_sysfs
 from ..vendor.linux import libnuma
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
