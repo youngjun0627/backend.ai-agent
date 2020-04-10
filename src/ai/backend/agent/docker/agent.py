@@ -686,6 +686,16 @@ class DockerAgent(AbstractAgent):
             docker_creds = internal_data.get('docker_credentials')
             if docker_creds:
                 (config_dir / 'docker-creds.json').write_text(json.dumps(docker_creds))
+            # Create bootstrap.sh into workdir if needed
+            bootstrap = internal_data.get('bootstrap_script')
+            sys.stdout.flush()
+            if bootstrap:
+                (work_dir / 'bootstrap.sh').write_text(bootstrap)
+                if KernelFeatures.UID_MATCH in kernel_features:
+                    uid = self.config['container']['kernel-uid']
+                    gid = self.config['container']['kernel-gid']
+                    if os.geteuid() == 0:
+                        os.chown(work_dir / 'bootstrap.sh', uid, gid)
 
         # Create SSH keypair only if ssh_keypair internal_data exists and
         # /home/work/.ssh folder is not mounted.
