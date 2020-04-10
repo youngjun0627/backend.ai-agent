@@ -2,43 +2,9 @@
 Parses and interpolates the service-definition templates stored as json in
 ``/etc/backend.ai/servce-defs`` of Backend.AI containers.
 
-The service definition is compmosed of JSON following:
-
-.. code-block:: json
-
-    {
-        "prestart": [
-          {
-            "action": "write_tempfile",
-            "args": {
-              "body": "c.NotebookApp.allow_root = True\n"
-            },
-            "ref": "jupyter_cfg"   # <- stores the return value of action (e.g., path of tempfile),
-                                   #    and it can be referred as a variable in later actions and
-                                   #    command.
-          },
-          {
-            "action": "writelines",
-            "args": {
-              "filename": "{jupyter_cfg}",
-              "body": [
-                "c.NotebookApp.ip = \"0.0.0.0\"",
-                "c.NotebookApp.port = {ports[0]}",
-                "c.NotebookApp.token = \"\"",
-                "c.FileContentsManager.delete_to_trash = False"
-              ],
-              "mode": "w+"
-            }
-          }
-        ],
-        "command": [
-            "{runtime_path}", "-m", "jupyterlab",
-            "--no-browser",
-            "--config", "{jupyter_cfg}",
-        ]
-    }
+See more details at `the documentation about adding new kernel images
+<https://docs.backend.ai/en/latest/dev/adding-kernels.html#service-ports>`_.
 """
-
 
 import json
 import logging
