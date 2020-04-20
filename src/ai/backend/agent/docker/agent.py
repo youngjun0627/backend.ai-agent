@@ -743,16 +743,18 @@ class DockerAgent(AbstractAgent):
             await loop.run_in_executor(None, _clone_dotfiles)
 
             # Create bootstrap.sh into workdir if needed
-            # TODO: Remove `type: ignore` when mypy supports type inference for walrus operator
-            # Check https://github.com/python/mypy/issues/7316
-            # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
-            # Check https://gitlab.com/pycqa/flake8/issues/599
-            if bootstrap := kernel_config.get('bootstrap_script'):  # noqa
-                with open(work_dir / 'bootstrap.sh', 'wb') as fw:
-                    await loop.run_in_executor(
-                        None,
-                        fw.write,
-                        base64.b64decode(bootstrap))  # type: ignore
+            if bootstrap := kernel_config.get('bootstrap_script'):
+
+                def _write_user_bootstrap_script():
+                    (work_dir / 'bootstrap.sh').write_text(bootstrap)
+                    if KernelFeatures.UID_MATCH in kernel_features:
+                        uid = self.config['container']['kernel-uid']
+                        gid = self.config['container']['kernel-gid']
+                        if os.geteuid() == 0:
+                            os.chown(work_dir / 'bootstrap.sh', uid, gid)
+
+                await loop.run_in_executor(None, _write_user_bootstrap_script)
+
             # Store custom environment variables for kernel runner.
             with open(config_dir / 'kconfig.dat', 'wb') as fb:
                 pickle.dump(kernel_config, fb)
@@ -1078,6 +1080,11 @@ class DockerAgent(AbstractAgent):
                         service_port.update(live_service)
                         break
         log.debug('service ports:\n{!r}', pretty(service_ports))
+
+        # Wait until bootstrap script is executed.
+        # - Main kernel runner is executed after bootstrap script, and
+        #   check_status is accessible only after kernel runner is loaded.
+        await kernel_obj.check_status()
 
         # Finally we are done.
         await self.produce_event('kernel_started', str(kernel_id))

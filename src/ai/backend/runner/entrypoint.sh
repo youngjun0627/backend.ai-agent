@@ -20,13 +20,17 @@ if [ $USER_ID -eq 0 ]; then
 
   # Invoke image-specific bootstrap hook.
   if [ -x "/opt/container/bootstrap.sh" ]; then
+    echo 'Executing image bootstrap... '
     /opt/container/bootstrap.sh
+    echo 'Image bootstrap executed.'
   fi
 
   # Invoke user-specific bootstrap hook.
   if [ -f "/home/work/bootstrap.sh" ]; then
+    echo 'Executing user bootstrap... '
     chmod +x /home/work/bootstrap.sh
     /home/work/bootstrap.sh
+    echo 'User bootstrap executed.'
   fi
 
   # Extract dotfiles
@@ -74,9 +78,11 @@ else
 
   # Invoke image-specific bootstrap hook.
   if [ -x "/opt/container/bootstrap.sh" ]; then
+    echo 'Executing image bootstrap... '
     export LOCAL_USER_ID=$USER_ID
     export LOCAL_GROUP_ID=$GROUP_ID
     /opt/container/bootstrap.sh
+    echo 'Image bootstrap executed.'
   fi
 
   # Correct the ownership of agent socket.
@@ -84,8 +90,10 @@ else
 
   # Invoke user-specific bootstrap hook.
   if [ -f "/home/work/bootstrap.sh" ]; then
+    echo 'Executing user bootstrap... '
     chmod +x /home/work/bootstrap.sh
     /opt/kernel/su-exec $USER_ID:$GROUP_ID /home/work/bootstrap.sh
+    echo 'User bootstrap executed.'
   fi
 
   # Extract dotfiles
