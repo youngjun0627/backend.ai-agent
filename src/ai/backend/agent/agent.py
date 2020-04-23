@@ -530,7 +530,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                         kernel_id,
                         alive_kernels[kernel_id],
                         LifecycleEvent.DESTROY,
-                        'terminated-unkonwn-container',
+                        'terminated-unknown-container',
                     )
                 # Check if: the container's idle timeout is expired.
                 for kernel_id, kernel_obj in self.kernel_registry.items():
