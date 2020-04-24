@@ -29,8 +29,10 @@ if [ $USER_ID -eq 0 ]; then
   if [ -f "/home/work/bootstrap.sh" ]; then
     echo 'Executing user bootstrap... '
     chmod +x /home/work/bootstrap.sh
-    (/home/work/bootstrap.sh; touch /tmp/user_bootstrap_executed; echo "User's bootstrap execution finished.") &
+    (/home/work/bootstrap.sh; touch /tmp/.user_bootstrap_done; echo "User's bootstrap execution finished.") &
     echo 'User bootstrap executed.'
+  else
+    touch /tmp/.user_bootstrap_done
   fi
 
   # Extract dotfiles
@@ -92,7 +94,9 @@ else
   if [ -f "/home/work/bootstrap.sh" ]; then
     echo 'Executing user bootstrap... '
     chmod +x /home/work/bootstrap.sh
-    (/opt/kernel/su-exec $USER_ID:$GROUP_ID /home/work/bootstrap.sh; touch /tmp/user_bootstrap_executed; echo "User bootstrap execution finished.") &
+    (/opt/kernel/su-exec $USER_ID:$GROUP_ID /home/work/bootstrap.sh; touch /tmp/.user_bootstrap_done; echo "User bootstrap execution finished.") &
+  else
+    touch /tmp/.user_bootstrap_done
   fi
 
   # Extract dotfiles

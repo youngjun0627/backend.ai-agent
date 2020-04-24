@@ -211,6 +211,10 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
     async def list_files(self, path: str):
         raise NotImplementedError
 
+    async def wait_bootstrap(self):
+        if not self.runner.bootstrap_completed.is_set():
+            await self.runner.bootstrap_completed.wait()
+
     async def execute(self,
                       run_id: Optional[str], mode: str, text: str, *,
                       opts: Mapping[str, Any],
@@ -262,6 +266,8 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
     status_task: Optional[asyncio.Task]
     watchdog_task: Optional[asyncio.Task]
 
+    bootstrap_completed: asyncio.Event
+
     def __init__(self, kernel_id, *,
                  exec_timeout: float = 0,
                  client_features: FrozenSet[str] = None) -> None:
@@ -285,6 +291,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         self.read_task = None
         self.status_task = None
         self.watchdog_task = None
+        self.bootstrap_completed = asyncio.Event()
 
     async def __ainit__(self) -> None:
         loop = current_loop()
@@ -694,6 +701,8 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
                 try:
                     if msg_type == b'status':
                         await self.status_queue.put(msg_data)
+                    if msg_type == b'bootstrap':
+                        self.bootstrap_completed.set()
                     elif msg_type == b'completion':
                         await self.completion_queue.put(msg_data)
                     elif msg_type == b'service-result':

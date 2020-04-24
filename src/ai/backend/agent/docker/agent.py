@@ -1082,9 +1082,7 @@ class DockerAgent(AbstractAgent):
         log.debug('service ports:\n{!r}', pretty(service_ports))
 
         # Wait until bootstrap script is executed.
-        # - Main kernel runner is executed after bootstrap script, and
-        #   check_status is accessible only after kernel runner is loaded.
-        await kernel_obj.check_status()
+        await kernel_obj.wait_bootstrap()
 
         # Finally we are done.
         await self.produce_event('kernel_started', str(kernel_id))

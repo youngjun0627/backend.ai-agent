@@ -146,6 +146,7 @@ class BaseRunner(metaclass=ABCMeta):
         self.log_queue = janus.Queue()
         self.task_queue = asyncio.Queue()
         self.init_done = asyncio.Event()
+        self.bootstrap_completed = asyncio.Event()
 
         setup_logger(self.log_queue.sync_q, self.log_prefix, cmdargs.debug)
         self._log_task = loop.create_task(self._handle_logs())
@@ -163,6 +164,7 @@ class BaseRunner(metaclass=ABCMeta):
 
         self._main_task = loop.create_task(self.main_loop(cmdargs))
         self._run_task = loop.create_task(self.run_tasks())
+        loop.create_task(self.check_bootstrap())
 
     async def _shutdown(self) -> None:
         try:
@@ -485,6 +487,16 @@ class BaseRunner(metaclass=ABCMeta):
             b'status',
             msgpack.packb(data, use_bin_type=True),
         ])
+
+    async def check_bootstrap(self):
+        if not self.bootstrap_completed.is_set():
+            bootstrap_flag = Path('/tmp/.user_bootstrap_done')
+            while True:
+                if bootstrap_flag.exists():
+                    self.bootstrap_completed.set()
+                    break
+                await asyncio.sleep(0.1)
+        await self.outsock.send_multipart([b'bootstrap', b'completed'])
 
     @abstractmethod
     async def start_service(self, service_info):
