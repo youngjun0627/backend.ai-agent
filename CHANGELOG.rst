@@ -1,8 +1,10 @@
 Changes
 =======
 
-19.09.20 (2020-04-xx)
+19.09.20 (2020-04-27)
 ---------------------
+
+* FEATURE: Place bootstrap script upon session creation (#174)
 
 * FIX: Update the restricted/reserved list of service port numbers, allowing privileged TCP ports
   to be used by the kernel image authors. (#195)
