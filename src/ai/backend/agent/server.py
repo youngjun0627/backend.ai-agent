@@ -196,10 +196,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
         except AssertionError:
             log.exception('assertion failure')
             raise
-        except Exception:
-            log.exception('unexpected error')
+        except Exception as e:
+            log.exception('unhandled error')
             self.error_monitor.capture_exception()
-            raise
+            raise RuntimeError('unhandled error during rpc call', repr(e))
 
     @aiozmq.rpc.method
     def ping(self, msg: str) -> str:

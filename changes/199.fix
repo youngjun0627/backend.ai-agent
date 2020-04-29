@@ -1,0 +1,1 @@
+Ensure unhandled exceptions in aiozmq.rpc handlers to be always msgpack-serializable to keep the agent daemon logs clean
