@@ -1150,38 +1150,43 @@ class DockerAgent(AbstractAgent):
 
             # FIXME: Sometimes(?) duplicate event data is received.
             # Just ignore the duplicate ones.
-            new_footprint = (
-                evdata['Type'],
-                evdata['Action'],
-                evdata['Actor']['ID'],
-            )
-            if new_footprint == last_footprint:
-                continue
-            last_footprint = new_footprint
-
-            if self.config['debug']['log-docker-events']:
-                log.debug('docker-event: raw: {}', evdata)
-
-            if evdata['Action'] == 'die':
-                # When containers die, we immediately clean up them.
-                container_name = evdata['Actor']['Attributes']['name']
-                kernel_id = await get_kernel_id_from_container(container_name)
-                if kernel_id is None:
-                    continue
-                reason = None
-                kernel_obj = self.kernel_registry.get(kernel_id)
-                if kernel_obj is not None:
-                    reason = kernel_obj.termination_reason
-                try:
-                    exit_code = evdata['Actor']['Attributes']['exitCode']
-                except KeyError:
-                    exit_code = 255
-                await self.inject_container_lifecycle_event(
-                    kernel_id,
-                    LifecycleEvent.CLEAN,
-                    reason or 'self-terminated',
-                    container_id=ContainerId(evdata['Actor']['ID']),
-                    exit_code=exit_code,
+            try:
+                new_footprint = (
+                    evdata['Type'],
+                    evdata['Action'],
+                    evdata['Actor']['ID'],
                 )
+                if new_footprint == last_footprint:
+                    continue
+                last_footprint = new_footprint
+
+                if self.config['debug']['log-docker-events']:
+                    log.debug('docker-event: raw: {}', evdata)
+
+                if evdata['Action'] == 'die':
+                    # When containers die, we immediately clean up them.
+                    container_name = evdata['Actor']['Attributes']['name']
+                    kernel_id = await get_kernel_id_from_container(container_name)
+                    if kernel_id is None:
+                        continue
+                    reason = None
+                    kernel_obj = self.kernel_registry.get(kernel_id)
+                    if kernel_obj is not None:
+                        reason = kernel_obj.termination_reason
+                    try:
+                        exit_code = evdata['Actor']['Attributes']['exitCode']
+                    except KeyError:
+                        exit_code = 255
+                    await self.inject_container_lifecycle_event(
+                        kernel_id,
+                        LifecycleEvent.CLEAN,
+                        reason or 'self-terminated',
+                        container_id=ContainerId(evdata['Actor']['ID']),
+                        exit_code=exit_code,
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception('unexpected error while processing docker events')
 
         await asyncio.sleep(0.5)
