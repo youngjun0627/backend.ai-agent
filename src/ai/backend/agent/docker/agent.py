@@ -1089,7 +1089,7 @@ class DockerAgent(AbstractAgent):
             container = self.docker.containers.container(container_id)
             try:
                 with timeout(20):
-                    await container.delete(force=True)
+                    await container.delete(force=True, v=True)
             except DockerError as e:
                 if e.status == 409 and 'already in progress' in e.message:
                     pass
