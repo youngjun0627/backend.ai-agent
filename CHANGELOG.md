@@ -16,6 +16,19 @@ Changes
 
 .. towncrier release notes start
 
+19.09.21 (2020-04-30)
+---------------------
+
+### Fixes
+* Ensure unhandled exceptions in aiozmq.rpc handlers to be always msgpack-serializable to keep the agent daemon logs clean ([#199](https://github.com/lablup/backend.ai-agent/issues/199))
+* Add the force option when calling Docker's container deletion API to avoid rare "stop before removal" errors even when we try deletion after receiving the termination event ([#200](https://github.com/lablup/backend.ai-agent/issues/200))
+* Keep the docker event processor running regardless of unexpected exceptions in the middle ([#202](https://github.com/lablup/backend.ai-agent/issues/202))
+* Use destroy() of ZeroMQ context objects instead of term() to stabilize container removals ([#203](https://github.com/lablup/backend.ai-agent/issues/203))
+* Delete auto-created/temporary volumes with when deleting containers ([#204](https://github.com/lablup/backend.ai-agent/issues/204))
+
+### Miscellaneous
+* Adopt towncrier for changelog management ([#201](https://github.com/lablup/backend.ai-agent/issues/201))
+
 19.09.20 (2020-04-27)
 ---------------------
 

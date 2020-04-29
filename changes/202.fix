@@ -1,1 +1,0 @@
-Keep the docker event processor running regardless of unexpected exceptions in the middle

@@ -1,1 +1,0 @@
-Use destroy() of ZeroMQ context objects instead of term() to stabilize container removals

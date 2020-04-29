@@ -1,1 +1,0 @@
-Add the force option when calling Docker's container deletion API to avoid rare "stop before removal" errors even when we try deletion after receiving the termination event
