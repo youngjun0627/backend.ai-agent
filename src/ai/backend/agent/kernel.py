@@ -346,7 +346,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         if self.read_task and not self.read_task.done():
             self.read_task.cancel()
             await self.read_task
-        self.zctx.term()
+        self.zctx.destroy()
 
     async def ping_status(self):
         '''
