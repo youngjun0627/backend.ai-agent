@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+19.09.22 (2020-04-30)
+---------------------
+
+### Fixes
+* Check closing of zmq sockets in code runner to avoid writing on invalid/closed sockets and indefinite waiting for the krunner execution results ([#205](https://github.com/lablup/backend.ai-agent/issues/205))
+* Introduce "already-terminated" reason for `kernel_terminated` event ([#206](https://github.com/lablup/backend.ai-agent/issues/206))
+
 19.09.21 (2020-04-30)
 ---------------------
 
