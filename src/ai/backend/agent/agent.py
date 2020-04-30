@@ -353,6 +353,86 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             except IOError:
                 pass
 
+    async def _handle_destroy_event(self, ev: ContainerLifecycleEvent) -> None:
+        result = None
+        try:
+            kernel_obj = self.kernel_registry.get(ev.kernel_id)
+            if kernel_obj is None:
+                log.warning('destroy_kernel(k:{0}) kernel missing (already dead?)',
+                            ev.kernel_id)
+                if ev.container_id is None:
+                    await self.rescan_resource_usage()
+                    await self.produce_event(
+                        'kernel_terminated', str(ev.kernel_id),
+                        'already-terminated', None,
+                    )
+                    return
+                else:
+                    self.container_lifecycle_queue.put_nowait(
+                        ContainerLifecycleEvent(
+                            ev.kernel_id,
+                            ev.container_id,
+                            LifecycleEvent.CLEAN,
+                            ev.reason,
+                        )
+                    )
+            else:
+                kernel_obj.termination_reason = ev.reason
+                if kernel_obj.runner is not None:
+                    await kernel_obj.runner.close()
+            result = await self.destroy_kernel(ev.kernel_id, ev.container_id)
+        except Exception:
+            log.exception('unhandled exception while processing DESTROY event')
+            self.error_monitor.capture_exception()
+        finally:
+            if ev.done_event is not None:
+                ev.done_event.set()
+                setattr(ev.done_event, '_result', result)
+
+    async def _handle_clean_event(self, ev: ContainerLifecycleEvent) -> None:
+        result = None
+        try:
+            kernel_obj = self.kernel_registry.get(ev.kernel_id)
+            if kernel_obj is not None and kernel_obj.runner is not None:
+                await kernel_obj.runner.close()
+            result = await self.clean_kernel(
+                ev.kernel_id,
+                ev.container_id,
+                ev.kernel_id in self.restarting_kernels,
+            )
+        except Exception:
+            log.exception('unhandled exception while processing CLEAN event')
+            self.error_monitor.capture_exception()
+        finally:
+            try:
+                kernel_obj = self.kernel_registry.get(ev.kernel_id)
+                if kernel_obj is not None:
+                    # Restore used ports to the port pool.
+                    port_range = self.config['container']['port-range']
+                    restored_ports = [*filter(
+                        lambda p: port_range[0] <= p <= port_range[1],
+                        kernel_obj['host_ports']
+                    )]
+                    self.port_pool.update(restored_ports)
+                    await kernel_obj.close()
+                    # Notify cleanup waiters.
+                    if kernel_obj.clean_event is not None:
+                        kernel_obj.clean_event.set()
+                    # Forget.
+                    self.kernel_registry.pop(ev.kernel_id, None)
+            finally:
+                if ev.done_event is not None:
+                    ev.done_event.set()
+                    setattr(ev.done_event, '_result', result)
+                if ev.kernel_id in self.restarting_kernels:
+                    self.restarting_kernels[ev.kernel_id].destroy_event.set()
+                else:
+                    await self.rescan_resource_usage()
+                    await self.produce_event(
+                        'kernel_terminated', str(ev.kernel_id),
+                        ev.reason, None,
+                    )
+
     async def process_lifecycle_events(self) -> None:
         while True:
             ev = await self.container_lifecycle_queue.get()
@@ -361,86 +441,17 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                     pickle.dump(self.kernel_registry, f)
                 return
             log.info('lifecycle event: {!r}', ev)
-            result = None
-            if ev.event == LifecycleEvent.DESTROY:
-                try:
-                    kernel_obj = self.kernel_registry.get(ev.kernel_id)
-                    if kernel_obj is None:
-                        log.warning('destroy_kernel(k:{0}) kernel missing (already dead?)',
-                                    ev.kernel_id)
-                        if ev.container_id is None:
-                            await self.rescan_resource_usage()
-                            await self.produce_event(
-                                'kernel_terminated', str(ev.kernel_id),
-                                'already-terminated', None,
-                            )
-                            continue
-                        else:
-                            self.container_lifecycle_queue.put_nowait(
-                                ContainerLifecycleEvent(
-                                    ev.kernel_id,
-                                    ev.container_id,
-                                    LifecycleEvent.CLEAN,
-                                    ev.reason,
-                                )
-                            )
-                    else:
-                        kernel_obj.termination_reason = ev.reason
-                        if kernel_obj.runner is not None:
-                            await kernel_obj.runner.close()
-                    result = await self.destroy_kernel(ev.kernel_id, ev.container_id)
-                except Exception:
-                    log.exception('unhandled exception while processing DESTROY event')
-                    self.error_monitor.capture_exception()
-                finally:
-                    if ev.done_event is not None:
-                        ev.done_event.set()
-                        setattr(ev.done_event, '_result', result)
-            elif ev.event == LifecycleEvent.CLEAN:
-                try:
-                    kernel_obj = self.kernel_registry.get(ev.kernel_id)
-                    if kernel_obj is not None and kernel_obj.runner is not None:
-                        await kernel_obj.runner.close()
-                    result = await self.clean_kernel(
-                        ev.kernel_id,
-                        ev.container_id,
-                        ev.kernel_id in self.restarting_kernels,
-                    )
-                except Exception:
-                    log.exception('unhandled exception while processing CLEAN event')
-                    self.error_monitor.capture_exception()
-                finally:
-                    try:
-                        kernel_obj = self.kernel_registry.get(ev.kernel_id)
-                        if kernel_obj is not None:
-                            # Restore used ports to the port pool.
-                            port_range = self.config['container']['port-range']
-                            restored_ports = [*filter(
-                                lambda p: port_range[0] <= p <= port_range[1],
-                                kernel_obj['host_ports']
-                            )]
-                            self.port_pool.update(restored_ports)
-                            await kernel_obj.close()
-                            # Notify cleanup waiters.
-                            if kernel_obj.clean_event is not None:
-                                kernel_obj.clean_event.set()
-                            # Forget.
-                            self.kernel_registry.pop(ev.kernel_id, None)
-                    finally:
-                        if ev.done_event is not None:
-                            ev.done_event.set()
-                            setattr(ev.done_event, '_result', result)
-                        if ev.kernel_id in self.restarting_kernels:
-                            self.restarting_kernels[ev.kernel_id].destroy_event.set()
-                        else:
-                            await self.rescan_resource_usage()
-                            await self.produce_event(
-                                'kernel_terminated', str(ev.kernel_id),
-                                ev.reason, None,
-                            )
-            else:
-                log.warning('unsupported lifecycle event: {!r}', ev)
-            self.container_lifecycle_queue.task_done()
+            try:
+                if ev.event == LifecycleEvent.DESTROY:
+                    await self._handle_destroy_event(ev)
+                elif ev.event == LifecycleEvent.CLEAN:
+                    await self._handle_clean_event(ev)
+                else:
+                    log.warning('unsupported lifecycle event: {!r}', ev)
+            except Exception:
+                log.exception('unexpected error in process_lifecycle_events(), continuing...')
+            finally:
+                self.container_lifecycle_queue.task_done()
 
     async def inject_container_lifecycle_event(
         self,
