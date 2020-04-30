@@ -372,7 +372,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                             await self.rescan_resource_usage()
                             await self.produce_event(
                                 'kernel_terminated', str(ev.kernel_id),
-                                'self-terminated', None,
+                                'already-terminated', None,
                             )
                             continue
                         else:
