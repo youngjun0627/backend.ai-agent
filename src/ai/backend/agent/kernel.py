@@ -170,10 +170,11 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
             computer_ctxs[accel_key].alloc_map.free(accel_alloc)
 
     @abstractmethod
-    async def create_code_runner(self, *,
-                           client_features: FrozenSet[str],
-                           api_version: int) \
-                           -> 'AbstractCodeRunner':
+    async def create_code_runner(
+        self, *,
+        client_features: FrozenSet[str],
+        api_version: int,
+    ) -> 'AbstractCodeRunner':
         raise NotImplementedError
 
     @abstractmethod
@@ -217,14 +218,19 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
             myself = asyncio.Task.current_task()
             self._tasks.add(myself)
             await self.runner.attach_output_queue(run_id)
-            if mode == 'batch':
-                await self.runner.feed_batch(opts)
-            elif mode == 'query':
-                await self.runner.feed_code(text)
-            elif mode == 'input':
-                await self.runner.feed_input(text)
-            elif mode == 'continue':
-                pass
+            try:
+                if mode == 'batch':
+                    await self.runner.feed_batch(opts)
+                elif mode == 'query':
+                    await self.runner.feed_code(text)
+                elif mode == 'input':
+                    await self.runner.feed_input(text)
+                elif mode == 'continue':
+                    pass
+            except zmq.ZMQError:
+                # cancel the operation by myself
+                # since the peer is gone.
+                raise asyncio.CancelledError
             return await self.runner.get_next_result(
                 api_ver=api_version,
                 flush_timeout=flush_timeout)
@@ -365,6 +371,8 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             log.exception('unexpected error')
 
     async def feed_batch(self, opts):
+        if self.input_sock.closed:
+            raise asyncio.CancelledError
         clean_cmd = opts.get('clean', '')
         if clean_cmd is None:
             clean_cmd = ''
@@ -388,15 +396,23 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         ])
 
     async def feed_code(self, text: str):
+        if self.input_sock.closed:
+            raise asyncio.CancelledError
         await self.input_sock.send_multipart([b'code', text.encode('utf8')])
 
     async def feed_input(self, text: str):
+        if self.input_sock.closed:
+            raise asyncio.CancelledError
         await self.input_sock.send_multipart([b'input', text.encode('utf8')])
 
     async def feed_interrupt(self):
+        if self.input_sock.closed:
+            raise asyncio.CancelledError
         await self.input_sock.send_multipart([b'interrupt', b''])
 
     async def feed_and_get_status(self):
+        if self.input_sock.closed:
+            raise asyncio.CancelledError
         await self.input_sock.send_multipart([b'status', b''])
         try:
             result = await self.status_queue.get()
@@ -406,6 +422,8 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             return None
 
     async def feed_and_get_completion(self, code_text, opts):
+        if self.input_sock.closed:
+            raise asyncio.CancelledError
         payload = {
             'code': code_text,
         }
@@ -422,6 +440,8 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             return []
 
     async def feed_start_service(self, service_info):
+        if self.input_sock.closed:
+            raise asyncio.CancelledError
         await self.input_sock.send_multipart([
             b'start-service',
             json.dumps(service_info).encode('utf8'),

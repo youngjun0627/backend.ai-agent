@@ -1,0 +1,1 @@
+Check closing of zmq sockets in code runner to avoid writing on invalid/closed sockets and indefinite waiting for the krunner execution results
