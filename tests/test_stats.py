@@ -32,7 +32,7 @@ def stats_server(mocker):
     finally:
         stat_sync_sock.close()
         stat_sync_sockpath.unlink()
-        zctx.term()
+        zctx.destroy()
 
 
 active_stat_modes = [stats.StatModes.DOCKER]
