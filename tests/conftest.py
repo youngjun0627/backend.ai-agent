@@ -1,9 +1,11 @@
 import asyncio
 import json
+import os
 import secrets
 import subprocess
 
 from ai.backend.common.types import HostPortPair
+from ai.backend.agent.defs import ipc_base_path
 
 import aiodocker
 import pytest
@@ -18,6 +20,23 @@ def backend_type():
 @pytest.fixture(scope='session')
 def test_id():
     return f'testing-{secrets.token_urlsafe(8)}'
+
+
+@pytest.fixture(scope='session', autouse=True)
+def test_agent_id(session_mocker, test_id):
+    registry_state_path = ipc_base_path / f'last_registry.{test_id}.dat'
+    try:
+        os.unlink(registry_state_path)
+    except FileNotFoundError:
+        pass
+    mock_generate_agent_id = session_mocker.patch(
+        'ai.backend.agent.agent.generate_agent_id')
+    mock_generate_agent_id.return_value = test_id
+    yield
+    try:
+        os.unlink(registry_state_path)
+    except FileNotFoundError:
+        pass
 
 
 @pytest.fixture(scope='session')
@@ -46,7 +65,7 @@ def prepare_images(backend_type):
 
 
 @pytest.fixture
-async def docker():
+async def docker(event_loop):
     docker = aiodocker.Docker()
     try:
         yield docker
@@ -90,7 +109,7 @@ def redis_container(test_id, backend_type, prepare_images):
 
 
 @pytest.fixture
-async def create_container(test_id, backend_type, docker):
+async def create_container(event_loop, test_id, backend_type, docker):
     container = None
     cont_id = secrets.token_urlsafe(4)
 

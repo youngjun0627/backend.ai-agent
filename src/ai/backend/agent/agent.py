@@ -1,7 +1,6 @@
 from abc import ABCMeta, abstractmethod
 import asyncio
 from decimal import Decimal
-import hashlib
 from io import BytesIO, SEEK_END
 import logging
 import os
@@ -64,6 +63,7 @@ from .types import (
     ContainerLifecycleEvent,
     LifecycleEvent,
 )
+from .utils import generate_agent_id
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.agent'))
 
@@ -122,7 +122,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self._skip_initial_scan = skip_initial_scan
         self.loop = current_loop()
         self.config = config
-        self.agent_id = hashlib.md5(__file__.encode('utf-8')).hexdigest()[:12]
+        self.agent_id = generate_agent_id(__file__)
         self.kernel_registry = {}
         self.computers = {}
         self.images = {}  # repoTag -> digest

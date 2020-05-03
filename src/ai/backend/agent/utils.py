@@ -1,5 +1,6 @@
 import asyncio
 from decimal import Decimal
+import hashlib
 import io
 import ipaddress
 import json
@@ -43,6 +44,10 @@ NotHostPID: Final = HostPID(PID(-1))
 
 _rx_service_ports = re.compile(
     r'^(?P<name>[\w-]+):(?P<proto>\w+):(?P<ports>\[\d+(?:,\d+)*\]|\d+)(?:,|$)')
+
+
+def generate_agent_id(hint: str) -> str:
+    return hashlib.md5(hint.encode('utf-8')).hexdigest()[:12]
 
 
 def update_nested_dict(dest: MutableMapping, additions: Mapping) -> None:
