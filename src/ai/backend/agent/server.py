@@ -442,34 +442,14 @@ async def server_main(loop, pidx, _args):
     config = _args[0]
 
     log.info('Preparing kernel runner environments...')
-    supported_distros = ['alpine3.8', 'ubuntu16.04', 'ubuntu18.04', 'centos7.6']
     if config['agent']['mode'] == 'docker':
         from .docker.kernel import prepare_krunner_env
-        krunner_volumes = {
-            k: v for k, v in zip(supported_distros, await asyncio.gather(
-                *[
-                    prepare_krunner_env(distro)
-                    for distro in supported_distros
-                ],
-                return_exceptions=True,
-            ))
-        }
+        krunner_volumes = await prepare_krunner_env()
     else:
         from .k8s.kernel import prepare_krunner_env
         nfs_mount_path = config['baistatic']['mounted-at']
-        krunner_volumes = {
-            k: v for k, v in zip(supported_distros, await asyncio.gather(
-                *[
-                    prepare_krunner_env(distro, nfs_mount_path)
-                    for distro in supported_distros
-                ],
-                return_exceptions=True,
-            ))
-        }
-    for distro, result in krunner_volumes.items():
-        if isinstance(result, Exception):
-            log.error('Loading krunner for {} failed: {}', distro, result)
-            raise click.Abort()
+        krunner_volumes = await prepare_krunner_env(nfs_mount_path)
+    log.info('Kernel runner environments: {}', [*krunner_volumes.keys()])
     config['container']['krunner-volumes'] = krunner_volumes
 
     if not config['agent']['id']:

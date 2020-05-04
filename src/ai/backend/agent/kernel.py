@@ -14,6 +14,7 @@ from typing import (
     Any, Optional,
     Dict, Mapping,
     Set, FrozenSet, Tuple,
+    Sequence,
 )
 
 from async_timeout import timeout
@@ -768,7 +769,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
                 break
 
 
-def match_krunner_volume(krunner_volumes: Mapping[str, Any], distro: str) -> Tuple[str, Any]:
+def match_krunner_volume(krunner_volumes: Mapping[str, Sequence[str]], distro: str) -> Tuple[str, Any]:
     '''
     Find the latest or exactly matching entry from krunner_volumes mapping using the given distro
     string expression.
