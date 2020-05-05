@@ -61,11 +61,24 @@ def prepare_images(backend_type):
         elif backend_type == 'k8s':
             raise NotImplementedError
 
-    asyncio.run(pull())
+    # We need to preserve the current loop configured by pytest-asyncio
+    # because asyncio.run() calls asyncio.set_event_loop(None) upon its completion.
+    # Here we cannot just use "event_loop" fixture because this fixture
+    # is session-scoped and pytest does not allow calling function-scoped fixtuers
+    # from session-scoped fixtures.
+    try:
+        old_loop = asyncio.get_event_loop()
+    except RuntimeError as exc:
+        if 'no current event loop' not in str(exc):
+            raise
+    try:
+        asyncio.run(pull())
+    finally:
+        asyncio.set_event_loop(old_loop)
 
 
 @pytest.fixture
-async def docker(event_loop):
+async def docker():
     docker = aiodocker.Docker()
     try:
         yield docker
@@ -109,7 +122,7 @@ def redis_container(test_id, backend_type, prepare_images):
 
 
 @pytest.fixture
-async def create_container(event_loop, test_id, backend_type, docker):
+async def create_container(test_id, backend_type, docker):
     container = None
     cont_id = secrets.token_urlsafe(4)
 

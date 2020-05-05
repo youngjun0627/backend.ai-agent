@@ -1,0 +1,1 @@
+Update test fixtures to work with pytest-asyncio 0.12

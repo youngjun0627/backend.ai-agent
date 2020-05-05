@@ -14,7 +14,7 @@ import pytest
 
 
 @pytest.fixture
-async def agent(event_loop, test_id, redis_container):
+async def agent(test_id, redis_container):
     agent = await DockerAgent.new(agent_local_config_iv.check({
         'agent': {
             'mode': 'docker',
@@ -42,7 +42,7 @@ async def agent(event_loop, test_id, redis_container):
 
 
 @pytest.mark.asyncio
-async def test_init(agent):
+async def test_init(agent, mocker):
     print(agent)
 
 
