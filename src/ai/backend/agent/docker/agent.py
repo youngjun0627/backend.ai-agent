@@ -944,7 +944,7 @@ class DockerAgent(AbstractAgent):
                       (kernel_config['startup_command'] or '')[:60])
 
             # TODO: make this working after agent restarts
-            async def execute_batch():
+            async def execute_batch() -> None:
                 opts = {
                     'exec': kernel_config['startup_command'],
                 }
@@ -979,11 +979,11 @@ class DockerAgent(AbstractAgent):
                         break
                 # TODO: store last_stat?
                 destroyed = asyncio.Event()
-                self.container_lifecycle_events.put(
+                self.container_lifecycle_queue.put(
                     ContainerLifecycleEvent(
                         kernel_id,
                         kernel_obj['container_id'],
-                        LifecycleEvent.TERMINATED,
+                        LifecycleEvent.DESTROY,
                         'task-finished',
                         destroyed,
                     )
