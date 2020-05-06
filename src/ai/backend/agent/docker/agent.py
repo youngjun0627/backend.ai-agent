@@ -564,51 +564,51 @@ class DockerAgent(AbstractAgent):
         if matched_distro == 'centos6.10':
             # special case for image importer kernel (manylinux2010 is based on CentOS 6)
             suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/su-exec.centos7.6.{arch}.bin'))
+                'ai.backend.runner', f'su-exec.centos7.6.{arch}.bin'))
             hook_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/libbaihook.centos7.6.{arch}.so'))
+                'ai.backend.runner', f'libbaihook.centos7.6.{arch}.so'))
             sftp_server_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/sftp-server.centos7.6.{arch}.bin'))
+                'ai.backend.runner',
+                f'sftp-server.centos7.6.{arch}.bin'))
             scp_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/scp.centos7.6.{arch}.bin'))
+                'ai.backend.runner',
+                f'scp.centos7.6.{arch}.bin'))
         else:
             suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/su-exec.{matched_distro}.{arch}.bin'))
+                'ai.backend.runner', f'su-exec.{matched_distro}.{arch}.bin'))
             hook_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/libbaihook.{matched_distro}.{arch}.so'))
+                'ai.backend.runner', f'libbaihook.{matched_distro}.{arch}.so'))
             sftp_server_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/sftp-server.{matched_distro}.{arch}.bin'))
+                'ai.backend.runner',
+                f'sftp-server.{matched_distro}.{arch}.bin'))
             scp_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/scp.{matched_distro}.{arch}.bin'))
+                'ai.backend.runner',
+                f'scp.{matched_distro}.{arch}.bin'))
         if self.config['container']['sandbox-type'] == 'jail':
             jail_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/jail.{matched_distro}.bin'))
+                'ai.backend.runner', f'jail.{matched_distro}.bin'))
         kernel_pkg_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../kernel'))
+            'ai.backend.agent', '')).parent / 'kernel'
         helpers_pkg_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../helpers'))
+            'ai.backend.agent', '')).parent / 'helpers'
         dropbear_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent',
-            f'../runner/dropbear.{matched_libc_style}.{arch}.bin'))
+            'ai.backend.runner',
+            f'dropbear.{matched_libc_style}.{arch}.bin'))
         dropbearconv_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent',
-            f'../runner/dropbearconvert.{matched_libc_style}.{arch}.bin'))
+            'ai.backend.runner',
+            f'dropbearconvert.{matched_libc_style}.{arch}.bin'))
         dropbearkey_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent',
-            f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
+            'ai.backend.runner',
+            f'dropbearkey.{matched_libc_style}.{arch}.bin'))
         tmux_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/tmux.{matched_libc_style}.{arch}.bin'))
+            'ai.backend.runner', f'tmux.{matched_libc_style}.{arch}.bin'))
         dotfile_extractor_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/extract_dotfiles.py'
+            'ai.backend.runner', 'extract_dotfiles.py'
         ))
 
         if matched_libc_style == 'musl':
             terminfo_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', '../runner/terminfo.alpine3.8'
+                'ai.backend.runner', 'terminfo.alpine3.8'
             ))
             _mount(MountTypes.BIND, terminfo_path.resolve(), '/home/work/.terminfo')
 
@@ -703,21 +703,21 @@ class DockerAgent(AbstractAgent):
             # directories when the agent is running as non-root.
             def _clone_dotfiles():
                 jupyter_custom_css_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/jupyter-custom.css'))
+                    'ai.backend.runner', 'jupyter-custom.css'))
                 logo_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/logo.svg'))
+                    'ai.backend.runner', 'logo.svg'))
                 font_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/roboto.ttf'))
+                    'ai.backend.runner', 'roboto.ttf'))
                 font_italic_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/roboto-italic.ttf'))
+                    'ai.backend.runner', 'roboto-italic.ttf'))
                 bashrc_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/.bashrc'))
+                    'ai.backend.runner', '.bashrc'))
                 bash_profile_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/.bash_profile'))
+                    'ai.backend.runner', '.bash_profile'))
                 vimrc_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/.vimrc'))
+                    'ai.backend.runner', '.vimrc'))
                 tmux_conf_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/.tmux.conf'))
+                    'ai.backend.runner', '.tmux.conf'))
                 jupyter_custom_dir = (work_dir / '.jupyter' / 'custom')
                 jupyter_custom_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy(jupyter_custom_css_path.resolve(), jupyter_custom_dir / 'custom.css')
