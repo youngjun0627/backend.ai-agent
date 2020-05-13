@@ -292,13 +292,17 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
     async def collect_container_stat(self, interval: float):
         log.debug('collecting container statistics')
         try:
+            updated_kernel_ids = []
             for kernel_id, kernel_obj in [*self.kernel_registry.items()]:
                 if not kernel_obj.stats_enabled:
                     continue
+                updated_kernel_ids.append(kernel_id)
                 cid = kernel_obj['container_id']
                 await self.stat_ctx.collect_container_stat(cid)
-                # Let the manager store the statistics in the persistent database.
-                await self.produce_event('kernel_stat_sync', str(kernel_id))
+            # Let the manager store the statistics in the persistent database.
+            if updated_kernel_ids:
+                await self.produce_event('kernel_stat_sync',
+                                         ','.join(map(str, updated_kernel_ids)))
         except asyncio.CancelledError:
             pass
         except Exception:

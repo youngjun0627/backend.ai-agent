@@ -238,7 +238,7 @@ class StatContext:
     kernel_metrics: MutableMapping[KernelId, MutableMapping[MetricKey, Metric]]
 
     def __init__(self, agent: 'AbstractAgent', mode: StatModes = None, *,
-                 cache_lifespan: float = 30.0):
+                 cache_lifespan: float = 120.0):
         self.agent = agent
         self.mode = mode if mode is not None else StatModes.get_preferred_mode()
         self.cache_lifespan = cache_lifespan
