@@ -236,15 +236,12 @@ class StatContext:
     node_metrics: Mapping[MetricKey, Metric]
     device_metrics: Mapping[MetricKey, MutableMapping[DeviceId, Metric]]
     kernel_metrics: MutableMapping[KernelId, MutableMapping[MetricKey, Metric]]
-    log_endpoint: str
 
     def __init__(self, agent: 'AbstractAgent', mode: StatModes = None, *,
-                 log_endpoint: str,
-                 cache_lifespan: float = 30.0) -> None:
+                 cache_lifespan: float = 120.0) -> None:
         self.agent = agent
         self.mode = mode if mode is not None else StatModes.get_preferred_mode()
         self.cache_lifespan = cache_lifespan
-        self.log_endpoint = log_endpoint
 
         self.node_metrics = {}
         self.device_metrics = {}
