@@ -1,0 +1,1 @@
+Fix instability caused by stat-synchronizer processes under heavy loads by collecting statistics periodically only

@@ -501,7 +501,9 @@ async def server_main(loop, pidx, _args):
     config['plugins'] = await etcd.get_prefix_dict('config/plugins/accelerator')
 
     # Start RPC server.
+    global agent_instance
     agent = await AgentRPCServer.new(etcd, config)
+    agent_instance = agent
 
     # Run!
     async with agent:
