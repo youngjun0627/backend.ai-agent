@@ -259,10 +259,11 @@ class AbstractComputePlugin(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    async def generate_docker_args(cls,
-                                   docker: 'aiodocker.docker.Docker',  # noqa
-                                   device_alloc,
-                                  ) -> Mapping[str, Any]:
+    async def generate_docker_args(
+        cls,
+        docker: 'aiodocker.docker.Docker',  # noqa
+        device_alloc,
+    ) -> Mapping[str, Any]:
         '''
         When starting a new container, generate device-specific options for the
         docker container create API as a dictionary, referring the given allocation

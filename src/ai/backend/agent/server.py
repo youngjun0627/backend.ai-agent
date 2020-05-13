@@ -43,6 +43,8 @@ if TYPE_CHECKING:
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
 
+agent_instance = None  # for live-debugging
+
 redis_config_iv = t.Dict({
     t.Key('addr', default=('127.0.0.1', 6379)): tx.HostPortPair,
     t.Key('password', default=None): t.Null | t.String,
@@ -450,7 +452,9 @@ async def server_main(loop, pidx, _args):
 
     # Start RPC server.
     try:
+        global agent_instance
         agent = await AgentRPCServer.new(etcd, config)
+        agent_instance = agent
     except InitializationError as e:
         log.error('Agent initialization failed: {}', e)
         os.kill(0, signal.SIGINT)

@@ -17,7 +17,7 @@ from typing import (
 )
 
 from async_timeout import timeout
-import zmq
+import zmq, zmq.asyncio
 
 from ai.backend.common import msgpack
 from ai.backend.common.docker import ImageRef
@@ -103,6 +103,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
     last_used: float
     termination_reason: Optional[str]
     clean_event: Optional[asyncio.Event]
+    stats_enabled: bool
 
     runner: 'AbstractCodeRunner'
 
@@ -121,6 +122,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
         self.last_used = time.monotonic()
         self.termination_reason = None
         self.clean_event = None
+        self.stats_enabled = False
         self._runner_lock = asyncio.Lock()
         self._tasks: Set[asyncio.Task] = set()
 

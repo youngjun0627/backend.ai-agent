@@ -3,7 +3,6 @@ import asyncio
 from decimal import Decimal
 import hashlib
 import logging
-import os
 from pathlib import Path
 import pickle
 import signal
@@ -54,7 +53,6 @@ from .resources import (
 )
 from .stats import (
     StatContext, StatModes,
-    spawn_stat_synchronizer, StatSyncState
 )
 from .types import (
     Container,
@@ -113,7 +111,6 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
 
     stat_ctx: StatContext
     stat_sync_sockpath: Path
-    stat_sync_states: MutableMapping[ContainerId, StatSyncState]
     stat_sync_task: asyncio.Task
 
     def __init__(self, config: Mapping[str, Any]) -> None:
@@ -139,10 +136,10 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         install_plugins(plugins, self, 'attr', self.config)
 
     async def __ainit__(self) -> None:
-        '''
+        """
         An implementation of AbstractAgent would define its own ``__ainit__()`` method.
         It must call this super method in an appropriate order, only once.
-        '''
+        """
         self.resource_lock = asyncio.Lock()
         self.container_lifecycle_queue = asyncio.Queue()
         self.producer_lock = asyncio.Lock()
@@ -176,22 +173,9 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.timer_tasks.append(aiotools.create_timer(self._scan_images_wrapper, 20.0))
         await self.scan_running_kernels()
 
-        self.timer_tasks.append(aiotools.create_timer(self.collect_node_stat, 2.0))
-
-        # Spawn stat collector task.
-        self.stat_sync_sockpath = ipc_base_path / f'stats.{os.getpid()}.sock'
-        self.stat_sync_states = dict()
-        self.stat_sync_task = self.loop.create_task(self.sync_container_stats())
-
-        # Start container stats collector for existing containers.
-        for kernel_id, kernel_obj in self.kernel_registry.items():
-            cid = kernel_obj['container_id']
-            stat_sync_state = StatSyncState(kernel_id)
-            self.stat_sync_states[cid] = stat_sync_state
-            async with spawn_stat_synchronizer(self.config['_src'],
-                                                self.stat_sync_sockpath,
-                                                self.stat_ctx.mode, cid) as proc:
-                stat_sync_state.sync_proc = proc
+        # Prepare stat collector tasks.
+        self.timer_tasks.append(aiotools.create_timer(self.collect_node_stat, 5.0))
+        self.timer_tasks.append(aiotools.create_timer(self.collect_container_stat, 5.0))
 
         # Prepare heartbeats.
         self.timer_tasks.append(aiotools.create_timer(self.heartbeat, 3.0))
@@ -206,10 +190,10 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         await self.produce_event('instance_started', 'self-started')
 
     async def shutdown(self, stop_signal: signal.Signals) -> None:
-        '''
+        """
         An implementation of AbstractAgent would define its own ``shutdown()`` method.
         It must call this super method in an appropriate order, only once.
-        '''
+        """
         # Close all pending kernel runners.
         for kernel_obj in self.kernel_registry.values():
             if kernel_obj.runner is not None:
@@ -226,26 +210,23 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             if isinstance(result, Exception):
                 log.error('timer cancellation error: {}', result)
 
-        # Stop stat collector task.
-        if self.stat_sync_task is not None:
-            self.stat_sync_task.cancel()
-            await self.stat_sync_task
-        self.redis_stat_pool.close()
-        await self.redis_stat_pool.wait_closed()
-
         # Stop lifecycle event handler.
         await self.container_lifecycle_queue.put(_sentinel)
         await self.container_lifecycle_handler
 
         # Notify the gateway.
         await self.produce_event('instance_terminated', 'shutdown')
+
+        # Close Redis connection pools.
         self.redis_producer_pool.close()
         await self.redis_producer_pool.wait_closed()
+        self.redis_stat_pool.close()
+        await self.redis_stat_pool.wait_closed()
 
     async def produce_event(self, event_name: str, *args) -> None:
-        '''
+        """
         Send an event to the manager(s).
-        '''
+        """
         _log = log.debug if event_name == 'instance_heartbeat' else log.info
         _log('produce_event({0})', event_name)
         encoded_event = msgpack.packb({
@@ -262,9 +243,9 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             await redis.execute_with_retries(_pipe_builder)
 
     async def heartbeat(self, interval: float):
-        '''
+        """
         Send my status information and available kernel images to the manager(s).
-        '''
+        """
         res_slots = {}
         for cctx in self.computers.values():
             for slot_key, slot_type in cctx.klass.slot_types:
@@ -299,59 +280,35 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             self.error_monitor.capture_exception()
 
     async def collect_node_stat(self, interval: float):
+        log.debug('collecting node statistics')
         try:
             await self.stat_ctx.collect_node_stat()
         except asyncio.CancelledError:
             pass
+        except Exception:
+            log.exception('unhandled exception while syncing node stats')
+            self.error_monitor.capture_exception()
 
-    async def sync_container_stats(self):
-        stat_sync_sock = self.zmq_ctx.socket(zmq.REP)
-        stat_sync_sock.setsockopt(zmq.LINGER, 1000)
-        stat_sync_sock.bind('ipc://' + str(self.stat_sync_sockpath))
+    async def collect_container_stat(self, interval: float):
+        log.debug('collecting container statistics')
         try:
-            log.info('opened stat-sync socket at {}', self.stat_sync_sockpath)
-            recv = aiotools.apartial(stat_sync_sock.recv_serialized,
-                                     lambda frames: [*map(msgpack.unpackb, frames)])
-            send = aiotools.apartial(stat_sync_sock.send_serialized,
-                                     serialize=lambda msgs: [*map(msgpack.packb, msgs)])
-            while True:
-                try:
-                    async for msg in aiotools.aiter(lambda: recv(), None):
-                        cid = ContainerId(msg[0]['cid'])
-                        status = msg[0]['status']
-                        await send([{'ack': True}])
-                        if status == 'terminated':
-                            self.stat_sync_states[cid].terminated.set()
-                        elif status == 'collect-stat':
-                            cstat = await asyncio.shield(self.stat_ctx.collect_container_stat(cid))
-                            if cid not in self.stat_sync_states:
-                                continue
-                            s = self.stat_sync_states[cid]
-                            for kernel_id, kernel_obj in self.kernel_registry.items():
-                                if kernel_obj['container_id'] == cid:
-                                    break
-                            else:
-                                continue
-                            now = time.monotonic()
-                            if now - s.last_sync > 10.0:
-                                await self.produce_event('kernel_stat_sync', str(kernel_id))
-                            s.last_stat = cstat
-                            s.last_sync = now
-                        else:
-                            log.warning('unrecognized stat sync status: {}', status)
-                except asyncio.CancelledError:
-                    break
-                except zmq.ZMQError:
-                    log.exception('zmq socket error with {}', self.stat_sync_sockpath)
-                except Exception:
-                    log.exception('unhandled exception while syncing container stats')
-                    self.error_monitor.capture_exception()
-        finally:
-            stat_sync_sock.close()
-            try:
-                self.stat_sync_sockpath.unlink()
-            except IOError:
-                pass
+            for kernel_id, kernel_obj in [*self.kernel_registry.items()]:
+                if not kernel_obj.stats_enabled:
+                    continue
+                cid = kernel_obj['container_id']
+                await self.stat_ctx.collect_container_stat(cid)
+                # Let the manager store the statistics in the persistent database.
+                await self.produce_event('kernel_stat_sync', str(kernel_id))
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception('unhandled exception while syncing container stats')
+            self.error_monitor.capture_exception()
+
+    async def _handle_start_event(self, ev: ContainerLifecycleEvent) -> None:
+        kernel_obj = self.kernel_registry.get(ev.kernel_id)
+        if kernel_obj is not None:
+            kernel_obj.stats_enabled = True
 
     async def _handle_destroy_event(self, ev: ContainerLifecycleEvent) -> None:
         result = None
@@ -377,6 +334,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                         )
                     )
             else:
+                kernel_obj.stats_enabled = False
                 kernel_obj.termination_reason = ev.reason
                 if kernel_obj.runner is not None:
                     await kernel_obj.runner.close()
@@ -442,7 +400,9 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 return
             log.info('lifecycle event: {!r}', ev)
             try:
-                if ev.event == LifecycleEvent.DESTROY:
+                if ev.event == LifecycleEvent.START:
+                    await self._handle_start_event(ev)
+                elif ev.event == LifecycleEvent.DESTROY:
                     await self._handle_destroy_event(ev)
                 elif ev.event == LifecycleEvent.CLEAN:
                     await self._handle_clean_event(ev)
@@ -633,6 +593,12 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                             container,
                             computer_set.alloc_map,
                         )
+                    await self.inject_container_lifecycle_event(
+                        kernel_id,
+                        LifecycleEvent.START,
+                        'resuming-agent-operation',
+                        container_id=container.id,
+                    )
                 elif container.status in DEAD_STATUS_SET:
                     log.info('detected dead container while agent is down (k:{0}, c:{})',
                              kernel_id, container.id)
@@ -686,9 +652,6 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
 
         Things to do:
         * Send a forced-kill signal to the kernel
-        * Collect last-moment statistics
-        * ``await self.stat_sync_states[cid].terminated.wait()``
-        * Return the last-moment statistics if availble.
         """
 
     @abstractmethod

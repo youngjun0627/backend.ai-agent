@@ -72,14 +72,12 @@ from ..resources import (
 from ..server import (
     get_extra_volumes,
 )
-from ..stats import (
-    spawn_stat_synchronizer, StatSyncState
-)
 from ..types import (
     Container, Port, ContainerStatus,
     ContainerLifecycleEvent, LifecycleEvent,
 )
 from ..utils import (
+    current_loop,
     update_nested_dict,
     get_kernel_id_from_container,
     host_pid_to_container_pid,
@@ -863,13 +861,7 @@ class DockerAgent(AbstractAgent):
                     for k, v in kvpairs.items():
                         f.write(f'{k}={v}\n')
 
-            stat_sync_state = StatSyncState(kernel_id)
-            self.stat_sync_states[cid] = stat_sync_state
-            async with spawn_stat_synchronizer(self.config['_src'],
-                                               self.stat_sync_sockpath,
-                                               self.stat_ctx.mode, cid) as proc:
-                stat_sync_state.sync_proc = proc
-                await container.start()
+            await container.start()
 
             # Get attached devices information (including model_name).
             attached_devices = {}
@@ -1017,25 +1009,8 @@ class DockerAgent(AbstractAgent):
             # The default timeout of the docker stop API is 10 seconds
             # to kill if container does not self-terminate.
             await container.stop()
-            # Collect the last-moment statistics.
-            if container_id in self.stat_sync_states:
-                s = self.stat_sync_states[container_id]
-                try:
-                    with timeout(5):
-                        await s.terminated.wait()
-                        if s.sync_proc is not None:
-                            await s.sync_proc.wait()
-                            s.sync_proc = None
-                except ProcessLookupError:
-                    pass
-                except asyncio.TimeoutError:
-                    log.warning('stat-collector shutdown sync timeout.')
-                last_stat: MutableMapping[MetricKey, MetricValue] = {
-                    key: metric.to_serializable_dict()
-                    for key, metric in s.last_stat.items()
-                }
-                last_stat['version'] = 2  # type: ignore
-                return last_stat
+            # TODO: last_stat must be collected in the manager from Redis/DB.
+            return None
         except DockerError as e:
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
@@ -1057,21 +1032,7 @@ class DockerAgent(AbstractAgent):
         container_id: Optional[ContainerId],
         restarting: bool,
     ) -> None:
-        if container_id is not None:
-            stat_sync_state = self.stat_sync_states.pop(container_id, None)
-            if stat_sync_state:
-                sync_proc = stat_sync_state.sync_proc
-                try:
-                    if sync_proc is not None:
-                        sync_proc.terminate()
-                        try:
-                            with timeout(2.0):
-                                await sync_proc.wait()
-                        except asyncio.TimeoutError:
-                            sync_proc.kill()
-                            await sync_proc.wait()
-                except ProcessLookupError:
-                    pass
+        loop = current_loop()
 
         kernel_obj = self.kernel_registry.get(kernel_id)
         if kernel_obj is not None:
@@ -1112,8 +1073,8 @@ class DockerAgent(AbstractAgent):
                     self.config['container']['scratch-type'] == 'memory'):
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
-                    shutil.rmtree(tmp_dir)
-                shutil.rmtree(scratch_dir)
+                    await loop.run_in_executor(None, shutil.rmtree, tmp_dir)
+                await loop.run_in_executor(None, shutil.rmtree, scratch_dir)
             except FileNotFoundError:
                 pass
 
@@ -1163,7 +1124,18 @@ class DockerAgent(AbstractAgent):
                 if self.config['debug']['log-docker-events']:
                     log.debug('docker-event: raw: {}', evdata)
 
-                if evdata['Action'] == 'die':
+                if evdata['Action'] == 'start':
+                    container_name = evdata['Actor']['Attributes']['name']
+                    kernel_id = await get_kernel_id_from_container(container_name)
+                    if kernel_id is None:
+                        continue
+                    await self.inject_container_lifecycle_event(
+                        kernel_id,
+                        LifecycleEvent.START,
+                        'new-container-started',
+                        container_id=ContainerId(evdata['Actor']['ID']),
+                    )
+                elif evdata['Action'] == 'die':
                     # When containers die, we immediately clean up them.
                     container_name = evdata['Actor']['Attributes']['name']
                     kernel_id = await get_kernel_id_from_container(container_name)
