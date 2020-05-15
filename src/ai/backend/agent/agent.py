@@ -458,7 +458,9 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 with open(ipc_base_path / f'last_registry.{self.agent_id}.dat', 'wb') as f:
                     pickle.dump(self.kernel_registry, f)
                 return
-            log.info('lifecycle event: {!r}', ev)
+            # attr currently does not support customizing getstate/setstate dunder methods
+            # until the next release.
+            log.info(f'lifecycle event: {ev!r}')
             try:
                 if ev.event == LifecycleEvent.START:
                     await self._handle_start_event(ev)
