@@ -16,6 +16,15 @@ Changes
 
 .. towncrier release notes start
 
+19.09.24 (2020-05-15)
+---------------------
+
+### Fixes
+* Fix lifecycle-related code errors when handling results of batch-mode tasks ([#210](https://github.com/lablup/backend.ai-agent/issues/210))
+* Fix instability caused by stat-synchronizer processes under heavy loads by collecting statistics periodically only ([#212](https://github.com/lablup/backend.ai-agent/issues/212))
+* Apply batching when producing "kernel_stat_sync" events to reduce manager loads and increase timeout for caching stats in Redis from 30 seconds to 2 minutes ([#213](https://github.com/lablup/backend.ai-agent/issues/213))
+
+
 19.09.22 (2020-04-30)
 ---------------------
 
