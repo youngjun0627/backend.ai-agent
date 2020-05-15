@@ -126,7 +126,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.restarting_kernels = {}
         self.stat_ctx = StatContext(
             self, mode=StatModes(config['container']['stats-type']),
-            log_endpoint=config['logging'].get('endpoint', ''))
+        )
         self.timer_tasks = []
         self.port_pool = set(range(
             config['container']['port-range'][0],

@@ -86,7 +86,6 @@ from ..types import (
     ContainerLifecycleEvent, LifecycleEvent,
 )
 from ..utils import (
-    current_loop,
     update_nested_dict,
     get_kernel_id_from_container,
     host_pid_to_container_pid,
