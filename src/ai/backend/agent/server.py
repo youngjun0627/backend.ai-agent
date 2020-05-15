@@ -290,10 +290,10 @@ class AgentRPCServer(aiozmq.rpc.AttrHandler, aobject):
                       flush_timeout,      # type: float
                       ):
         # type: (...) -> Dict[str, Any]
-        _log = log.debug if mode == 'continue' else log.info
-        _log('rpc::execute(k:{0}, run-id:{1}, mode:{2}, code:{3!r})',
-             kernel_id, run_id, mode,
-             code[:20] + '...' if len(code) > 20 else code)
+        if mode != 'continue':
+            log.info('rpc::execute(k:{0}, run-id:{1}, mode:{2}, code:{3!r})',
+                     kernel_id, run_id, mode,
+                     code[:20] + '...' if len(code) > 20 else code)
         async with self.handle_rpc_exception():
             result = await self.agent.execute(
                 KernelId(UUID(kernel_id)),
