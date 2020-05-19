@@ -107,6 +107,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
     redis: aioredis.Redis
     zmq_ctx: zmq.asyncio.Context
 
+    terminating_kernels: Set[KernelId]
     restarting_kernels: MutableMapping[KernelId, RestartTracker]
     timer_tasks: MutableSequence[asyncio.Task]
     container_lifecycle_queue: 'asyncio.Queue[Union[ContainerLifecycleEvent, Sentinel]]'
@@ -123,6 +124,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.kernel_registry = {}
         self.computers = {}
         self.images = {}  # repoTag -> digest
+        self.terminating_kernels = set()
         self.restarting_kernels = {}
         self.stat_ctx = StatContext(
             self, mode=StatModes(config['container']['stats-type']),
@@ -187,7 +189,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.timer_tasks.append(aiotools.create_timer(self.heartbeat, 3.0))
 
         # Prepare auto-cleaning of idle kernels.
-        self.timer_tasks.append(aiotools.create_timer(self.sync_container_lifecycles, 3.0))
+        self.timer_tasks.append(aiotools.create_timer(self.sync_container_lifecycles, 10.0))
 
         loop = current_loop()
         self.container_lifecycle_handler = loop.create_task(self.process_lifecycle_events())
@@ -551,6 +553,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             try:
                 # Check if: kernel_registry has the container but it's gone.
                 for kernel_id in (known_kernels.keys() - alive_kernels.keys()):
+                    if kernel_id in self.terminating_kernels or kernel_id in self.restarting_kernels:
+                        continue
                     terminated_kernels[kernel_id] = ContainerLifecycleEvent(
                         kernel_id,
                         known_kernels[kernel_id],
@@ -559,6 +563,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                     )
                 # Check if: there are containers not spawned by me.
                 for kernel_id in (alive_kernels.keys() - known_kernels.keys()):
+                    if kernel_id in self.terminating_kernels or kernel_id in self.restarting_kernels:
+                        continue
                     terminated_kernels[kernel_id] = ContainerLifecycleEvent(
                         kernel_id,
                         alive_kernels[kernel_id],
@@ -567,6 +573,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                     )
                 # Check if: the container's idle timeout is expired.
                 for kernel_id, kernel_obj in self.kernel_registry.items():
+                    if kernel_id in self.terminating_kernels or kernel_id in self.restarting_kernels:
+                        continue
                     idle_timeout = kernel_obj.resource_spec.idle_timeout
                     if idle_timeout is None or kernel_id not in alive_kernels:
                         continue
@@ -728,6 +736,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         Initiate destruction of the kernel.
 
         Things to do:
+        * Add the kernel ID to self.terminating_kernels if it's not in self.restarting_kernels
         * Send a forced-kill signal to the kernel
         """
 
@@ -745,6 +754,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         Things to do:
         * Delete the underlying kernel resource (e.g., container)
         * Release host-specific resources used for the kernel (e.g., scratch spaces)
+        * Discard the kernel ID from self.terminating_kernels if it's not in self.restarting_kernels
 
         This method is intended to be called asynchronously by the implementation-specific
         event monitoring routine.
@@ -775,7 +785,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 'restarting',
             )
             try:
-                with timeout(30):
+                with timeout(60):
                     await tracker.destroy_event.wait()
             except asyncio.TimeoutError:
                 log.warning('timeout detected while restarting kernel {0}!',
