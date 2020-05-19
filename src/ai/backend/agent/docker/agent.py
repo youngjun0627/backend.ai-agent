@@ -24,7 +24,6 @@ from typing_extensions import Literal
 
 import aiohttp
 import attr
-from async_timeout import timeout
 import zmq
 
 from aiodocker.docker import Docker, DockerContainer
@@ -1004,6 +1003,8 @@ class DockerAgent(AbstractAgent):
     ) -> Optional[Mapping[MetricKey, MetricValue]]:
         if container_id is None:
             return None
+        if kernel_id not in self.restarting_kernels:
+            self.terminating_kernels.add(kernel_id)
         try:
             container = self.docker.containers.container(container_id)
             # The default timeout of the docker stop API is 10 seconds
@@ -1036,6 +1037,8 @@ class DockerAgent(AbstractAgent):
 
         kernel_obj = self.kernel_registry.get(kernel_id)
         if kernel_obj is not None:
+            if kernel_id not in self.restarting_kernels:
+                self.terminating_kernels.add(kernel_id)
             for domain_socket_proxy in kernel_obj.get('domain_socket_proxies', []):
                 domain_socket_proxy.proxy_server.close()
                 await domain_socket_proxy.proxy_server.wait_closed()
@@ -1046,36 +1049,39 @@ class DockerAgent(AbstractAgent):
 
         # When the agent restarts with a different port range, existing
         # containers' host ports may not belong to the new port range.
-        if not self.config['debug']['skip-container-deletion'] and container_id is not None:
-            container = self.docker.containers.container(container_id)
-            try:
-                await container.delete(force=True, v=True)
-            except DockerError as e:
-                if e.status == 409 and 'already in progress' in e.message:
-                    pass
-                elif e.status == 404:
-                    pass
-                else:
-                    log.exception(
-                        'unexpected docker error while deleting container (k:{}, c:{})',
-                        kernel_id, container_id)
-            except asyncio.TimeoutError:
-                log.warning('container deletion timeout (k:{}, c:{})',
+        try:
+            if not self.config['debug']['skip-container-deletion'] and container_id is not None:
+                container = self.docker.containers.container(container_id)
+                try:
+                    await container.delete(force=True, v=True)
+                except DockerError as e:
+                    if e.status == 409 and 'already in progress' in e.message:
+                        pass
+                    elif e.status == 404:
+                        pass
+                    else:
+                        log.exception(
+                            'unexpected docker error while deleting container (k:{}, c:{})',
                             kernel_id, container_id)
+                except asyncio.TimeoutError:
+                    log.warning('container deletion timeout (k:{}, c:{})',
+                                kernel_id, container_id)
 
-        if not restarting:
-            scratch_root = self.config['container']['scratch-root']
-            scratch_dir = scratch_root / str(kernel_id)
-            tmp_dir = scratch_root / f'{kernel_id}_tmp'
-            try:
-                if (sys.platform.startswith('linux') and
-                    self.config['container']['scratch-type'] == 'memory'):
-                    await destroy_scratch_filesystem(scratch_dir)
-                    await destroy_scratch_filesystem(tmp_dir)
-                    await loop.run_in_executor(None, shutil.rmtree, tmp_dir)
-                await loop.run_in_executor(None, shutil.rmtree, scratch_dir)
-            except FileNotFoundError:
-                pass
+            if not restarting:
+                scratch_root = self.config['container']['scratch-root']
+                scratch_dir = scratch_root / str(kernel_id)
+                tmp_dir = scratch_root / f'{kernel_id}_tmp'
+                try:
+                    if (sys.platform.startswith('linux') and
+                        self.config['container']['scratch-type'] == 'memory'):
+                        await destroy_scratch_filesystem(scratch_dir)
+                        await destroy_scratch_filesystem(tmp_dir)
+                        await loop.run_in_executor(None, shutil.rmtree, tmp_dir)
+                    await loop.run_in_executor(None, shutil.rmtree, scratch_dir)
+                except FileNotFoundError:
+                    pass
+        finally:
+            self.terminating_kernels.discard(kernel_id)
 
     async def fetch_docker_events(self):
         while True:
