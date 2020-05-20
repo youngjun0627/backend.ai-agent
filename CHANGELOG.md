@@ -16,6 +16,16 @@ Changes
 
 .. towncrier release notes start
 
+19.09.25 (2020-05-20)
+---------------------
+
+### Fixes
+* Improve stability under heavily loaded scenarios ([#214](https://github.com/lablup/backend.ai-agent/issues/214))
+  - Skip lifecycle sync for already terminating kernels to reduce excessive Docker Engine overheads with a many number of being-terminated kernels
+  - Remove timeout for container termination for both self-terminated and user-requested cases
+  - Increase timeout for container termination to 60 seconds during restarting kernels, by observing deletion latencies under heavy load tests
+
+
 19.09.24 (2020-05-15)
 ---------------------
 
