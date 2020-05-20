@@ -468,7 +468,7 @@ class DockerAgent(AbstractAgent):
                     log.info('insufficient resource: {} of {}\n'
                              '(alloc map: {})',
                              device_specific_slots, dev_name,
-                             computer_set.alloc_map.allocations)
+                             dict(computer_set.alloc_map.allocations))
                     raise
 
             # Realize vfolder mounts.
