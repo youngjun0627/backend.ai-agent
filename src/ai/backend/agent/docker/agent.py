@@ -1117,9 +1117,12 @@ class DockerAgent(AbstractAgent):
                         await self.produce_event(
                             'kernel_failure', str(kernel_id), -2)
                         break
+                    opts = {
+                        'exec': '',
+                    }
                 # TODO: store last_stat?
                 destroyed = asyncio.Event()
-                self.container_lifecycle_queue.put(
+                await self.container_lifecycle_queue.put(
                     ContainerLifecycleEvent(
                         kernel_id,
                         kernel_obj['container_id'],

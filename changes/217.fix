@@ -1,0 +1,1 @@
+Prevent executing startup command multiple times for batch session.
