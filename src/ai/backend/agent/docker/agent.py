@@ -22,7 +22,6 @@ from typing import (
 )
 from typing_extensions import Literal
 
-import aiohttp
 import attr
 import zmq
 
@@ -111,8 +110,7 @@ def container_from_docker_container(src: DockerContainer) -> Container:
 class DockerAgent(AbstractAgent):
 
     docker: Docker
-    monitor_fetch_task: asyncio.Task
-    monitor_handle_task: asyncio.Task
+    monitor_docker_task: asyncio.Task
     agent_sockpath: Path
     agent_sock_task: asyncio.Task
     scan_images_timer: asyncio.Task
@@ -128,23 +126,16 @@ class DockerAgent(AbstractAgent):
         await super().__ainit__()
         self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
         self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
-        self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
-        self.monitor_handle_task = self.loop.create_task(self.handle_docker_events())
+        self.monitor_docker_task = self.loop.create_task(self.monitor_docker_events())
 
     async def shutdown(self, stop_signal: signal.Signals):
         try:
             await super().shutdown(stop_signal)
         finally:
             # Stop docker event monitoring.
-            if self.monitor_fetch_task is not None:
-                self.monitor_fetch_task.cancel()
-                self.monitor_handle_task.cancel()
-                await self.monitor_fetch_task
-                await self.monitor_handle_task
-            try:
-                await self.docker.events.stop()
-            except Exception:
-                pass
+            if self.monitor_docker_task is not None:
+                self.monitor_docker_task.cancel()
+                await self.monitor_docker_task
             await self.docker.close()
 
         # Stop handlign agent sock.
@@ -1086,52 +1077,13 @@ class DockerAgent(AbstractAgent):
         finally:
             self.terminating_kernels.discard(kernel_id)
 
-    async def fetch_docker_events(self):
-        while True:
-            try:
-                await self.docker.events.run()
-            except asyncio.TimeoutError:
-                # The API HTTP connection may terminate after some timeout
-                # (e.g., 5 minutes)
-                log.info('restarting docker.events.run()')
-                continue
-            except aiohttp.ClientError as e:
-                log.warning('restarting docker.events.run() due to {0!r}', e)
-                continue
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                log.exception('unexpected error')
-                self.error_monitor.capture_exception()
-                break
-
-    async def handle_docker_events(self):
-        subscriber = self.docker.events.subscribe()
-        last_footprint = None
+    async def monitor_docker_events(self):
+        subscriber = self.docker.events.subscribe(create_task=True)
         while True:
             try:
                 evdata = await subscriber.get()
-            except asyncio.CancelledError:
-                break
-            if evdata is None:
-                # fetch_docker_events() will automatically reconnect.
-                continue
-
-            # FIXME: Sometimes(?) duplicate event data is received.
-            # Just ignore the duplicate ones.
-            try:
-                new_footprint = (
-                    evdata['Type'],
-                    evdata['Action'],
-                    evdata['Actor']['ID'],
-                )
-                if new_footprint == last_footprint:
-                    continue
-                last_footprint = new_footprint
-
                 if self.config['debug']['log-docker-events']:
                     log.debug('docker-event: raw: {}', evdata)
-
                 if evdata['Action'] == 'start':
                     container_name = evdata['Actor']['Attributes']['name']
                     kernel_id = await get_kernel_id_from_container(container_name)
@@ -1168,5 +1120,4 @@ class DockerAgent(AbstractAgent):
                 break
             except Exception:
                 log.exception('unexpected error while processing docker events')
-
-        await asyncio.sleep(0.5)
+        await self.docker.events.stop()
