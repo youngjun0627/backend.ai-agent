@@ -398,6 +398,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                     )
 
     async def process_lifecycle_events(self) -> None:
+        loop = current_loop()
         while True:
             ev = await self.container_lifecycle_queue.get()
             if isinstance(ev, Sentinel):
@@ -407,11 +408,11 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             log.info('lifecycle event: {!r}', ev)
             try:
                 if ev.event == LifecycleEvent.START:
-                    await self._handle_start_event(ev)
+                    loop.create_task(self._handle_start_event(ev))
                 elif ev.event == LifecycleEvent.DESTROY:
-                    await self._handle_destroy_event(ev)
+                    loop.create_task(self._handle_destroy_event(ev))
                 elif ev.event == LifecycleEvent.CLEAN:
-                    await self._handle_clean_event(ev)
+                    loop.create_task(self._handle_clean_event(ev))
                 else:
                     log.warning('unsupported lifecycle event: {!r}', ev)
             except Exception:

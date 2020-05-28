@@ -1,0 +1,1 @@
+Fix blocking of subsequent lifecycle event processing by a hanging-up handler
