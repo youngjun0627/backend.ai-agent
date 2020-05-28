@@ -16,6 +16,15 @@ Changes
 
 .. towncrier release notes start
 
+19.09.26 (2020-05-28)
+---------------------
+
+### Fixes
+* Prevent executing startup command multiple times for batch session. ([#217](https://github.com/lablup/backend.ai-agent/issues/217))
+* Fix the duplicate Docker event issue due to a misuse of the aidoocker API ([#220](https://github.com/lablup/backend.ai-agent/issues/220))
+* Fix blocking of subsequent lifecycle event processing by a hanging-up handler ([#221](https://github.com/lablup/backend.ai-agent/issues/221))
+
+
 19.09.25 (2020-05-20)
 ---------------------
 

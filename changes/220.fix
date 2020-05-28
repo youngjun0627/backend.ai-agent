@@ -1,1 +1,0 @@
-Fix the duplicate Docker event issue due to a misuse of the aidoocker API
