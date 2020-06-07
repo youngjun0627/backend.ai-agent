@@ -194,6 +194,9 @@ skip-container-deletion = false
 # Include debug-level logs for statistics.
 log-stats = false
 
+# Include debug-level logs for heartbeats
+log-heartbeats = false
+
 # Include debug-level logs for docker event stream.
 log-docker-events = false
 

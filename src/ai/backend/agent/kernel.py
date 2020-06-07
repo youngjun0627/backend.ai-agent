@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from abc import abstractmethod, ABCMeta
 import asyncio
 import codecs
@@ -11,10 +13,18 @@ import re
 import secrets
 import time
 from typing import (
-    Any, Optional,
-    Dict, Mapping,
-    Set, FrozenSet, Tuple,
+    Any,
+    Dict,
+    FrozenSet,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Set,
     Sequence,
+    Tuple,
+    TypedDict,
+    Union,
 )
 
 from async_timeout import timeout
@@ -22,7 +32,7 @@ import zmq, zmq.asyncio
 
 from ai.backend.common import msgpack
 from ai.backend.common.docker import ImageRef
-from ai.backend.common.types import aobject
+from ai.backend.common.types import aobject, KernelId
 from ai.backend.common.utils import current_loop, StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
 from .resources import KernelResourceSpec
@@ -32,7 +42,20 @@ log = BraceStyleAdapter(logging.getLogger(__name__))
 # msg types visible to the API client.
 # (excluding control signals such as 'finished' and 'waiting-input'
 # since they are passed as separate status field.)
-outgoing_msg_types = {'stdout', 'stderr', 'media', 'html', 'log', 'completion'}
+ConsoleItemType = Literal[
+    'stdout', 'stderr', 'media', 'html', 'log', 'completion',
+]
+outgoing_msg_types: FrozenSet[ConsoleItemType] = frozenset([
+    'stdout', 'stderr', 'media', 'html', 'log', 'completion',
+])
+ResultType = Union[ConsoleItemType, Literal[
+    'continued',
+    'clean-finished',
+    'build-finished',
+    'finished',
+    'exec-timeout',
+    'waiting-input',
+]]
 
 
 class KernelFeatures(StringSetFlag):
@@ -87,8 +110,22 @@ class ExecTimeout(RunEvent):
 
 @dataclass
 class ResultRecord:
-    msg_type: Optional[str] = None
+    msg_type: ResultType
     data: Optional[str] = None
+
+
+class NextResult(TypedDict, total=False):
+    runId: Optional[str]
+    status: ResultType
+    exitCode: Optional[int]
+    options: Optional[Mapping[str, Any]]
+    # v1
+    stdout: Optional[str]
+    stderr: Optional[str]
+    media: Optional[Sequence[Any]]
+    html: Optional[Sequence[Any]]
+    # v2
+    console: Optional[Sequence[Any]]
 
 
 class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
@@ -104,6 +141,8 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
     termination_reason: Optional[str]
     clean_event: Optional[asyncio.Event]
     stats_enabled: bool
+
+    _tasks: Set[asyncio.Task]
 
     runner: 'AbstractCodeRunner'
 
@@ -123,8 +162,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
         self.termination_reason = None
         self.clean_event = None
         self.stats_enabled = False
-        self._runner_lock = asyncio.Lock()
-        self._tasks: Set[asyncio.Task] = set()
+        self._tasks = set()
 
     async def __ainit__(self) -> None:
         log.debug('kernel.__ainit__(k:{0}, api-ver:{1}, client-features:{2}): '
@@ -134,23 +172,21 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
             client_features=default_client_features,
             api_version=default_api_version)
 
-    def __getstate__(self):
+    def __getstate__(self) -> Mapping[str, Any]:
         props = self.__dict__.copy()
         del props['agent_config']
         del props['clean_event']
-        del props['_runner_lock']
         del props['_tasks']
         return props
 
-    def __setstate__(self, props):
+    def __setstate__(self, props) -> None:
         self.__dict__.update(props)
         # agent_config is set by the pickle.loads() caller.
         self.clean_event = None
-        self._runner_lock = asyncio.Lock()
-        self._tasks: Set[asyncio.Task] = set()
+        self._tasks = set()
 
     @abstractmethod
-    async def close(self):
+    async def close(self) -> None:
         '''
         Release internal resources used for interacting with the kernel.
         Note that this does NOT terminate the container.
@@ -163,7 +199,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
     # - restoration from running containers is done by computer's classmethod
     #   "restore_from_container"
 
-    def release_slots(self, computer_ctxs):
+    def release_slots(self, computer_ctxs) -> None:
         '''
         Release the resource slots occupied by the kernel
         to the allocation maps.
@@ -215,14 +251,17 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
     async def list_files(self, path: str):
         raise NotImplementedError
 
-    async def execute(self,
-                      run_id: Optional[str], mode: str, text: str, *,
-                      opts: Mapping[str, Any],
-                      api_version: int,
-                      flush_timeout: float):
+    async def execute(
+        self,
+        run_id: Optional[str], mode: str, text: str, *,
+        opts: Mapping[str, Any],
+        api_version: int,
+        flush_timeout: float,
+    ) -> NextResult:
+        myself = asyncio.current_task()
+        assert myself is not None
+        self._tasks.add(myself)
         try:
-            myself = asyncio.Task.current_task()
-            self._tasks.add(myself)
             await self.runner.attach_output_queue(run_id)
             try:
                 if mode == 'batch':
@@ -239,7 +278,8 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
                 raise asyncio.CancelledError
             return await self.runner.get_next_result(
                 api_ver=api_version,
-                flush_timeout=flush_timeout)
+                flush_timeout=flush_timeout,
+            )
         except asyncio.CancelledError:
             await self.runner.close()
             raise
@@ -249,6 +289,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
 
 class AbstractCodeRunner(aobject, metaclass=ABCMeta):
 
+    kernel_id: KernelId
     started_at: float
     finished_at: Optional[float]
     exec_timeout: float
@@ -258,22 +299,22 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
     input_sock: zmq.asyncio.Socket
     output_sock: zmq.asyncio.Socket
 
-    # FIXME: use __future__.annotations in Python 3.7+
-    completion_queue: asyncio.Queue  # contains: bytes
-    service_queue: asyncio.Queue     # contains: bytes
-    service_apps_info_queue: asyncio.Queue     # contains: bytes
-    status_queue: asyncio.Queue      # contains: bytes
-    output_queue: Optional[asyncio.Queue]  # contains: ResultRecord
+    completion_queue: asyncio.Queue[bytes]
+    service_queue: asyncio.Queue[bytes]
+    service_apps_info_queue: asyncio.Queue[bytes]
+    status_queue: asyncio.Queue[bytes]
+    output_queue: Optional[asyncio.Queue[ResultRecord]]
     current_run_id: Optional[str]
-    pending_queues: OrderedDict  # contains: [str, Tuple[asyncio.Event, asyncio.Queue[ResultRecord]]]
+    pending_queues: OrderedDict[str, Tuple[asyncio.Event, asyncio.Queue[ResultRecord]]]
 
     read_task: Optional[asyncio.Task]
     status_task: Optional[asyncio.Task]
     watchdog_task: Optional[asyncio.Task]
 
-    def __init__(self, kernel_id, *,
+    def __init__(self, kernel_id: KernelId, *,
                  exec_timeout: float = 0,
                  client_features: FrozenSet[str] = None) -> None:
+        self.kernel_id = kernel_id
         self.started_at = time.monotonic()
         self.finished_at = None
         if not math.isfinite(exec_timeout) or exec_timeout < 0:
@@ -481,7 +522,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         except asyncio.TimeoutError:
             return {'status': 'failed', 'error': 'timeout'}
 
-    async def watchdog(self):
+    async def watchdog(self) -> None:
         try:
             await asyncio.sleep(self.exec_timeout)
             if self.output_queue is not None:
@@ -491,7 +532,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             pass
 
     @staticmethod
-    def aggregate_console(result, records, api_ver):
+    def aggregate_console(result: NextResult, records: Sequence[ResultRecord], api_ver: int) -> None:
 
         if api_ver == 1:
 
@@ -502,10 +543,10 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
 
             for rec in records:
                 if rec.msg_type == 'stdout':
-                    stdout_items.append(rec.data)
+                    stdout_items.append(rec.data or '')
                 elif rec.msg_type == 'stderr':
-                    stderr_items.append(rec.data)
-                elif rec.msg_type == 'media':
+                    stderr_items.append(rec.data or '')
+                elif rec.msg_type == 'media' and rec.data is not None:
                     o = json.loads(rec.data)
                     media_items.append((o['type'], o['data']))
                 elif rec.msg_type == 'html':
@@ -518,7 +559,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
 
         elif api_ver >= 2:
 
-            console_items = []
+            console_items: List[Tuple[ConsoleItemType, Union[str, Tuple[str, str]]]] = []
             last_stdout = io.StringIO()
             last_stderr = io.StringIO()
 
@@ -534,14 +575,15 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
                     last_stderr.truncate(0)
 
                 if rec.msg_type == 'stdout':
-                    last_stdout.write(rec.data)
+                    last_stdout.write(rec.data or '')
                 elif rec.msg_type == 'stderr':
-                    last_stderr.write(rec.data)
-                elif rec.msg_type == 'media':
+                    last_stderr.write(rec.data or '')
+                elif rec.msg_type == 'media' and rec.data is not None:
                     o = json.loads(rec.data)
-                    console_items.append((rec.msg_type, (o['type'], o['data'])))
+                    console_items.append(('media', (o['type'], o['data'])))
                 elif rec.msg_type in outgoing_msg_types:
-                    console_items.append((rec.msg_type, rec.data))
+                    # FIXME: currently mypy cannot handle dynamic specialization of literals.
+                    console_items.append((rec.msg_type, rec.data))  # type: ignore
 
             if last_stdout.tell():
                 console_items.append(('stdout', last_stdout.getvalue()))
@@ -555,11 +597,13 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         else:
             raise AssertionError('Unrecognized API version')
 
-    async def get_next_result(self, api_ver=2, flush_timeout=2.0):
+    async def get_next_result(self, api_ver=2, flush_timeout=2.0) -> NextResult:
         # Context: per API request
         has_continuation = ClientFeatures.CONTINUATION in self.client_features
         try:
             records = []
+            result: NextResult
+            assert self.output_queue is not None
             with timeout(flush_timeout if has_continuation else None):
                 while True:
                     rec = await self.output_queue.get()
@@ -704,7 +748,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             # from the kernel.
             self.output_queue = None
 
-    async def read_output(self):
+    async def read_output(self) -> None:
         # We should use incremental decoder because some kernels may
         # send us incomplete UTF-8 byte sequences (e.g., Julia).
         decoders = (

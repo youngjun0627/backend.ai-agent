@@ -40,7 +40,6 @@ from ai.backend.common.types import (
     AutoPullBehavior, ImageRegistry,
     KernelCreationConfig,
     KernelCreationResult,
-    MetricKey, MetricValue,
     Sentinel,
 )
 from ai.backend.common.utils import current_loop
@@ -235,8 +234,14 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         """
         Send an event to the manager(s).
         """
-        _log = log.debug if event_name == 'instance_heartbeat' else log.info
-        _log('produce_event({0})', event_name)
+        if self.config['debug']['log-heartbeats']:
+            _log = log.debug if event_name == 'instance_heartbeat' else log.info
+        else:
+            _log = (lambda *args: None) if event_name == 'instance_heartbeat' else log.info
+        if event_name.startswith('kernel_') and len(args) > 0:
+            _log('produce_event({0}, k:{1})', event_name, args[0])
+        else:
+            _log('produce_event({0})', event_name)
         encoded_event = msgpack.packb({
             'event_name': event_name,
             'agent_id': self.config['agent']['id'],
@@ -338,7 +343,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         )
 
     async def collect_node_stat(self, interval: float):
-        log.debug('collecting node statistics')
+        if self.config['debug']['log-stats']:
+            log.debug('collecting node statistics')
         try:
             await self.stat_ctx.collect_node_stat()
         except asyncio.CancelledError:
@@ -348,7 +354,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             self.error_monitor.capture_exception()
 
     async def collect_container_stat(self, interval: float):
-        log.debug('collecting container statistics')
+        if self.config['debug']['log-stats']:
+            log.debug('collecting container statistics')
         try:
             updated_kernel_ids = []
             for kernel_id, kernel_obj in [*self.kernel_registry.items()]:
@@ -465,11 +472,11 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             log.info(f'lifecycle event: {ev!r}')
             try:
                 if ev.event == LifecycleEvent.START:
-                    await self._handle_start_event(ev)
+                    asyncio.create_task(self._handle_start_event(ev))
                 elif ev.event == LifecycleEvent.DESTROY:
-                    await self._handle_destroy_event(ev)
+                    asyncio.create_task(self._handle_destroy_event(ev))
                 elif ev.event == LifecycleEvent.CLEAN:
-                    await self._handle_clean_event(ev)
+                    asyncio.create_task(self._handle_clean_event(ev))
                 else:
                     log.warning('unsupported lifecycle event: {!r}', ev)
             except Exception:
@@ -731,7 +738,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self,
         kernel_id: KernelId,
         container_id: Optional[ContainerId],
-    ) -> Optional[Mapping[MetricKey, MetricValue]]:
+    ) -> None:
         """
         Initiate destruction of the kernel.
 

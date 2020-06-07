@@ -24,7 +24,7 @@ from uuid import UUID
 import aiotools
 from aiotools import aclosing
 from callosum.rpc import Peer, RPCMessage
-from callosum.ordering import KeySerializedAsyncScheduler
+from callosum.ordering import ExitOrderedAsyncScheduler
 from callosum.lower.zeromq import ZeroMQAddress, ZeroMQRPCTransport
 import click
 from setproctitle import setproctitle
@@ -196,7 +196,7 @@ class AgentRPCServer(aobject):
         self.rpc_server = Peer(
             bind=ZeroMQAddress(f"tcp://{rpc_addr}"),
             transport=ZeroMQRPCTransport,
-            scheduler=KeySerializedAsyncScheduler(),
+            scheduler=ExitOrderedAsyncScheduler(),
             serializer=msgpack.packb,
             deserializer=msgpack.unpackb,
             debug_rpc=self.config['debug']['enabled'],
