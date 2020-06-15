@@ -108,3 +108,8 @@ registry_ecr_config_iv = t.Dict({
     t.Key('profile'): t.String,
     t.Key('registry-id'): t.String
 })
+
+container_etcd_config_iv = t.Dict({
+    t.Key('kernel-uid', optional=True): t.ToInt,
+    t.Key('kernel-gid', optional=True): t.ToInt
+})

@@ -80,3 +80,6 @@ agent.toml
 # auto-generated files
 scripts/*.dockerfile
 agent.pid
+
+# coverage
+cov.xml

@@ -28,6 +28,7 @@ from callosum.ordering import ExitOrderedAsyncScheduler
 from callosum.lower.zeromq import ZeroMQAddress, ZeroMQRPCTransport
 import click
 from setproctitle import setproctitle
+from trafaret.dataerror import DataError as TrafaretDataError
 
 from ai.backend.common import config, utils, identity, msgpack
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
@@ -47,6 +48,7 @@ from .config import (
     k8s_extra_config_iv,
     registry_local_config_iv,
     registry_ecr_config_iv,
+    container_etcd_config_iv,
 )
 from .types import VolumeInfo, LifecycleEvent
 from .utils import get_subnet_ip
@@ -184,6 +186,7 @@ class AgentRPCServer(aobject):
             await self.detect_manager()
 
         await self.read_agent_config()
+        await self.read_agent_config_container()
 
         if self.config['agent']['mode'] == 'docker':
             from .docker.agent import DockerAgent
@@ -243,6 +246,19 @@ class AgentRPCServer(aobject):
         )
         for k, v in agent_etcd_config.items():
             self.config['agent'][k] = v
+
+    async def read_agent_config_container(self):
+        # Fill up global container configurations from etcd.
+        try:
+            container_etcd_config = container_etcd_config_iv.check(
+                await self.etcd.get_prefix('config/container')
+            )
+        except TrafaretDataError as etrafa:
+            log.warning("etcd: container-config error: {}".format(etrafa))
+            container_etcd_config = {}
+        for k, v in container_etcd_config.items():
+            self.config['container'][k] = v
+            log.info("etcd: container-config: {}={}".format(k, v))
 
     async def __aenter__(self) -> None:
         await self.rpc_server.__aenter__()
