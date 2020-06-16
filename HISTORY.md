@@ -1,6 +1,34 @@
 Changes
 =======
 
+19.09.26 (2020-05-28)
+---------------------
+
+### Fixes
+* Prevent executing startup command multiple times for batch session. ([#217](https://github.com/lablup/backend.ai-agent/issues/217))
+* Fix the duplicate Docker event issue due to a misuse of the aidoocker API ([#220](https://github.com/lablup/backend.ai-agent/issues/220))
+* Fix blocking of subsequent lifecycle event processing by a hanging-up handler ([#221](https://github.com/lablup/backend.ai-agent/issues/221))
+
+
+19.09.25 (2020-05-20)
+---------------------
+
+### Fixes
+* Improve stability under heavily loaded scenarios ([#214](https://github.com/lablup/backend.ai-agent/issues/214))
+  - Skip lifecycle sync for already terminating kernels to reduce excessive Docker Engine overheads with a many number of being-terminated kernels
+  - Remove timeout for container termination for both self-terminated and user-requested cases
+  - Increase timeout for container termination to 60 seconds during restarting kernels, by observing deletion latencies under heavy load tests
+
+
+19.09.24 (2020-05-15)
+---------------------
+
+### Fixes
+* Fix lifecycle-related code errors when handling results of batch-mode tasks ([#210](https://github.com/lablup/backend.ai-agent/issues/210))
+* Fix instability caused by stat-synchronizer processes under heavy loads by collecting statistics periodically only ([#212](https://github.com/lablup/backend.ai-agent/issues/212))
+* Apply batching when producing "kernel_stat_sync" events to reduce manager loads and increase timeout for caching stats in Redis from 30 seconds to 2 minutes ([#213](https://github.com/lablup/backend.ai-agent/issues/213))
+
+
 19.09.22 (2020-04-30)
 ---------------------
 
