@@ -1,19 +1,13 @@
-'''
+"""
 A module to collect various performance metrics of Docker containers.
 
 Reference: https://www.datadoghq.com/blog/how-to-collect-docker-metrics/
-'''
+"""
 
 import asyncio
-import argparse
-from contextlib import closing, contextmanager
-from ctypes import CDLL, get_errno
 from decimal import Decimal
 import enum
 import logging
-import os
-from pathlib import Path
-import signal
 import sys
 import time
 from typing import (
@@ -24,53 +18,39 @@ from typing import (
     FrozenSet,
     TYPE_CHECKING,
 )
-from typing_extensions import Final
 
-import aiodocker
-import aiotools
 import attr
-from setproctitle import setproctitle
-import zmq
-import zmq.asyncio
 
-from ai.backend.common import config, redis
-from ai.backend.common.logging import Logger, BraceStyleAdapter
+from ai.backend.common import redis
 from ai.backend.common.identity import is_containerized
+from ai.backend.common.logging import BraceStyleAdapter
+from ai.backend.common import msgpack
 from ai.backend.common.types import (
     ContainerId, DeviceId, KernelId,
     MetricKey, MetricValue, MovingStatValue,
 )
-from ai.backend.common import msgpack
-from .defs import ipc_base_path
 from .utils import (
-    numeric_list, remove_exponent,
+    remove_exponent,
 )
 if TYPE_CHECKING:
     from .agent import AbstractAgent
 
 __all__ = (
-    'StatContext', 'StatModes',
-    'MetricTypes', 'NodeMeasurement', 'ContainerMeasurement', 'Measurement',
-    'StatSyncState',
-    'check_cgroup_available',
-    'spawn_stat_synchronizer',
+    'StatContext',
+    'StatModes',
+    'MetricTypes',
+    'NodeMeasurement',
+    'ContainerMeasurement',
+    'Measurement',
 )
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.stats'))
 
-CLONE_NEWNET: Final = 0x40000000
-
-
-def _errcheck(ret, func, args):
-    if ret == -1:
-        e = get_errno()
-        raise OSError(e, os.strerror(e))
-
 
 def check_cgroup_available():
-    '''
+    """
     Check if the host OS provides cgroups.
-    '''
+    """
     return (not is_containerized() and sys.platform.startswith('linux'))
 
 
@@ -80,9 +60,9 @@ class StatModes(enum.Enum):
 
     @staticmethod
     def get_preferred_mode():
-        '''
+        """
         Returns the most preferred statistics collector type for the host OS.
-        '''
+        """
         if check_cgroup_available():
             return StatModes.CGROUP
         return StatModes.DOCKER
@@ -103,9 +83,9 @@ class Measurement:
 
 @attr.s(auto_attribs=True, slots=True)
 class NodeMeasurement:
-    '''
+    """
     Collection of per-node and per-agent statistics for a specific metric.
-    '''
+    """
     # 2-tuple of Decimals mean raw values for (usage, available)
     # Percent values are calculated from them.
     key: str
@@ -119,9 +99,9 @@ class NodeMeasurement:
 
 @attr.s(auto_attribs=True, slots=True)
 class ContainerMeasurement:
-    '''
+    """
     Collection of per-container statistics for a specific metric.
-    '''
+    """
     key: str
     type: MetricTypes
     per_container: Mapping[str, Measurement] = attr.Factory(dict)
@@ -249,15 +229,6 @@ class Metric:
         }
 
 
-@attr.s(auto_attribs=True, slots=True)
-class StatSyncState:
-    kernel_id: KernelId
-    terminated: asyncio.Event = attr.Factory(asyncio.Event)
-    last_stat: Mapping[MetricKey, Metric] = attr.Factory(dict)
-    last_sync: float = attr.Factory(time.monotonic)
-    sync_proc: Optional[asyncio.subprocess.Process] = None
-
-
 class StatContext:
 
     agent: 'AbstractAgent'
@@ -265,15 +236,12 @@ class StatContext:
     node_metrics: Mapping[MetricKey, Metric]
     device_metrics: Mapping[MetricKey, MutableMapping[DeviceId, Metric]]
     kernel_metrics: MutableMapping[KernelId, MutableMapping[MetricKey, Metric]]
-    log_endpoint: str
 
     def __init__(self, agent: 'AbstractAgent', mode: StatModes = None, *,
-                 log_endpoint: str,
-                 cache_lifespan: float = 30.0) -> None:
+                 cache_lifespan: float = 120.0) -> None:
         self.agent = agent
         self.mode = mode if mode is not None else StatModes.get_preferred_mode()
         self.cache_lifespan = cache_lifespan
-        self.log_endpoint = log_endpoint
 
         self.node_metrics = {}
         self.device_metrics = {}
@@ -283,14 +251,14 @@ class StatContext:
         self._timestamps: MutableMapping[str, float] = {}
 
     def update_timestamp(self, timestamp_key: str) -> Tuple[float, float]:
-        '''
+        """
         Update the timestamp for the given key and return a pair of the current timestamp and
         the interval from the last update of the same key.
 
         If the last timestamp for the given key does not exist, the interval becomes "NaN".
 
         Intended to be used by compute plugins.
-        '''
+        """
         now = time.perf_counter()
         last = self._timestamps.get(timestamp_key, None)
         self._timestamps[timestamp_key] = now
@@ -299,11 +267,11 @@ class StatContext:
         return now, now - last
 
     async def collect_node_stat(self):
-        '''
+        """
         Collect the per-node, per-device, and per-container statistics.
 
         Intended to be used by the agent.
-        '''
+        """
         async with self._lock:
             # gather node/device metrics from compute plugins
             _tasks = []
@@ -421,11 +389,11 @@ class StatContext:
         await redis.execute_with_retries(_pipe_builder)
 
     async def collect_container_stat(self, container_id: ContainerId) -> Mapping[MetricKey, Metric]:
-        '''
+        """
         Collect the per-container statistics only,
 
         Intended to be used by the agent and triggered by container cgroup synchronization processes.
-        '''
+        """
         async with self._lock:
             kernel_id_map: Dict[ContainerId, KernelId] = {}
             for kid, info in self.agent.kernel_registry.items():
@@ -485,249 +453,3 @@ class StatContext:
             await redis.execute_with_retries(_pipe_builder)
             return metrics
         return {}
-
-
-@aiotools.actxmgr
-async def spawn_stat_synchronizer(config_path: Path, sync_sockpath: Path,
-                                  stat_type: StatModes, cid: str,
-                                  log_endpoint: str,
-                                  *,
-                                  exec_opts: Mapping[str, str] = None):
-    # Spawn high-perf stats collector process for Linux native setups.
-    # NOTE: We don't have to keep track of this process,
-    #       as they will self-terminate when the container terminates.
-    if exec_opts is None:
-        exec_opts = {}
-
-    context = zmq.asyncio.Context()
-    ipc_base_path.mkdir(parents=True, exist_ok=True)
-
-    proc = await asyncio.create_subprocess_exec(*[
-        sys.executable, '-m', 'ai.backend.agent.stats',
-        str(config_path), str(sync_sockpath), cid,
-        '--type', stat_type.value,
-        '--log-endpoint', log_endpoint,
-    ], **exec_opts)
-
-    signal_sockpath = ipc_base_path / f'stat-start-{proc.pid}.sock'
-    signal_sock = context.socket(zmq.PAIR)
-    signal_sock.connect('ipc://' + str(signal_sockpath))
-    try:
-        await signal_sock.recv_multipart()
-        yield proc
-    finally:
-        await signal_sock.send_multipart([b''])
-        signal_sock.close()
-        context.term()
-
-
-@contextmanager
-def join_cgroup_and_namespace(cid, ping_agent, signal_sock):
-    stop_signals = {signal.SIGINT, signal.SIGTERM}
-    signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
-    libc = CDLL('libc.so.6', use_errno=True)
-    libc.setns.errcheck = _errcheck
-    mypid = os.getpid()
-
-    # The list of monitored cgroup resource types
-    cgroups = ['memory', 'cpuacct', 'blkio', 'net_cls']
-
-    try:
-        # Create the cgroups and change my membership.
-        # The reason for creating cgroups first is to keep them alive
-        # after the Docker has killed the container.
-        for cgroup in cgroups:
-            cg_path = Path(f'/sys/fs/cgroup/{cgroup}/docker/{cid}')
-            cg_path.mkdir(parents=True, exist_ok=True)
-            cgtasks_path = Path(f'/sys/fs/cgroup/{cgroup}/docker/{cid}/cgroup.procs')
-            cgtasks_path.write_text(str(mypid))
-    except PermissionError:
-        print('Cannot write cgroup filesystem due to permission error!',
-              file=sys.stderr)
-        sys.exit(1)
-
-    # Notify the agent to start the container.
-    signal_sock.send_multipart([b''])
-
-    # Wait for the container to be started.
-    signal_sock.recv_multipart()
-
-    try:
-        procs_path = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs')
-        pids = procs_path.read_text()
-        pids = set(int(p) for p in pids.split())
-    except PermissionError:
-        print('Cannot read cgroup filesystem due to permission error!',
-              file=sys.stderr)
-        sys.exit(1)
-    except FileNotFoundError:
-        print([p.name for p in Path('/sys/fs/cgroup/memory/docker').iterdir()])
-        print('Cannot read cgroup filesystem.\n'
-              'The container did not start or may have already terminated.',
-              file=sys.stderr)
-        ping_agent({
-            'cid': args.cid,
-            'status': 'terminated',
-        })
-        sys.exit(0)
-
-    try:
-        # Get non-myself pid from the current running processes.
-        pids.discard(mypid)
-        first_pid = pids.pop()
-        # Enter the container's network namespace so that we can see the exact "eth0"
-        # (which is actually "vethXXXX" in the host namespace)
-        with open(f'/proc/{first_pid}/ns/net', 'r') as f:
-            libc.setns(f.fileno(), CLONE_NEWNET)
-    except PermissionError:
-        print('This process must be started with the root privilege or have explicit'
-              'CAP_SYS_ADMIN, CAP_DAC_OVERRIDE, and CAP_SYS_PTRACE capabilities.',
-              file=sys.stderr)
-        sys.exit(1)
-    except (FileNotFoundError, KeyError):
-        print('The container has already terminated.', file=sys.stderr)
-        ping_agent({
-            'cid': args.cid,
-            'status': 'terminated',
-        })
-        sys.exit(0)
-
-    try:
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
-        yield
-    finally:
-        signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
-        # Move to the parent cgroup and self-remove the container cgroup
-        for cgroup in cgroups:
-            Path(f'/sys/fs/cgroup/{cgroup}/cgroup.procs').write_text(str(mypid))
-            try:
-                os.rmdir(f'/sys/fs/cgroup/{cgroup}/docker/{cid}')
-            except OSError:
-                pass
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
-
-
-def is_cgroup_running(cid):
-    try:
-        pids = Path(f'/sys/fs/cgroup/net_cls/docker/{cid}/cgroup.procs').read_text()
-        pids = numeric_list(pids)
-    except IOError:
-        return False
-    else:
-        return (len(pids) > 1)
-
-
-async def is_container_running(cid):
-    docker = aiodocker.Docker()
-    try:
-        container = await docker.containers.get(cid)
-        stats = await container.show(stream=False)
-        return stats['State']['Running']
-    except (aiodocker.exceptions.DockerError, Exception):
-        return False
-    finally:
-        await docker.close()
-
-
-def main(args):
-    '''
-    The stat collector daemon.
-    '''
-    context = zmq.Context.instance()
-    mypid = os.getpid()
-
-    def handle_stop_signal(sig, frame):
-        raise SystemExit(-sig)
-
-    signal.signal(signal.SIGTERM, handle_stop_signal)
-    signal.signal(signal.SIGINT, handle_stop_signal)
-
-    signal_sockpath = args.sockpath.parent / f'stat-start-{mypid}.sock'
-    log.debug('creating signal socket at {}', signal_sockpath)
-    signal_sock = context.socket(zmq.PAIR)
-    signal_sock.bind('ipc://' + str(signal_sockpath))
-    try:
-        sync_sock = context.socket(zmq.REQ)
-        sync_sock.setsockopt(zmq.LINGER, 2000)
-        sync_sock.connect('ipc://' + str(args.sockpath))
-
-        def ping_agent(msg):
-            sync_sock.send_serialized([msg], lambda msgs: [*map(msgpack.packb, msgs)])
-            sync_sock.recv_serialized(lambda frames: [*map(msgpack.unpackb, frames)])
-
-        log.debug('started statistics collection for {}', args.cid)
-
-        if args.type == StatModes.CGROUP:
-            with closing(sync_sock), join_cgroup_and_namespace(args.cid,
-                                                               ping_agent,
-                                                               signal_sock):
-                # Agent notification is done inside join_cgroup_and_namespace
-                while True:
-                    if is_cgroup_running(args.cid):
-                        ping_agent({'status': 'collect-stat', 'cid': args.cid})
-                    else:
-                        # Since we control cgroup destruction, we can collect
-                        # the last-moment statistics!
-                        ping_agent({'status': 'collect-stat', 'cid': args.cid})
-                        ping_agent({'status': 'terminated', 'cid': args.cid})
-                        break
-                    # Agent periodically collects container stats.
-                    time.sleep(0.3)
-        elif args.type == StatModes.DOCKER:
-            stop_signals = {signal.SIGINT, signal.SIGTERM}
-            signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
-            loop = asyncio.get_event_loop()
-            try:
-                with closing(sync_sock):
-                    # Notify the agent to start the container.
-                    signal_sock.send_multipart([b''])
-                    # Wait for the container to be actually started.
-                    signal_sock.recv_multipart()
-                    signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
-                    while True:
-                        is_running = loop.run_until_complete(is_container_running(args.cid))
-                        if is_running:
-                            ping_agent({'status': 'collect-stat', 'cid': args.cid})
-                        else:
-                            ping_agent({'status': 'terminated', 'cid': args.cid})
-                            break
-                        # Agent periodically collects container stats.
-                        time.sleep(1.0)
-            finally:
-                loop.stop()
-
-    finally:
-        signal_sock.close()
-        signal_sockpath.unlink()
-        log.debug('terminated statistics collection for {}', args.cid)
-        context.term()
-
-
-if __name__ == '__main__':
-    # The entry point for stat collector daemon
-    parser = argparse.ArgumentParser()
-    parser.add_argument('config_path', type=str)
-    parser.add_argument('sockpath', type=Path)
-    parser.add_argument('cid', type=str)
-    parser.add_argument('-t', '--type', choices=list(StatModes), type=StatModes,
-                        default=StatModes.DOCKER)
-    parser.add_argument('--log-endpoint', type=str)
-    args = parser.parse_args()
-    setproctitle(f'backend.ai: stat-collector {args.cid[:7]}')
-
-    raw_cfg, _ = config.read_from_file(args.config_path, 'agent')
-    raw_logging_cfg = raw_cfg.get('logging', None)
-    if raw_logging_cfg and 'file' in raw_logging_cfg['drivers']:
-        # To prevent corruption of file logs which requires only a single writer.
-        raw_logging_cfg['drivers'].remove('file')
-    fallback_logging_cfg = {
-        'level': 'INFO',
-        'drivers': ['console'],
-        'pkg-ns': {'ai.backend': 'INFO'},
-        'console': {'colored': True, 'format': 'verbose'},
-    }
-    logger = Logger(raw_logging_cfg or fallback_logging_cfg,
-                    is_master=False,
-                    log_endpoint=args.log_endpoint)
-    with logger:
-        main(args)

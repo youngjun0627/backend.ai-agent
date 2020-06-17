@@ -24,10 +24,11 @@ from uuid import UUID
 import aiotools
 from aiotools import aclosing
 from callosum.rpc import Peer, RPCMessage
-from callosum.ordering import KeySerializedAsyncScheduler
+from callosum.ordering import ExitOrderedAsyncScheduler
 from callosum.lower.zeromq import ZeroMQAddress, ZeroMQRPCTransport
 import click
 from setproctitle import setproctitle
+from trafaret.dataerror import DataError as TrafaretDataError
 
 from ai.backend.common import config, utils, identity, msgpack
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
@@ -47,6 +48,7 @@ from .config import (
     k8s_extra_config_iv,
     registry_local_config_iv,
     registry_ecr_config_iv,
+    container_etcd_config_iv,
 )
 from .types import VolumeInfo, LifecycleEvent
 from .utils import get_subnet_ip
@@ -184,6 +186,7 @@ class AgentRPCServer(aobject):
             await self.detect_manager()
 
         await self.read_agent_config()
+        await self.read_agent_config_container()
 
         if self.config['agent']['mode'] == 'docker':
             from .docker.agent import DockerAgent
@@ -196,7 +199,7 @@ class AgentRPCServer(aobject):
         self.rpc_server = Peer(
             bind=ZeroMQAddress(f"tcp://{rpc_addr}"),
             transport=ZeroMQRPCTransport,
-            scheduler=KeySerializedAsyncScheduler(),
+            scheduler=ExitOrderedAsyncScheduler(),
             serializer=msgpack.packb,
             deserializer=msgpack.unpackb,
             debug_rpc=self.config['debug']['enabled'],
@@ -243,6 +246,19 @@ class AgentRPCServer(aobject):
         )
         for k, v in agent_etcd_config.items():
             self.config['agent'][k] = v
+
+    async def read_agent_config_container(self):
+        # Fill up global container configurations from etcd.
+        try:
+            container_etcd_config = container_etcd_config_iv.check(
+                await self.etcd.get_prefix('config/container')
+            )
+        except TrafaretDataError as etrafa:
+            log.warning("etcd: container-config error: {}".format(etrafa))
+            container_etcd_config = {}
+        for k, v in container_etcd_config.items():
+            self.config['container'][k] = v
+            log.info("etcd: container-config: {}={}".format(k, v))
 
     async def __aenter__(self) -> None:
         await self.rpc_server.__aenter__()
@@ -349,10 +365,10 @@ class AgentRPCServer(aobject):
                       flush_timeout,      # type: float
                       ):
         # type: (...) -> Dict[str, Any]
-        _log = log.debug if mode == 'continue' else log.info
-        _log('rpc::execute(k:{0}, run-id:{1}, mode:{2}, code:{3!r})',
-             kernel_id, run_id, mode,
-             code[:20] + '...' if len(code) > 20 else code)
+        if mode != 'continue':
+            log.info('rpc::execute(k:{0}, run-id:{1}, mode:{2}, code:{3!r})',
+                     kernel_id, run_id, mode,
+                     code[:20] + '...' if len(code) > 20 else code)
         result = await self.agent.execute(
             KernelId(UUID(kernel_id)),
             run_id, mode, code,
@@ -442,34 +458,14 @@ async def server_main(loop, pidx, _args):
     config = _args[0]
 
     log.info('Preparing kernel runner environments...')
-    supported_distros = ['alpine3.8', 'ubuntu16.04', 'ubuntu18.04', 'centos7.6']
     if config['agent']['mode'] == 'docker':
         from .docker.kernel import prepare_krunner_env
-        krunner_volumes = {
-            k: v for k, v in zip(supported_distros, await asyncio.gather(
-                *[
-                    prepare_krunner_env(distro)
-                    for distro in supported_distros
-                ],
-                return_exceptions=True,
-            ))
-        }
+        krunner_volumes = await prepare_krunner_env()
     else:
         from .k8s.kernel import prepare_krunner_env
         nfs_mount_path = config['baistatic']['mounted-at']
-        krunner_volumes = {
-            k: v for k, v in zip(supported_distros, await asyncio.gather(
-                *[
-                    prepare_krunner_env(distro, nfs_mount_path)
-                    for distro in supported_distros
-                ],
-                return_exceptions=True,
-            ))
-        }
-    for distro, result in krunner_volumes.items():
-        if isinstance(result, Exception):
-            log.error('Loading krunner for {} failed: {}', distro, result)
-            raise click.Abort()
+        krunner_volumes = await prepare_krunner_env(nfs_mount_path)
+    log.info('Kernel runner environments: {}', [*krunner_volumes.keys()])
     config['container']['krunner-volumes'] = krunner_volumes
 
     if not config['agent']['id']:
@@ -521,7 +517,9 @@ async def server_main(loop, pidx, _args):
     config['plugins'] = await etcd.get_prefix_dict('config/plugins/accelerator')
 
     # Start RPC server.
+    global agent_instance
     agent = await AgentRPCServer.new(etcd, config)
+    agent_instance = agent
 
     # Run!
     async with agent:

@@ -52,31 +52,31 @@ def test_num_nodes():
 
 @pytest.mark.asyncio
 async def test_get_available_cores_without_docker(monkeypatch):
+
     def mock_sched_getaffinity(pid):
         raise AttributeError
+
+    def mock_sched_getaffinity2(pid):
+        return {0, 1}
 
     numa = linux.libnuma()
     with aioresponses() as m:
         m.get('http://docker/info', body=json.dumps({
             'NCPU': 4,
         }))
+
         monkeypatch.setattr(linux.os, 'sched_getaffinity',
                             mock_sched_getaffinity,
                             raising=False)
         monkeypatch.setattr(linux.os, 'cpu_count', lambda: 4)
-
         numa.get_available_cores.cache_clear()
         assert (await numa.get_available_cores()) == {0, 1, 2, 3}
 
-    def mock_sched_getaffinity2(pid):
-        return {0, 1}
-
-    monkeypatch.setattr(linux.os, 'sched_getaffinity',
-                        mock_sched_getaffinity2,
-                        raising=False)
-
-    numa.get_available_cores.cache_clear()
-    assert (await numa.get_available_cores()) == {0, 1}
+        monkeypatch.setattr(linux.os, 'sched_getaffinity',
+                            mock_sched_getaffinity2,
+                            raising=False)
+        numa.get_available_cores.cache_clear()
+        assert (await numa.get_available_cores()) == {0, 1}
 
 
 @pytest.mark.asyncio

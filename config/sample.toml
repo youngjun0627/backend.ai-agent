@@ -47,6 +47,8 @@ port-range = [30000, 31000]  # env: BACKEND_CONTAINER_PORT_RANGE
 
 # The UID/GID to be set to the container's main process.
 # If not specified, it uses the same user which the agent runs as.
+# This configurations could be replaced with the configurations in etcd
+# (config/container/kernel-uid, config/container/kernel-gid).
 kernel-uid = -1
 kernel-gid = -1
 
@@ -193,6 +195,9 @@ skip-container-deletion = false
 
 # Include debug-level logs for statistics.
 log-stats = false
+
+# Include debug-level logs for heartbeats
+log-heartbeats = false
 
 # Include debug-level logs for docker event stream.
 log-docker-events = false

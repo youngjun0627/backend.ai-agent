@@ -16,21 +16,28 @@ import signal
 import struct
 import sys
 from typing import (
-    Any, Optional, Union, Type,
-    Dict, Mapping, MutableMapping,
-    Set, FrozenSet,
-    Sequence, List, Tuple,
+    Any,
+    FrozenSet,
+    Dict,
+    List,
+    Literal,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Set,
+    Sequence,
+    Tuple,
+    Type,
+    Union,
+    cast,
 )
-from typing_extensions import Literal
-
-import aiohttp
-import attr
-from async_timeout import timeout
-import zmq
 
 from aiodocker.docker import Docker, DockerContainer
-from aiodocker.exceptions import DockerError
+from aiodocker.exceptions import DockerError, DockerContainerError
 import aiotools
+from async_timeout import timeout
+import attr
+import zmq
 
 from ai.backend.common.docker import (
     ImageRef,
@@ -49,13 +56,15 @@ from ai.backend.common.types import (
     ContainerId,
     DeviceName,
     SlotName,
-    MetricKey, MetricValue,
     MountPermission,
     MountTypes,
     ResourceSlot,
     SessionTypes,
     ServicePortProtocols,
     Sentinel,
+    MountTuple5,
+    MountTuple4,
+    MountTuple3,
     current_resource_slots,
 )
 from ai.backend.common.utils import AsyncFileWriter, current_loop
@@ -80,9 +89,6 @@ from ..resources import (
 )
 from ..server import (
     get_extra_volumes,
-)
-from ..stats import (
-    spawn_stat_synchronizer, StatSyncState
 )
 from ..types import (
     Container, Port, ContainerStatus,
@@ -121,17 +127,35 @@ def container_from_docker_container(src: DockerContainer) -> Container:
     )
 
 
+def _DockerError_reduce(self):
+    return (
+        type(self),
+        (self.status, {'message': self.message}, *self.args),
+    )
+
+
+def _DockerContainerError_reduce(self):
+    return (
+        type(self),
+        (self.status, {'message': self.message}, self.container_id, *self.args),
+    )
+
+
 class DockerAgent(AbstractAgent):
 
     docker: Docker
-    monitor_fetch_task: asyncio.Task
-    monitor_handle_task: asyncio.Task
+    monitor_docker_task: asyncio.Task
     agent_sockpath: Path
     agent_sock_task: asyncio.Task
     scan_images_timer: asyncio.Task
 
     def __init__(self, config, *, skip_initial_scan: bool = False) -> None:
         super().__init__(config, skip_initial_scan=skip_initial_scan)
+
+        # Monkey-patch pickling support for aiodocker exceptions
+        # FIXME: remove if https://github.com/aio-libs/aiodocker/issues/442 is merged
+        DockerError.__reduce__ = _DockerError_reduce                     # type: ignore
+        DockerContainerError.__reduce__ = _DockerContainerError_reduce   # type: ignore
 
     async def __ainit__(self) -> None:
         self.docker = Docker()
@@ -141,24 +165,17 @@ class DockerAgent(AbstractAgent):
                      docker_version['Version'], docker_version['ApiVersion'])
         await super().__ainit__()
         self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
-        self.agent_sock_task = self.loop.create_task(self.handle_agent_socket())
-        self.monitor_fetch_task  = self.loop.create_task(self.fetch_docker_events())
-        self.monitor_handle_task = self.loop.create_task(self.handle_docker_events())
+        self.agent_sock_task = asyncio.create_task(self.handle_agent_socket())
+        self.monitor_docker_task = asyncio.create_task(self.monitor_docker_events())
 
     async def shutdown(self, stop_signal: signal.Signals):
         try:
             await super().shutdown(stop_signal)
         finally:
             # Stop docker event monitoring.
-            if self.monitor_fetch_task is not None:
-                self.monitor_fetch_task.cancel()
-                self.monitor_handle_task.cancel()
-                await self.monitor_fetch_task
-                await self.monitor_handle_task
-            try:
-                await self.docker.events.stop()
-            except Exception:
-                pass
+            if self.monitor_docker_task is not None:
+                self.monitor_docker_task.cancel()
+                await self.monitor_docker_task
             await self.docker.close()
 
         # Stop handlign agent sock.
@@ -376,6 +393,8 @@ class DockerAgent(AbstractAgent):
         work_dir = scratch_dir / 'work'
         loop = current_loop()
 
+        environ['BACKENDAI_KERNEL_ID'] = str(kernel_id)
+
         # PHASE 1: Read existing resource spec or devise a new resource spec.
 
         if restarting:
@@ -472,25 +491,27 @@ class DockerAgent(AbstractAgent):
                     log.info('insufficient resource: {} of {}\n'
                              '(alloc map: {})',
                              device_specific_slots, dev_name,
-                             computer_set.alloc_map.allocations)
+                             dict(computer_set.alloc_map.allocations))
                     raise
 
             # Realize vfolder mounts.
             for vfolder in vfolders:
                 if len(vfolder) == 5:
-                    folder_name, folder_host, folder_id, folder_perm, host_path_raw = vfolder
+                    folder_name, folder_host, folder_id, folder_perm_literal, host_path_raw = \
+                        cast(MountTuple5, vfolder)
                     if host_path_raw:
                         host_path = Path(host_path_raw)
                     else:
                         host_path = (self.config['vfolder']['mount'] / folder_host /
                                      self.config['vfolder']['fsprefix'] / folder_id)
                 elif len(vfolder) == 4:  # for backward compatibility
-                    folder_name, folder_host, folder_id, folder_perm = vfolder
+                    folder_name, folder_host, folder_id, folder_perm_literal = \
+                        cast(MountTuple4, vfolder)
                     host_path = (self.config['vfolder']['mount'] / folder_host /
                                  self.config['vfolder']['fsprefix'] / folder_id)
                 elif len(vfolder) == 3:  # legacy managers
-                    folder_name, folder_host, folder_id = vfolder
-                    folder_perm = 'rw'
+                    folder_name, folder_host, folder_id = cast(MountTuple3, vfolder)
+                    folder_perm_literal = 'rw'
                     host_path = (self.config['vfolder']['mount'] / folder_host /
                                  self.config['vfolder']['fsprefix'] / folder_id)
                 else:
@@ -502,10 +523,6 @@ class DockerAgent(AbstractAgent):
                     # in image importer kernels.
                     if folder_name != '.logs':
                         continue
-                # TODO: Remove `type: ignore` when mypy supports type inference for walrus operator
-                # Check https://github.com/python/mypy/issues/7316
-                # TODO: remove `NOQA` when flake8 supports Python 3.8 and walrus operator
-                # Check https://gitlab.com/pycqa/flake8/issues/599
                 if kernel_path_raw := vfolder_mount_map.get(folder_name):
                     if not kernel_path_raw.startswith('/home/work/'):  # type: ignore
                         raise ValueError(
@@ -514,7 +531,7 @@ class DockerAgent(AbstractAgent):
                     kernel_path = Path(kernel_path_raw)  # type: ignore
                 else:
                     kernel_path = Path(f'/home/work/{folder_name}')
-                folder_perm = MountPermission(folder_perm)
+                folder_perm = MountPermission(folder_perm_literal)
                 if folder_perm == MountPermission.RW_DELETE:
                     # TODO: enforce readable/writable but not deletable
                     # (Currently docker's READ_WRITE includes DELETE)
@@ -564,51 +581,51 @@ class DockerAgent(AbstractAgent):
         if matched_distro == 'centos6.10':
             # special case for image importer kernel (manylinux2010 is based on CentOS 6)
             suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/su-exec.centos7.6.{arch}.bin'))
+                'ai.backend.runner', f'su-exec.centos7.6.{arch}.bin'))
             hook_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/libbaihook.centos7.6.{arch}.so'))
+                'ai.backend.runner', f'libbaihook.centos7.6.{arch}.so'))
             sftp_server_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/sftp-server.centos7.6.{arch}.bin'))
+                'ai.backend.runner',
+                f'sftp-server.centos7.6.{arch}.bin'))
             scp_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/scp.centos7.6.{arch}.bin'))
+                'ai.backend.runner',
+                f'scp.centos7.6.{arch}.bin'))
         else:
             suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/su-exec.{matched_distro}.{arch}.bin'))
+                'ai.backend.runner', f'su-exec.{matched_distro}.{arch}.bin'))
             hook_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/libbaihook.{matched_distro}.{arch}.so'))
+                'ai.backend.runner', f'libbaihook.{matched_distro}.{arch}.so'))
             sftp_server_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/sftp-server.{matched_distro}.{arch}.bin'))
+                'ai.backend.runner',
+                f'sftp-server.{matched_distro}.{arch}.bin'))
             scp_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                f'../runner/scp.{matched_distro}.{arch}.bin'))
+                'ai.backend.runner',
+                f'scp.{matched_distro}.{arch}.bin'))
         if self.config['container']['sandbox-type'] == 'jail':
             jail_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', f'../runner/jail.{matched_distro}.bin'))
+                'ai.backend.runner', f'jail.{matched_distro}.bin'))
         kernel_pkg_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../kernel'))
+            'ai.backend.agent', '')).parent / 'kernel'
         helpers_pkg_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../helpers'))
+            'ai.backend.agent', '')).parent / 'helpers'
         dropbear_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent',
-            f'../runner/dropbear.{matched_libc_style}.{arch}.bin'))
+            'ai.backend.runner',
+            f'dropbear.{matched_libc_style}.{arch}.bin'))
         dropbearconv_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent',
-            f'../runner/dropbearconvert.{matched_libc_style}.{arch}.bin'))
+            'ai.backend.runner',
+            f'dropbearconvert.{matched_libc_style}.{arch}.bin'))
         dropbearkey_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent',
-            f'../runner/dropbearkey.{matched_libc_style}.{arch}.bin'))
+            'ai.backend.runner',
+            f'dropbearkey.{matched_libc_style}.{arch}.bin'))
         tmux_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', f'../runner/tmux.{matched_libc_style}.{arch}.bin'))
+            'ai.backend.runner', f'tmux.{matched_libc_style}.{arch}.bin'))
         dotfile_extractor_path = Path(pkg_resources.resource_filename(
-            'ai.backend.agent', '../runner/extract_dotfiles.py'
+            'ai.backend.runner', 'extract_dotfiles.py'
         ))
 
         if matched_libc_style == 'musl':
             terminfo_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent', '../runner/terminfo.alpine3.8'
+                'ai.backend.runner', 'terminfo.alpine3.8'
             ))
             _mount(MountTypes.BIND, terminfo_path.resolve(), '/home/work/.terminfo')
 
@@ -703,21 +720,21 @@ class DockerAgent(AbstractAgent):
             # directories when the agent is running as non-root.
             def _clone_dotfiles():
                 jupyter_custom_css_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/jupyter-custom.css'))
+                    'ai.backend.runner', 'jupyter-custom.css'))
                 logo_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/logo.svg'))
+                    'ai.backend.runner', 'logo.svg'))
                 font_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/roboto.ttf'))
+                    'ai.backend.runner', 'roboto.ttf'))
                 font_italic_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/roboto-italic.ttf'))
+                    'ai.backend.runner', 'roboto-italic.ttf'))
                 bashrc_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/.bashrc'))
+                    'ai.backend.runner', '.bashrc'))
                 bash_profile_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/.bash_profile'))
+                    'ai.backend.runner', '.bash_profile'))
                 vimrc_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/.vimrc'))
+                    'ai.backend.runner', '.vimrc'))
                 tmux_conf_path = Path(pkg_resources.resource_filename(
-                    'ai.backend.agent', '../runner/.tmux.conf'))
+                    'ai.backend.runner', '.tmux.conf'))
                 jupyter_custom_dir = (work_dir / '.jupyter' / 'custom')
                 jupyter_custom_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy(jupyter_custom_css_path.resolve(), jupyter_custom_dir / 'custom.css')
@@ -996,14 +1013,7 @@ class DockerAgent(AbstractAgent):
                     for k, v in kvpairs.items():
                         await writer.write(f'{k}={v}\n')
 
-            stat_sync_state = StatSyncState(kernel_id)
-            self.stat_sync_states[cid] = stat_sync_state
-            async with spawn_stat_synchronizer(self.config['_src'],
-                                               self.stat_sync_sockpath,
-                                               self.stat_ctx.mode, cid,
-                                               self.stat_ctx.log_endpoint) as proc:
-                stat_sync_state.sync_proc = proc
-                await container.start()
+            await container.start()
 
             # Get attached devices information (including model_name).
             attached_devices = {}
@@ -1093,7 +1103,7 @@ class DockerAgent(AbstractAgent):
                       (kernel_config['startup_command'] or '')[:60])
 
             # TODO: make this working after agent restarts
-            async def execute_batch():
+            async def execute_batch() -> None:
                 opts = {
                     'exec': kernel_config['startup_command'],
                 }
@@ -1126,13 +1136,16 @@ class DockerAgent(AbstractAgent):
                         await self.produce_event(
                             'kernel_failure', str(kernel_id), -2)
                         break
+                    opts = {
+                        'exec': '',
+                    }
                 # TODO: store last_stat?
                 destroyed = asyncio.Event()
-                self.container_lifecycle_events.put(
+                await self.container_lifecycle_queue.put(
                     ContainerLifecycleEvent(
                         kernel_id,
                         kernel_obj['container_id'],
-                        LifecycleEvent.TERMINATED,
+                        LifecycleEvent.DESTROY,
                         'task-finished',
                         destroyed,
                     )
@@ -1158,33 +1171,14 @@ class DockerAgent(AbstractAgent):
         self,
         kernel_id: KernelId,
         container_id: Optional[ContainerId],
-    ) -> Optional[Mapping[MetricKey, MetricValue]]:
+    ) -> None:
         if container_id is None:
-            return None
+            return
         try:
             container = self.docker.containers.container(container_id)
             # The default timeout of the docker stop API is 10 seconds
             # to kill if container does not self-terminate.
             await container.stop()
-            # Collect the last-moment statistics.
-            if container_id in self.stat_sync_states:
-                s = self.stat_sync_states[container_id]
-                try:
-                    with timeout(5):
-                        await s.terminated.wait()
-                        if s.sync_proc is not None:
-                            await s.sync_proc.wait()
-                            s.sync_proc = None
-                except ProcessLookupError:
-                    pass
-                except asyncio.TimeoutError:
-                    log.warning('stat-collector shutdown sync timeout.')
-                last_stat: MutableMapping[MetricKey, MetricValue] = {
-                    key: metric.to_serializable_dict()
-                    for key, metric in s.last_stat.items()
-                }
-                last_stat['version'] = 2  # type: ignore
-                return last_stat
         except DockerError as e:
             if e.status == 409 and 'is not running' in e.message:
                 # already dead
@@ -1198,7 +1192,6 @@ class DockerAgent(AbstractAgent):
             else:
                 log.exception('destroy_kernel(k:{0}) kill error', kernel_id)
                 self.error_monitor.capture_exception()
-        return None
 
     async def clean_kernel(
         self,
@@ -1206,22 +1199,9 @@ class DockerAgent(AbstractAgent):
         container_id: Optional[ContainerId],
         restarting: bool,
     ) -> None:
+        loop = current_loop()
         if container_id is not None:
             container = self.docker.containers.container(container_id)
-            stat_sync_state = self.stat_sync_states.pop(container_id, None)
-            if stat_sync_state:
-                sync_proc = stat_sync_state.sync_proc
-                try:
-                    if sync_proc is not None:
-                        sync_proc.terminate()
-                        try:
-                            with timeout(2.0):
-                                await sync_proc.wait()
-                        except asyncio.TimeoutError:
-                            sync_proc.kill()
-                            await sync_proc.wait()
-                except ProcessLookupError:
-                    pass
 
             async def log_iter():
                 async for line in container.log(
@@ -1230,9 +1210,13 @@ class DockerAgent(AbstractAgent):
                     yield line.encode('utf-8')
 
             try:
-                await self.collect_logs(kernel_id, container_id, log_iter())
-            except Exception:
-                log.warning('could not store container logs (cid:{})', container_id)
+                with timeout(60):
+                    await self.collect_logs(kernel_id, container_id, log_iter())
+            except asyncio.TimeoutError:
+                log.warning('timeout for collecting container logs (cid:{})', container_id)
+            except Exception as e:
+                log.warning('error while collecting container logs (cid:{})',
+                            container_id, exc_info=e)
 
         kernel_obj = self.kernel_registry.get(kernel_id)
         if kernel_obj is not None:
@@ -1247,14 +1231,15 @@ class DockerAgent(AbstractAgent):
         # When the agent restarts with a different port range, existing
         # containers' host ports may not belong to the new port range.
         if not self.config['debug']['skip-container-deletion'] and container_id is not None:
+            container = self.docker.containers.container(container_id)
             try:
-                with timeout(20):
-                    await container.delete()
+                with timeout(90):
+                    await container.delete(force=True, v=True)
             except DockerError as e:
                 if e.status == 409 and 'already in progress' in e.message:
-                    pass
+                    return
                 elif e.status == 404:
-                    pass
+                    return
                 else:
                     log.exception(
                         'unexpected docker error while deleting container (k:{}, c:{})',
@@ -1272,78 +1257,56 @@ class DockerAgent(AbstractAgent):
                     self.config['container']['scratch-type'] == 'memory'):
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
-                    shutil.rmtree(tmp_dir)
-                shutil.rmtree(scratch_dir)
+                    await loop.run_in_executor(None, shutil.rmtree, tmp_dir)
+                await loop.run_in_executor(None, shutil.rmtree, scratch_dir)
             except FileNotFoundError:
                 pass
 
-    async def fetch_docker_events(self):
-        while True:
-            try:
-                await self.docker.events.run()
-            except asyncio.TimeoutError:
-                # The API HTTP connection may terminate after some timeout
-                # (e.g., 5 minutes)
-                log.info('restarting docker.events.run()')
-                continue
-            except aiohttp.ClientError as e:
-                log.warning('restarting docker.events.run() due to {0!r}', e)
-                continue
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                log.exception('unexpected error')
-                self.error_monitor.capture_exception()
-                break
-
-    async def handle_docker_events(self):
-        subscriber = self.docker.events.subscribe()
-        last_footprint = None
+    async def monitor_docker_events(self):
+        subscriber = self.docker.events.subscribe(create_task=True)
         while True:
             try:
                 evdata = await subscriber.get()
+                if self.config['debug']['log-docker-events'] and evdata['Type'] == 'container':
+                    log.debug('docker-event: action={}, actor={}',
+                              evdata['Action'], evdata['Actor'])
+                if evdata['Action'] == 'start':
+                    container_name = evdata['Actor']['Attributes']['name']
+                    kernel_id = await get_kernel_id_from_container(container_name)
+                    if kernel_id is None:
+                        continue
+                    await self.inject_container_lifecycle_event(
+                        kernel_id,
+                        LifecycleEvent.START,
+                        'new-container-started',
+                        container_id=ContainerId(evdata['Actor']['ID']),
+                    )
+                elif evdata['Action'] == 'die':
+                    # When containers die, we immediately clean up them.
+                    container_name = evdata['Actor']['Attributes']['name']
+                    kernel_id = await get_kernel_id_from_container(container_name)
+                    if kernel_id is None:
+                        continue
+                    reason = None
+                    kernel_obj = self.kernel_registry.get(kernel_id)
+                    if kernel_obj is not None:
+                        reason = kernel_obj.termination_reason
+                    try:
+                        exit_code = evdata['Actor']['Attributes']['exitCode']
+                    except KeyError:
+                        exit_code = 255
+                    await self.inject_container_lifecycle_event(
+                        kernel_id,
+                        LifecycleEvent.CLEAN,
+                        reason or 'self-terminated',
+                        container_id=ContainerId(evdata['Actor']['ID']),
+                        exit_code=exit_code,
+                    )
             except asyncio.CancelledError:
                 break
-            if evdata is None:
-                # fetch_docker_events() will automatically reconnect.
-                continue
-            # FIXME: Sometimes(?) duplicate event data is received.
-            # Just ignore the duplicate ones.
-            new_footprint = (
-                evdata['Type'],
-                evdata['Action'],
-                evdata['Actor']['ID'],
-            )
-            if new_footprint == last_footprint:
-                continue
-            last_footprint = new_footprint
-
-            if self.config['debug']['log-docker-events']:
-                log.debug('docker-event: raw: {}', evdata)
-
-            if evdata['Action'] == 'die':
-                # When containers die, we immediately clean up them.
-                container_name = evdata['Actor']['Attributes']['name']
-                kernel_id = await get_kernel_id_from_container(container_name)
-                if kernel_id is None:
-                    continue
-                reason = None
-                kernel_obj = self.kernel_registry.get(kernel_id)
-                if kernel_obj is not None:
-                    reason = kernel_obj.termination_reason
-                try:
-                    exit_code = evdata['Actor']['Attributes']['exitCode']
-                except KeyError:
-                    exit_code = 255
-                await self.inject_container_lifecycle_event(
-                    kernel_id,
-                    LifecycleEvent.CLEAN,
-                    reason or 'self-terminated',
-                    container_id=ContainerId(evdata['Actor']['ID']),
-                    exit_code=exit_code,
-                )
-
-        await asyncio.sleep(0.5)
+            except Exception:
+                log.exception('unexpected error while processing docker events')
+        await self.docker.events.stop()
 
     def _kernel_resource_spec_read(self, filename):
         with open(filename, 'r') as f:

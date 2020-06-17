@@ -1,0 +1,3 @@
+Improve stability under heavily loaded scenarios
+- Skip lifecycle sync for already terminating kernels to reduce excessive Docker Engine overheads with a many number of being-terminated kernels
+- Increase timeout for container termination to 60 seconds during restarting kernels, by observing deletion latencies under heavy load tests

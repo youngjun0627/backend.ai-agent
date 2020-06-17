@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from decimal import Decimal
@@ -230,8 +232,11 @@ class AbstractComputePlugin(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    async def gather_container_measures(cls, ctx: StatContext, container_ids: Sequence[str]) \
-            -> Sequence[ContainerMeasurement]:
+    async def gather_container_measures(
+        cls,
+        ctx: StatContext,
+        container_ids: Sequence[str],
+    ) -> Sequence[ContainerMeasurement]:
         '''
         Return the container-level statistic metrics.
         '''
@@ -259,10 +264,11 @@ class AbstractComputePlugin(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    async def generate_docker_args(cls,
-                                   docker: 'aiodocker.docker.Docker',  # noqa
-                                   device_alloc,
-                                  ) -> Mapping[str, Any]:
+    async def generate_docker_args(
+        cls,
+        docker: aiodocker.docker.Docker,
+        device_alloc,
+    ) -> Mapping[str, Any]:
         '''
         When starting a new container, generate device-specific options for the
         docker container create API as a dictionary, referring the given allocation
@@ -280,8 +286,11 @@ class AbstractComputePlugin(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    async def restore_from_container(cls, container: Container,
-                                     alloc_map: 'AbstractAllocMap') -> None:
+    async def restore_from_container(
+        cls,
+        container: Container,
+        alloc_map: AbstractAllocMap,
+    ) -> None:
         '''
         When the agent restarts, retore the allocation map from the container
         metadata dictionary fetched from aiodocker.
@@ -290,8 +299,10 @@ class AbstractComputePlugin(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
-    async def get_attached_devices(cls, device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]) \
-                                   -> Sequence[DeviceModelInfo]:
+    async def get_attached_devices(
+        cls,
+        device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
+    ) -> Sequence[DeviceModelInfo]:
         '''
         Make up container-attached device information with allocated device id.
         '''
@@ -349,9 +360,12 @@ class AbstractAllocMap(metaclass=ABCMeta):
         self.allocations.clear()
 
     @abstractmethod
-    def allocate(self, slots: Mapping[SlotName, Decimal], *,
-                 context_tag: str = None) \
-                 -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
+    def allocate(
+        self,
+        slots: Mapping[SlotName, Decimal],
+        *,
+        context_tag: str = None,
+    ) -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
         """
         Allocate the given amount of resources.
 
@@ -414,9 +428,12 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
             dev_id: Decimal(0) for dev_id in self.devices.keys()
         })
 
-    def allocate(self, slots: Mapping[SlotName, Decimal], *,
-                 context_tag: str = None) \
-                 -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
+    def allocate(
+        self,
+        slots: Mapping[SlotName, Decimal],
+        *,
+        context_tag: str = None,
+    ) -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
         allocation = {}
         for slot_name, alloc in slots.items():
             slot_allocation: MutableMapping[DeviceId, Decimal] = {}

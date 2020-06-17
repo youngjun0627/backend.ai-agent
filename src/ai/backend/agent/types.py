@@ -50,6 +50,7 @@ class Container:
 class LifecycleEvent(int, enum.Enum):
     DESTROY = 0
     CLEAN = 1
+    START = 2
 
 
 @attr.s(auto_attribs=True, slots=True)

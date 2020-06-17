@@ -42,7 +42,7 @@ async def agent(test_id, redis_container):
 
 
 @pytest.mark.asyncio
-async def test_init(agent):
+async def test_init(agent, mocker):
     print(agent)
 
 

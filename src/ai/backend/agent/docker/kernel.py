@@ -8,9 +8,10 @@ import re
 import subprocess
 import textwrap
 from typing import (
-    Any,
-    Dict, Mapping,
+    Any, Optional,
+    Mapping, Dict,
     FrozenSet,
+    Sequence, Tuple,
 )
 
 from aiodocker.docker import Docker, DockerVolume
@@ -223,14 +224,8 @@ class DockerCodeRunner(AbstractCodeRunner):
         return f'tcp://{self.kernel_host}:{self.repl_out_port}'
 
 
-async def prepare_krunner_env(distro: str):
-    '''
-    Check if the volume "backendai-krunner.{distro}.{arch}" exists and is up-to-date.
-    If not, automatically create it and update its content from the packaged pre-built krunner tar
-    archives.
-    '''
-    m = re.search(r'^([a-z]+)\d+\.\d+$', distro)
-    if m is None:
+async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
+    if (m := re.search(r'^([a-z]+)\d+\.\d+$', distro)) is None:
         raise ValueError('Unrecognized "distro[version]" format string.')
     distro_name = m.group(1)
     docker = Docker()
@@ -252,7 +247,7 @@ async def prepare_krunner_env(distro: str):
         else:
             log.info('preparing the Docker image for krunner extractor...')
             extractor_archive = pkg_resources.resource_filename(
-                'ai.backend.agent', '../runner/krunner-extractor.img.tar.xz')
+                'ai.backend.runner', 'krunner-extractor.img.tar.xz')
             with lzma.open(extractor_archive, 'rb') as reader:
                 proc = await asyncio.create_subprocess_exec(
                     *['docker', 'load'], stdin=reader)
@@ -276,10 +271,10 @@ async def prepare_krunner_env(distro: str):
             })
             archive_path = Path(pkg_resources.resource_filename(
                 f'ai.backend.krunner.{distro_name}',
-                f'./krunner-env.{distro}.{arch}.tar.xz')).resolve()
+                f'krunner-env.{distro}.{arch}.tar.xz')).resolve()
             extractor_path = Path(pkg_resources.resource_filename(
-                'ai.backend.agent',
-                '../runner/krunner-extractor.sh')).resolve()
+                'ai.backend.runner',
+                'krunner-extractor.sh')).resolve()
             proc = await asyncio.create_subprocess_exec(*[
                 'docker', 'run', '--rm', '-i',
                 '-v', f'{archive_path}:/root/archive.tar.xz',
@@ -293,6 +288,38 @@ async def prepare_krunner_env(distro: str):
                 raise RuntimeError('extracting krunner environment has failed!')
     except Exception:
         log.exception('unexpected error')
+        return distro, None
     finally:
         await docker.close()
-    return volume_name
+    return distro, volume_name
+
+
+async def prepare_krunner_env() -> Mapping[str, Sequence[str]]:
+    '''
+    Check if the volume "backendai-krunner.{distro}.{arch}" exists and is up-to-date.
+    If not, automatically create it and update its content from the packaged pre-built krunner
+    tar archives.
+    '''
+
+    all_distros = []
+    entry_prefix = 'backendai_krunner_v10'
+    for entrypoint in pkg_resources.iter_entry_points(entry_prefix):
+        log.debug('loading krunner pkg: {}', entrypoint.module_name)
+        plugin = entrypoint.load()
+        await plugin.init({})  # currently does nothing
+        provided_versions = Path(pkg_resources.resource_filename(
+            f'ai.backend.krunner.{entrypoint.name}',
+            'versions.txt',
+        )).read_text().splitlines()
+        all_distros.extend(provided_versions)
+
+    tasks = []
+    for distro in all_distros:
+        tasks.append(prepare_krunner_env_impl(distro))
+    distro_volumes = await asyncio.gather(*tasks)
+    result = {}
+    for distro_name_and_version, volume_name in distro_volumes:
+        if volume_name is None:
+            continue
+        result[distro_name_and_version] = volume_name
+    return result
