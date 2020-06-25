@@ -414,6 +414,7 @@ class BaseRunner(metaclass=ABCMeta):
         return None, {}
 
     async def _start_service(self, service_info):
+        await self._service_lock.acquire()
         try:
             if service_info['name'] in self.services_running:
                 result = {'status': 'running'}
@@ -454,10 +455,16 @@ class BaseRunner(metaclass=ABCMeta):
                 )
                 self.services_running[service_info['name']] = proc
                 loop.create_task(self._wait_service_proc(service_info['name'], proc))
+                self._service_lock.release()
                 await wait_local_port_open(service_info['port'])
                 log.info("Service {} has started (pid: {}, port: {})",
                          service_info['name'], proc.pid, service_info['port'])
                 result = {'status': 'started'}
+            except asyncio.CancelledError:
+                # This may happen if the service process gets started but it fails to
+                # open the port and then terminates (with an error).
+                result = {'status': 'failed',
+                          'error': f"the process did not start properly: {cmdargs[0]}"}
             except PermissionError:
                 result = {'status': 'failed',
                           'error': f"the target file is not executable: {cmdargs[0]}"}
@@ -465,13 +472,15 @@ class BaseRunner(metaclass=ABCMeta):
                 result = {'status': 'failed',
                           'error': f"the executable file is not found: {cmdargs[0]}"}
         except Exception as e:
-            log.exception('unexpected error')
+            log.exception('start_service: unexpected error')
             result = {'status': 'failed', 'error': repr(e)}
         finally:
             await self.outsock.send_multipart([
                 b'service-result',
                 json.dumps(result).encode('utf8'),
             ])
+            if self._service_lock.locked():
+                self._service_lock.release()
 
     async def _wait_service_proc(
         self,
@@ -587,6 +596,7 @@ class BaseRunner(metaclass=ABCMeta):
         await self._init_with_loop()
         await self._init_jupyter_kernel()
         log.debug('start serving...')
+        loop = current_loop()
         while True:
             try:
                 data = await self.insock.recv_multipart()
@@ -615,15 +625,14 @@ class BaseRunner(metaclass=ABCMeta):
                     await self._send_status()
                 elif op_type == 'start-service':  # activate a service port
                     data = json.loads(text)
-                    async with self._service_lock:
-                        await self._start_service(data)
+                    loop.create_task(self._start_service(data))
             except asyncio.CancelledError:
                 break
             except NotImplementedError:
                 log.error('Unsupported operation for this kernel: {0}', op_type)
                 await asyncio.sleep(0)
             except Exception:
-                log.exception('unexpected error')
+                log.exception('main_loop: unexpected error')
                 # we need to continue anyway unless we are shutting down
                 continue
         user_input_server.close()
