@@ -551,7 +551,6 @@ class BaseRunner(metaclass=ABCMeta):
                 )
                 self.services_running[service_info['name']] = proc
                 asyncio.create_task(self._wait_service_proc(service_info['name'], proc))
-                asyncio.create_task(self._wait_service_proc(service_info['name'], proc))
                 self._service_lock.release()
                 await wait_local_port_open(service_info['port'])
                 log.info("Service {} has started (pid: {}, port: {})",
