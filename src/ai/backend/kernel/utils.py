@@ -46,8 +46,6 @@ async def wait_local_port_open(port):
         except ConnectionRefusedError:
             await asyncio.sleep(0.1)
             continue
-        except asyncio.CancelledError:
-            return
         except asyncio.TimeoutError:
             raise
         except Exception:
