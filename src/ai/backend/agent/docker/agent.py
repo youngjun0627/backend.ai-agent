@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 from decimal import Decimal
@@ -27,9 +29,9 @@ from typing import (
     Set,
     Sequence,
     Tuple,
-    Type,
     Union,
     cast,
+    TYPE_CHECKING,
 )
 
 from aiodocker.docker import Docker, DockerContainer
@@ -46,6 +48,7 @@ from ai.backend.common.docker import (
 )
 from ai.backend.common.exception import ImageNotAvailable
 from ai.backend.common.logging import BraceStyleAdapter, pretty
+from ai.backend.common.plugin.monitor import ErrorPluginContext, StatsPluginContext
 from ai.backend.common.types import (
     AutoPullBehavior,
     BinarySize,
@@ -102,8 +105,11 @@ from ..utils import (
     parse_service_ports,
 )
 
+if TYPE_CHECKING:
+    from ai.backend.common.etcd import AsyncEtcd
+
 log = BraceStyleAdapter(logging.getLogger(__name__))
-eof_sentinel = Sentinel()
+eof_sentinel = Sentinel.TOKEN
 
 
 def container_from_docker_container(src: DockerContainer) -> Container:
@@ -149,8 +155,22 @@ class DockerAgent(AbstractAgent):
     agent_sock_task: asyncio.Task
     scan_images_timer: asyncio.Task
 
-    def __init__(self, config, *, skip_initial_scan: bool = False) -> None:
-        super().__init__(config, skip_initial_scan=skip_initial_scan)
+    def __init__(
+        self,
+        etcd: AsyncEtcd,
+        local_config: Mapping[str, Any],
+        *,
+        stats_monitor: StatsPluginContext,
+        error_monitor: ErrorPluginContext,
+        skip_initial_scan: bool = False,
+    ) -> None:
+        super().__init__(
+            etcd,
+            local_config,
+            stats_monitor=stats_monitor,
+            error_monitor=error_monitor,
+            skip_initial_scan=skip_initial_scan,
+        )
 
         # Monkey-patch pickling support for aiodocker exceptions
         # FIXME: remove if https://github.com/aio-libs/aiodocker/issues/442 is merged
@@ -184,14 +204,11 @@ class DockerAgent(AbstractAgent):
             self.agent_sock_task.cancel()
             await self.agent_sock_task
 
-    @staticmethod
-    async def detect_resources(resource_configs: Mapping[str, Any],
-                               plugin_configs: Mapping[str, Any]) \
-                               -> Tuple[
-                                   Mapping[DeviceName, Type[AbstractComputePlugin]],
-                                   Mapping[SlotName, Decimal]
-                               ]:
-        return await detect_resources(resource_configs, plugin_configs)
+    async def detect_resources(self) -> Tuple[
+        Mapping[DeviceName, AbstractComputePlugin],
+        Mapping[SlotName, Decimal]
+    ]:
+        return await detect_resources(self.etcd, self.local_config)
 
     async def enumerate_containers(
         self,
@@ -269,8 +286,8 @@ class DockerAgent(AbstractAgent):
         '''
         my_uid = os.geteuid()
         my_gid = os.getegid()
-        kernel_uid = self.config['container']['kernel-uid']
-        kernel_gid = self.config['container']['kernel-gid']
+        kernel_uid = self.local_config['container']['kernel-uid']
+        kernel_gid = self.local_config['container']['kernel-gid']
         try:
             agent_sock = self.zmq_ctx.socket(zmq.REP)
             agent_sock.bind(f'ipc://{self.agent_sockpath}')
@@ -387,8 +404,8 @@ class DockerAgent(AbstractAgent):
         envs_corecount = label_envs_corecount.split(',') if label_envs_corecount else []
         kernel_features = set(image_labels.get('ai.backend.features', '').split())
 
-        scratch_dir = (self.config['container']['scratch-root'] / str(kernel_id)).resolve()
-        tmp_dir = (self.config['container']['scratch-root'] / f'{kernel_id}_tmp').resolve()
+        scratch_dir = (self.local_config['container']['scratch-root'] / str(kernel_id)).resolve()
+        tmp_dir = (self.local_config['container']['scratch-root'] / f'{kernel_id}_tmp').resolve()
         config_dir = scratch_dir / 'config'
         work_dir = scratch_dir / 'work'
         loop = current_loop()
@@ -431,8 +448,8 @@ class DockerAgent(AbstractAgent):
 
         # Inject Backend.AI-intrinsic env-variables for gosu
         if KernelFeatures.UID_MATCH in kernel_features:
-            uid = self.config['container']['kernel-uid']
-            gid = self.config['container']['kernel-gid']
+            uid = self.local_config['container']['kernel-uid']
+            gid = self.local_config['container']['kernel-gid']
             environ['LOCAL_USER_ID'] = str(uid)
             environ['LOCAL_GROUP_ID'] = str(gid)
 
@@ -444,7 +461,7 @@ class DockerAgent(AbstractAgent):
                   MountPermission.READ_WRITE),
         ]
         if (sys.platform.startswith('linux') and
-            self.config['container']['scratch-type'] == 'memory'):
+            self.local_config['container']['scratch-type'] == 'memory'):
             mounts.append(Mount(MountTypes.BIND, tmp_dir, '/tmp',
                                 MountPermission.READ_WRITE))
         mounts.extend(Mount(MountTypes.VOLUME, v.name, v.container_path, v.mode)
@@ -502,18 +519,18 @@ class DockerAgent(AbstractAgent):
                     if host_path_raw:
                         host_path = Path(host_path_raw)
                     else:
-                        host_path = (self.config['vfolder']['mount'] / folder_host /
-                                     self.config['vfolder']['fsprefix'] / folder_id)
+                        host_path = (self.local_config['vfolder']['mount'] / folder_host /
+                                     self.local_config['vfolder']['fsprefix'] / folder_id)
                 elif len(vfolder) == 4:  # for backward compatibility
                     folder_name, folder_host, folder_id, folder_perm_literal = \
                         cast(MountTuple4, vfolder)
-                    host_path = (self.config['vfolder']['mount'] / folder_host /
-                                 self.config['vfolder']['fsprefix'] / folder_id)
+                    host_path = (self.local_config['vfolder']['mount'] / folder_host /
+                                 self.local_config['vfolder']['fsprefix'] / folder_id)
                 elif len(vfolder) == 3:  # legacy managers
                     folder_name, folder_host, folder_id = cast(MountTuple3, vfolder)
                     folder_perm_literal = 'rw'
-                    host_path = (self.config['vfolder']['mount'] / folder_host /
-                                 self.config['vfolder']['fsprefix'] / folder_id)
+                    host_path = (self.local_config['vfolder']['mount'] / folder_host /
+                                 self.local_config['vfolder']['fsprefix'] / folder_id)
                 else:
                     raise RuntimeError(
                         'Unexpected number of vfolder mount detail tuple size')
@@ -557,7 +574,7 @@ class DockerAgent(AbstractAgent):
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
         matched_distro, krunner_volume = match_krunner_volume(
-            self.config['container']['krunner-volumes'], distro)
+            self.local_config['container']['krunner-volumes'], distro)
         matched_libc_style = 'glibc'
         if matched_distro.startswith('alpine'):
             matched_libc_style = 'musl'
@@ -601,7 +618,7 @@ class DockerAgent(AbstractAgent):
             scp_path = Path(pkg_resources.resource_filename(
                 'ai.backend.runner',
                 f'scp.{matched_distro}.{arch}.bin'))
-        if self.config['container']['sandbox-type'] == 'jail':
+        if self.local_config['container']['sandbox-type'] == 'jail':
             jail_path = Path(pkg_resources.resource_filename(
                 'ai.backend.runner', f'jail.{matched_distro}.bin'))
         kernel_pkg_path = Path(pkg_resources.resource_filename(
@@ -633,7 +650,7 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, dotfile_extractor_path.resolve(), '/opt/kernel/extract_dotfiles.py')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
         _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
-        if self.config['container']['sandbox-type'] == 'jail':
+        if self.local_config['container']['sandbox-type'] == 'jail':
             _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
         _mount(MountTypes.BIND, dropbear_path.resolve(), '/opt/kernel/dropbear')
@@ -651,9 +668,9 @@ class DockerAgent(AbstractAgent):
                                 pylib_path + 'ai/backend/helpers')
 
         environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
-        if self.config['debug']['coredump']['enabled']:
-            _mount(MountTypes.BIND, self.config['debug']['coredump']['path'],
-                                    self.config['debug']['coredump']['core_path'],
+        if self.local_config['debug']['coredump']['enabled']:
+            _mount(MountTypes.BIND, self.local_config['debug']['coredump']['path'],
+                                    self.local_config['debug']['coredump']['core_path'],
                                     perm='rw')
 
         domain_socket_proxies = []
@@ -678,20 +695,20 @@ class DockerAgent(AbstractAgent):
         for dev_type, device_alloc in resource_spec.allocations.items():
             computer_set = self.computers[dev_type]
             update_nested_dict(computer_docker_args,
-                               await computer_set.klass.generate_docker_args(
+                               await computer_set.instance.generate_docker_args(
                                    self.docker, device_alloc))
             alloc_sum = Decimal(0)
             for dev_id, per_dev_alloc in device_alloc.items():
                 alloc_sum += sum(per_dev_alloc.values())
             if alloc_sum > 0:
-                hook_paths = await computer_set.klass.get_hooks(matched_distro, arch)
+                hook_paths = await computer_set.instance.get_hooks(matched_distro, arch)
                 if hook_paths:
                     log.debug('accelerator {} provides hooks: {}',
-                              computer_set.klass.__name__,
+                              type(computer_set.instance).__name__,
                               ', '.join(map(str, hook_paths)))
                 for hook_path in hook_paths:
                     container_hook_path = '/opt/kernel/lib{}{}.so'.format(
-                        computer_set.klass.key, secrets.token_hex(6),
+                        computer_set.instance.key, secrets.token_hex(6),
                     )
                     _mount(MountTypes.BIND, hook_path, container_hook_path)
                     environ['LD_PRELOAD'] += ':' + container_hook_path
@@ -704,7 +721,7 @@ class DockerAgent(AbstractAgent):
             # Create the scratch, config, and work directories.
             if (
                 sys.platform.startswith('linux')
-                and self.config['container']['scratch-type'] == 'memory'
+                and self.local_config['container']['scratch-type'] == 'memory'
             ):
                 await loop.run_in_executor(None, partial(os.makedirs, tmp_dir, exist_ok=True))
                 await create_scratch_filesystem(scratch_dir, 64)
@@ -746,8 +763,8 @@ class DockerAgent(AbstractAgent):
                 shutil.copy(vimrc_path.resolve(), work_dir / '.vimrc')
                 shutil.copy(tmux_conf_path.resolve(), work_dir / '.tmux.conf')
                 if KernelFeatures.UID_MATCH in kernel_features:
-                    uid = self.config['container']['kernel-uid']
-                    gid = self.config['container']['kernel-gid']
+                    uid = self.local_config['container']['kernel-uid']
+                    gid = self.local_config['container']['kernel-gid']
                     if os.geteuid() == 0:  # only possible when I am root.
                         os.chown(work_dir, uid, gid)
                         os.chown(work_dir / '.jupyter', uid, gid)
@@ -765,8 +782,8 @@ class DockerAgent(AbstractAgent):
                 def _write_user_bootstrap_script():
                     (work_dir / 'bootstrap.sh').write_text(bootstrap)
                     if KernelFeatures.UID_MATCH in kernel_features:
-                        uid = self.config['container']['kernel-uid']
-                        gid = self.config['container']['kernel-gid']
+                        uid = self.local_config['container']['kernel-uid']
+                        gid = self.local_config['container']['kernel-gid']
                         if os.geteuid() == 0:
                             os.chown(work_dir / 'bootstrap.sh', uid, gid)
 
@@ -793,7 +810,7 @@ class DockerAgent(AbstractAgent):
                 for dev_type, device_alloc in resource_spec.allocations.items():
                     computer_ctx = self.computers[dev_type]
                     kvpairs = \
-                        await computer_ctx.klass.generate_resource_data(device_alloc)
+                        await computer_ctx.instance.generate_resource_data(device_alloc)
                     for k, v in kvpairs.items():
                         await writer.write(f'{k}={v}\n')
             with open(config_dir / 'kernel_id.txt', 'w') as f:
@@ -825,8 +842,8 @@ class DockerAgent(AbstractAgent):
                     (work_dir / 'id_container').write_bytes(privkey)
                     (work_dir / 'id_container').chmod(0o600)
                     if KernelFeatures.UID_MATCH in kernel_features:
-                        uid = self.config['container']['kernel-uid']
-                        gid = self.config['container']['kernel-gid']
+                        uid = self.local_config['container']['kernel-uid']
+                        gid = self.local_config['container']['kernel-gid']
                         if os.geteuid() == 0:  # only possible when I am root.
                             os.chown(ssh_dir, uid, gid)
                             os.chown(ssh_dir / 'authorized_keys', uid, gid)
@@ -847,8 +864,8 @@ class DockerAgent(AbstractAgent):
                 tmp.chmod(int(dotfile['perm'], 8))
                 # only possible when I am root.
                 if KernelFeatures.UID_MATCH in kernel_features and os.geteuid() == 0:
-                    uid = self.config['container']['kernel-uid']
-                    gid = self.config['container']['kernel-gid']
+                    uid = self.local_config['container']['kernel-uid']
+                    gid = self.local_config['container']['kernel-gid']
                     os.chown(tmp, uid, gid)
                 tmp = tmp.parent
 
@@ -898,7 +915,7 @@ class DockerAgent(AbstractAgent):
 
         log.debug('exposed ports: {!r}', exposed_ports)
 
-        kernel_host = self.config['container']['kernel-host']
+        kernel_host = self.local_config['container']['kernel-host']
         if len(exposed_ports) > len(self.port_pool):
             raise RuntimeError('Container ports are not sufficiently available.')
         host_ports = []
@@ -909,13 +926,13 @@ class DockerAgent(AbstractAgent):
         runtime_type = image_labels.get('ai.backend.runtime-type', 'python')
         runtime_path = image_labels.get('ai.backend.runtime-path', None)
         cmdargs: List[str] = []
-        if self.config['container']['sandbox-type'] == 'jail':
+        if self.local_config['container']['sandbox-type'] == 'jail':
             cmdargs += [
                 "/opt/kernel/jail",
                 "-policy", "/etc/backend.ai/jail/policy.yml",
             ]
-            if self.config['container']['jail-args']:
-                cmdargs += map(lambda s: s.strip(), self.config['container']['jail-args'])
+            if self.local_config['container']['jail-args']:
+                cmdargs += map(lambda s: s.strip(), self.local_config['container']['jail-args'])
         cmdargs += [
             "/opt/backend.ai/bin/python",
             "-m", "ai.backend.kernel", runtime_type,
@@ -923,7 +940,7 @@ class DockerAgent(AbstractAgent):
         if runtime_path is not None:
             cmdargs.append(runtime_path)
 
-        container_log_size = self.config['agent']['container-logs']['max-length']
+        container_log_size = self.local_config['agent']['container-logs']['max-length']
         container_log_file_count = 5
         container_log_file_size = BinarySize(container_log_size // container_log_file_count)
         container_config: MutableMapping[str, Any] = {
@@ -980,7 +997,7 @@ class DockerAgent(AbstractAgent):
             computer_docker_args['HostConfig']['ShmSize'] = shmem
             computer_docker_args['HostConfig']['MemorySwap'] -= shmem
             computer_docker_args['HostConfig']['Memory'] -= shmem
-        if self.config['container']['sandbox-type'] == 'jail':
+        if self.local_config['container']['sandbox-type'] == 'jail':
             container_config['HostConfig']['SecurityOpt'] = [
                 'seccomp=unconfined',
                 'apparmor=unconfined',
@@ -1009,7 +1026,7 @@ class DockerAgent(AbstractAgent):
                 for dev_name, device_alloc in resource_spec.allocations.items():
                     computer_ctx = self.computers[dev_name]
                     kvpairs = \
-                        await computer_ctx.klass.generate_resource_data(device_alloc)
+                        await computer_ctx.instance.generate_resource_data(device_alloc)
                     for k, v in kvpairs.items():
                         await writer.write(f'{k}={v}\n')
 
@@ -1019,14 +1036,14 @@ class DockerAgent(AbstractAgent):
             attached_devices = {}
             for dev_name, device_alloc in resource_spec.allocations.items():
                 computer_set = self.computers[dev_name]
-                devices = await computer_set.klass.get_attached_devices(device_alloc)
+                devices = await computer_set.instance.get_attached_devices(device_alloc)
                 attached_devices[dev_name] = devices
         except asyncio.CancelledError:
             raise
         except Exception:
             # Oops, we have to restore the allocated resources!
             if (sys.platform.startswith('linux') and
-                self.config['container']['scratch-type'] == 'memory'):
+                self.local_config['container']['scratch-type'] == 'memory'):
                 await destroy_scratch_filesystem(scratch_dir)
                 await destroy_scratch_filesystem(tmp_dir)
                 await loop.run_in_executor(None, shutil.rmtree, tmp_dir)
@@ -1062,7 +1079,7 @@ class DockerAgent(AbstractAgent):
             kernel_id,
             image_ref,
             version,
-            agent_config=self.config,
+            agent_config=self.local_config,
             service_ports=service_ports,
             resource_spec=resource_spec,
             data={
@@ -1232,7 +1249,7 @@ class DockerAgent(AbstractAgent):
 
         # When the agent restarts with a different port range, existing
         # containers' host ports may not belong to the new port range.
-        if not self.config['debug']['skip-container-deletion'] and container_id is not None:
+        if not self.local_config['debug']['skip-container-deletion'] and container_id is not None:
             container = self.docker.containers.container(container_id)
             try:
                 with timeout(90):
@@ -1251,12 +1268,12 @@ class DockerAgent(AbstractAgent):
                             kernel_id, container_id)
 
         if not restarting:
-            scratch_root = self.config['container']['scratch-root']
+            scratch_root = self.local_config['container']['scratch-root']
             scratch_dir = scratch_root / str(kernel_id)
             tmp_dir = scratch_root / f'{kernel_id}_tmp'
             try:
                 if (sys.platform.startswith('linux') and
-                    self.config['container']['scratch-type'] == 'memory'):
+                    self.local_config['container']['scratch-type'] == 'memory'):
                     await destroy_scratch_filesystem(scratch_dir)
                     await destroy_scratch_filesystem(tmp_dir)
                     await loop.run_in_executor(None, shutil.rmtree, tmp_dir)
@@ -1269,7 +1286,7 @@ class DockerAgent(AbstractAgent):
         while True:
             try:
                 evdata = await subscriber.get()
-                if self.config['debug']['log-docker-events'] and evdata['Type'] == 'container':
+                if self.local_config['debug']['log-docker-events'] and evdata['Type'] == 'container':
                     log.debug('docker-event: action={}, actor={}',
                               evdata['Action'], evdata['Actor'])
                 if evdata['Action'] == 'start':

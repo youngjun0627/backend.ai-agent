@@ -294,7 +294,7 @@ async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
     return distro, volume_name
 
 
-async def prepare_krunner_env() -> Mapping[str, Sequence[str]]:
+async def prepare_krunner_env(local_config: Mapping[str, Any]) -> Mapping[str, Sequence[str]]:
     '''
     Check if the volume "backendai-krunner.{distro}.{arch}" exists and is up-to-date.
     If not, automatically create it and update its content from the packaged pre-built krunner

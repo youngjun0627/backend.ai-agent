@@ -52,14 +52,25 @@ class CPUDevice(AbstractComputeDevice):
 
 
 class CPUPlugin(AbstractComputePlugin):
-    '''
+    """
     Represents the CPU.
-    '''
+    """
+
+    config_watch_enabled = False
 
     key = DeviceName('cpu')
     slot_types = [
         (SlotName('cpu'), SlotTypes.COUNT)
     ]
+
+    async def init(self) -> None:
+        pass
+
+    async def cleanup(self) -> None:
+        pass
+
+    async def update_plugin_config(self, new_plugin_config: Mapping[str, Any]) -> None:
+        pass
 
     @classmethod
     async def list_devices(cls) -> Collection[CPUDevice]:
@@ -254,17 +265,28 @@ class MemoryDevice(AbstractComputeDevice):
 
 
 class MemoryPlugin(AbstractComputePlugin):
-    '''
+    """
     Represents the main memory.
 
     When collecting statistics, it also measures network and I/O usage
     in addition to the memory usage.
-    '''
+    """
+
+    config_watch_enabled = False
 
     key = DeviceName('mem')
     slot_types = [
         (SlotName('mem'), SlotTypes.BYTES)
     ]
+
+    async def init(self) -> None:
+        pass
+
+    async def cleanup(self) -> None:
+        pass
+
+    async def update_plugin_config(self, new_plugin_config: Mapping[str, Any]) -> None:
+        pass
 
     @classmethod
     async def list_devices(cls) -> Collection[MemoryDevice]:
@@ -366,7 +388,7 @@ class MemoryPlugin(AbstractComputePlugin):
                     break
             else:
                 return 0
-            work_dir = ctx.agent.config['container']['scratch-root'] / str(kernel_id) / 'work'
+            work_dir = ctx.agent.local_config['container']['scratch-root'] / str(kernel_id) / 'work'
             total_size = 0
             for path in work_dir.rglob('*'):
                 if path.is_symlink():

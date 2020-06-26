@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from abc import ABCMeta, abstractmethod
 import asyncio
 from decimal import Decimal
@@ -8,11 +10,20 @@ import pickle
 import signal
 import time
 from typing import (
-    Any, Collection, Optional, Type, Union,
+    Any,
     AsyncIterator,
-    Mapping, MutableMapping, Dict,
-    Sequence, MutableSequence, Tuple,
-    Set, FrozenSet,
+    Collection,
+    Dict,
+    FrozenSet,
+    Optional,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+    TYPE_CHECKING,
     cast,
 )
 
@@ -30,8 +41,6 @@ from ai.backend.common.docker import (
     MAX_KERNELSPEC,
 )
 from ai.backend.common.logging import BraceStyleAdapter
-from ai.backend.common.monitor import DummyStatsMonitor, DummyErrorMonitor
-from ai.backend.common.plugin import install_plugins
 from ai.backend.common.types import (
     aobject,
     # TODO: eliminate use of ContainerId
@@ -43,6 +52,7 @@ from ai.backend.common.types import (
     Sentinel,
 )
 from ai.backend.common.utils import current_loop
+from ai.backend.common.plugin.monitor import ErrorPluginContext, StatsPluginContext
 from . import __version__ as VERSION
 from .defs import ipc_base_path
 from .kernel import AbstractKernel
@@ -62,9 +72,12 @@ from .types import (
 )
 from .utils import generate_agent_id
 
+if TYPE_CHECKING:
+    from ai.backend.common.etcd import AsyncEtcd
+
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.agent'))
 
-_sentinel = Sentinel()
+_sentinel = Sentinel.TOKEN
 
 ACTIVE_STATUS_SET = frozenset([
     ContainerStatus.RUNNING,
@@ -88,7 +101,7 @@ class RestartTracker:
 
 @attr.s(auto_attribs=True, slots=True)
 class ComputerContext:
-    klass: Type[AbstractComputePlugin]
+    instance: AbstractComputePlugin
     devices: Collection[AbstractComputeDevice]
     alloc_map: AbstractAllocMap
 
@@ -97,6 +110,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
 
     loop: asyncio.AbstractEventLoop
     config: Mapping[str, Any]
+    etcd: AsyncEtcd
     agent_id: str
     kernel_registry: MutableMapping[KernelId, AbstractKernel]
     computers: MutableMapping[str, ComputerContext]
@@ -115,10 +129,22 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
     stat_sync_sockpath: Path
     stat_sync_task: asyncio.Task
 
-    def __init__(self, config: Mapping[str, Any], *, skip_initial_scan: bool = False) -> None:
+    stats_monitor: StatsPluginContext
+    error_monitor: ErrorPluginContext
+
+    def __init__(
+        self,
+        etcd: AsyncEtcd,
+        local_config: Mapping[str, Any],
+        *,
+        stats_monitor: StatsPluginContext,
+        error_monitor: ErrorPluginContext,
+        skip_initial_scan: bool = False,
+    ) -> None:
         self._skip_initial_scan = skip_initial_scan
         self.loop = current_loop()
-        self.config = config
+        self.etcd = etcd
+        self.local_config = local_config
         self.agent_id = generate_agent_id(__file__)
         self.kernel_registry = {}
         self.computers = {}
@@ -126,20 +152,15 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.terminating_kernels = set()
         self.restarting_kernels = {}
         self.stat_ctx = StatContext(
-            self, mode=StatModes(config['container']['stats-type']),
+            self, mode=StatModes(local_config['container']['stats-type']),
         )
         self.timer_tasks = []
         self.port_pool = set(range(
-            config['container']['port-range'][0],
-            config['container']['port-range'][1] + 1,
+            local_config['container']['port-range'][0],
+            local_config['container']['port-range'][1] + 1,
         ))
-        self.stats_monitor = DummyStatsMonitor()
-        self.error_monitor = DummyErrorMonitor()
-        plugins = [
-            'stats_monitor',
-            'error_monitor'
-        ]
-        install_plugins(plugins, self, 'attr', self.config)
+        self.stats_monitor = stats_monitor
+        self.error_monitor = error_monitor
 
     async def __ainit__(self) -> None:
         """
@@ -150,30 +171,28 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.container_lifecycle_queue = asyncio.Queue()
         self.producer_lock = asyncio.Lock()
         self.redis_producer_pool = await redis.connect_with_retries(
-            self.config['redis']['addr'].as_sockaddr(),
+            self.local_config['redis']['addr'].as_sockaddr(),
             db=4,  # REDIS_STREAM_DB in gateway.defs
-            password=(self.config['redis']['password']
-                      if self.config['redis']['password'] else None),
+            password=(self.local_config['redis']['password']
+                      if self.local_config['redis']['password'] else None),
             encoding=None,
         )
         self.redis_stat_pool = await redis.connect_with_retries(
-            self.config['redis']['addr'].as_sockaddr(),
+            self.local_config['redis']['addr'].as_sockaddr(),
             db=0,  # REDIS_STAT_DB in backend.ai-manager
-            password=(self.config['redis']['password']
-                      if self.config['redis']['password'] else None),
+            password=(self.local_config['redis']['password']
+                      if self.local_config['redis']['password'] else None),
             encoding='utf8',
         )
 
         ipc_base_path.mkdir(parents=True, exist_ok=True)
         self.zmq_ctx = zmq.asyncio.Context()
 
-        computers, self.slots = await self.detect_resources(
-            self.config['resource'],
-            self.config['plugins'])
-        for name, klass in computers.items():
-            devices = await klass.list_devices()
-            alloc_map = await klass.create_alloc_map()
-            self.computers[name] = ComputerContext(klass, devices, alloc_map)
+        computers, self.slots = await self.detect_resources()
+        for name, computer in computers.items():
+            devices = await computer.list_devices()
+            alloc_map = await computer.create_alloc_map()
+            self.computers[name] = ComputerContext(computer, devices, alloc_map)
 
         if not self._skip_initial_scan:
             self.images = await self.scan_images()
@@ -234,7 +253,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         """
         Send an event to the manager(s).
         """
-        if self.config['debug']['log-heartbeats']:
+        if self.local_config['debug']['log-heartbeats']:
             _log = log.debug if event_name == 'instance_heartbeat' else log.info
         else:
             _log = (lambda *args: None) if event_name == 'instance_heartbeat' else log.info
@@ -244,7 +263,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             _log('produce_event({0})', event_name)
         encoded_event = msgpack.packb({
             'event_name': event_name,
-            'agent_id': self.config['agent']['id'],
+            'agent_id': self.local_config['agent']['id'],
             'args': args,
         })
         async with self.producer_lock:
@@ -261,22 +280,22 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         """
         res_slots = {}
         for cctx in self.computers.values():
-            for slot_key, slot_type in cctx.klass.slot_types:
+            for slot_key, slot_type in cctx.instance.slot_types:
                 res_slots[slot_key] = (
                     slot_type,
                     str(self.slots.get(slot_key, 0)),
                 )
         agent_info = {
-            'ip': str(self.config['agent']['rpc-listen-addr'].host),
-            'region': self.config['agent']['region'],
-            'scaling_group': self.config['agent']['scaling-group'],
-            'addr': f"tcp://{self.config['agent']['rpc-listen-addr']}",
+            'ip': str(self.local_config['agent']['rpc-listen-addr'].host),
+            'region': self.local_config['agent']['region'],
+            'scaling_group': self.local_config['agent']['scaling-group'],
+            'addr': f"tcp://{self.local_config['agent']['rpc-listen-addr']}",
             'resource_slots': res_slots,
             'version': VERSION,
             'compute_plugins': {
                 key: {
-                    'version': computer.klass.get_version(),
-                    **(await computer.klass.extra_info())
+                    'version': computer.instance.get_version(),
+                    **(await computer.instance.extra_info())
                 }
                 for key, computer in self.computers.items()
             },
@@ -290,7 +309,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             log.warning('event dispatch timeout: instance_heartbeat')
         except Exception:
             log.exception('instance_heartbeat failure')
-            self.error_monitor.capture_exception()
+            await self.error_monitor.capture_exception()
 
     async def collect_logs(
         self,
@@ -298,7 +317,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         container_id: str,
         async_log_iterator: AsyncIterator[bytes],
     ) -> None:
-        chunk_size = self.config['agent']['container-logs']['chunk-size']
+        chunk_size = self.local_config['agent']['container-logs']['chunk-size']
         log_key = f'containerlog.{container_id}'
         log_length = 0
         chunk_buffer = BytesIO()
@@ -343,7 +362,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         )
 
     async def collect_node_stat(self, interval: float):
-        if self.config['debug']['log-stats']:
+        if self.local_config['debug']['log-stats']:
             log.debug('collecting node statistics')
         try:
             await self.stat_ctx.collect_node_stat()
@@ -351,10 +370,10 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             pass
         except Exception:
             log.exception('unhandled exception while syncing node stats')
-            self.error_monitor.capture_exception()
+            await self.error_monitor.capture_exception()
 
     async def collect_container_stat(self, interval: float):
-        if self.config['debug']['log-stats']:
+        if self.local_config['debug']['log-stats']:
             log.debug('collecting container statistics')
         try:
             updated_kernel_ids = []
@@ -372,7 +391,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             pass
         except Exception:
             log.exception('unhandled exception while syncing container stats')
-            self.error_monitor.capture_exception()
+            await self.error_monitor.capture_exception()
 
     async def _handle_start_event(self, ev: ContainerLifecycleEvent) -> None:
         kernel_obj = self.kernel_registry.get(ev.kernel_id)
@@ -410,7 +429,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             result = await self.destroy_kernel(ev.kernel_id, ev.container_id)
         except Exception:
             log.exception('unhandled exception while processing DESTROY event')
-            self.error_monitor.capture_exception()
+            await self.error_monitor.capture_exception()
         finally:
             if ev.done_event is not None:
                 ev.done_event.set()
@@ -429,13 +448,13 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             )
         except Exception:
             log.exception('unhandled exception while processing CLEAN event')
-            self.error_monitor.capture_exception()
+            await self.error_monitor.capture_exception()
         finally:
             try:
                 kernel_obj = self.kernel_registry.get(ev.kernel_id)
                 if kernel_obj is not None:
                     # Restore used ports to the port pool.
-                    port_range = self.config['container']['port-range']
+                    port_range = self.local_config['container']['port-range']
                     restored_ports = [*filter(
                         lambda p: port_range[0] <= p <= port_range[1],
                         kernel_obj['host_ports']
@@ -536,7 +555,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 computer_set.alloc_map.clear()
             for kernel_id, container in (await self.enumerate_containers()):
                 for computer_set in self.computers.values():
-                    await computer_set.klass.restore_from_container(
+                    await computer_set.instance.restore_from_container(
                         container,
                         computer_set.alloc_map,
                     )
@@ -615,14 +634,11 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                        for kernel_id in kernel_ids]
             await asyncio.gather(*waiters)
 
-    @staticmethod
     @abstractmethod
-    async def detect_resources(resource_configs: Mapping[str, Any],
-                               plugin_configs: Mapping[str, Any]) \
-                               -> Tuple[
-                                   Mapping[DeviceName, Type[AbstractComputePlugin]],
-                                   Mapping[SlotName, Decimal]
-                               ]:
+    async def detect_resources(self) -> Tuple[
+        Mapping[DeviceName, AbstractComputePlugin],
+        Mapping[SlotName, Decimal]
+    ]:
         """
         Scan and define the amount of available resource slots in this node.
         """
@@ -661,7 +677,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             with open(ipc_base_path / f'last_registry.{self.agent_id}.dat', 'rb') as f:
                 self.kernel_registry = pickle.load(f)
                 for kernel_obj in self.kernel_registry.values():
-                    kernel_obj.agent_config = self.config
+                    kernel_obj.agent_config = self.local_config
                     if kernel_obj.runner is not None:
                         await kernel_obj.runner.__ainit__()
         except FileNotFoundError:
@@ -680,7 +696,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                             self.port_pool.discard(p.host_port)
                     # Restore compute resources.
                     for computer_set in self.computers.values():
-                        await computer_set.klass.restore_from_container(
+                        await computer_set.instance.restore_from_container(
                             container,
                             computer_set.alloc_map,
                         )
@@ -780,7 +796,11 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                 destroy_event=asyncio.Event(),
                 done_event=asyncio.Event())
             self.restarting_kernels[kernel_id] = tracker
-        config_dir = (self.config['container']['scratch-root'] / str(kernel_id) / 'config').resolve()
+        config_dir = (
+            self.local_config['container']['scratch-root'] /
+            str(kernel_id) /
+            'config'
+        ).resolve()
         with open(config_dir / 'kconfig.dat', 'rb') as fb:
             existing_config = pickle.load(fb)
             new_config = cast(KernelCreationConfig, {**existing_config, **new_config})

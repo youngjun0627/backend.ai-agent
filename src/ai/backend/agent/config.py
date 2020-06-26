@@ -6,6 +6,7 @@ from ai.backend.common import config
 from ai.backend.common import validators as tx
 
 from .stats import StatModes
+from .types import AgentBackend
 
 
 coredump_defaults = {
@@ -17,7 +18,7 @@ coredump_defaults = {
 
 agent_local_config_iv = t.Dict({
     t.Key('agent'): t.Dict({
-        t.Key('mode'): t.Enum('docker', 'k8s'),
+        tx.AliasedKey(['backend', 'mode']): tx.Enum(AgentBackend),
         t.Key('rpc-listen-addr', default=('', 6001)):
             tx.HostPortPair(allow_blank_host=True),
         t.Key('id', default=None): t.Null | t.String,

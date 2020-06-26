@@ -276,7 +276,7 @@ class StatContext:
             # gather node/device metrics from compute plugins
             _tasks = []
             for computer in self.agent.computers.values():
-                _tasks.append(computer.klass.gather_node_measures(self))
+                _tasks.append(computer.instance.gather_node_measures(self))
             for node_measures in (await asyncio.gather(*_tasks, return_exceptions=True)):
                 if isinstance(node_measures, Exception):
                     log.error('gather_node_measures error',
@@ -331,7 +331,7 @@ class StatContext:
                 self.kernel_metrics.pop(unused_kernel_id, None)
             _tasks = []
             for computer in self.agent.computers.values():
-                _tasks.append(computer.klass.gather_container_measures(self, container_ids))
+                _tasks.append(computer.instance.gather_container_measures(self, container_ids))
             for ctnr_measures in (await asyncio.gather(*_tasks, return_exceptions=True)):
                 if isinstance(ctnr_measures, Exception):
                     log.error('gather_container_measures error',
@@ -369,15 +369,15 @@ class StatContext:
                 for metric_key, per_device in self.device_metrics.items()
             },
         }
-        if self.agent.config['debug']['log-stats']:
+        if self.agent.local_config['debug']['log-stats']:
             log.debug('stats: node_updates: {0}: {1}',
-                      self.agent.config['agent']['id'], redis_agent_updates['node'])
+                      self.agent.local_config['agent']['id'], redis_agent_updates['node'])
         serialized_agent_updates = msgpack.packb(redis_agent_updates)
 
         def _pipe_builder():
             pipe = self.agent.redis_stat_pool.pipeline()
-            pipe.set(self.agent.config['agent']['id'], serialized_agent_updates)
-            pipe.expire(self.agent.config['agent']['id'], self.cache_lifespan)
+            pipe.set(self.agent.local_config['agent']['id'], serialized_agent_updates)
+            pipe.expire(self.agent.local_config['agent']['id'], self.cache_lifespan)
             for kernel_id, metrics in self.kernel_metrics.items():
                 serialized_metrics = {
                     key: obj.to_serializable_dict()
@@ -404,7 +404,7 @@ class StatContext:
             kernel_id = None
             for computer in self.agent.computers.values():
                 _tasks.append(
-                    computer.klass.gather_container_measures(self, [container_id]))
+                    computer.instance.gather_container_measures(self, [container_id]))
             for ctnr_measures in (await asyncio.gather(*_tasks, return_exceptions=True)):
                 if isinstance(ctnr_measures, Exception):
                     log.error('gather_cotnainer_measures error',
@@ -440,7 +440,7 @@ class StatContext:
                 key: obj.to_serializable_dict()
                 for key, obj in metrics.items()
             }
-            if self.agent.config['debug']['log-stats']:
+            if self.agent.local_config['debug']['log-stats']:
                 log.debug('kernel_updates: {0}: {1}',
                           kernel_id, serializable_metrics)
             serialized_metrics = msgpack.packb(serializable_metrics)

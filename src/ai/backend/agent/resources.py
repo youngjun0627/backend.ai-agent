@@ -27,6 +27,7 @@ from ai.backend.common.types import (
     BinarySize,
 )
 from ai.backend.common.logging import BraceStyleAdapter
+from ai.backend.common.plugin import AbstractPlugin, BasePluginContext
 from .exception import InsufficientResource
 from .stats import StatContext, NodeMeasurement, ContainerMeasurement
 from .types import Container
@@ -38,34 +39,34 @@ known_slot_types: Mapping[SlotName, SlotTypes] = {}
 
 
 @attr.s(auto_attribs=True, slots=True)
-class KernelResourceSpec(metaclass=ABCMeta):
-    '''
+class KernelResourceSpec:
+    """
     This struct-like object stores the kernel resource allocation information
     with serialization and deserialization.
 
     It allows seamless reconstruction of allocations even when the agent restarts
     while kernel containers are running.
-    '''
+    """
 
-    '''The container ID to refer inside containers.'''
     container_id: str
+    """The container ID to refer inside containers."""
 
-    '''Stores the original user-requested resource slots.'''
     slots: Mapping[SlotName, str]
+    """Stores the original user-requested resource slots."""
 
-    '''
-    Represents the resource allocations for each slot (device) type and devices.
-    '''
     allocations: MutableMapping[DeviceName, Mapping[SlotName, Mapping[DeviceId, Decimal]]]
+    """
+    Represents the resource allocations for each slot (device) type and devices.
+    """
 
-    '''The size of scratch disk. (not implemented yet)'''
     scratch_disk_size: int
+    """The size of scratch disk. (not implemented yet)"""
 
-    '''The mounted vfolder list.'''
     mounts: List['Mount'] = attr.Factory(list)
+    """The mounted vfolder list."""
 
-    '''The idle timeout in seconds.'''
     idle_timeout: Optional[int] = None
+    """The idle timeout in seconds."""
 
     def write_to_string(self) -> str:
         mounts_str = ','.join(map(str, self.mounts))
@@ -178,135 +179,130 @@ class AbstractComputeDevice():
     processing_units: int       # number of processing units (e.g., cores, SMP)
 
 
-class AbstractComputePlugin(metaclass=ABCMeta):
+class AbstractComputePlugin(AbstractPlugin, metaclass=ABCMeta):
 
     key: DeviceName = DeviceName('accelerator')
     slot_types: Sequence[Tuple[SlotName, SlotTypes]] = []
 
-    @classmethod
     @abstractmethod
-    async def list_devices(cls) -> Collection[AbstractComputeDevice]:
-        '''
+    async def list_devices(self) -> Collection[AbstractComputeDevice]:
+        """
         Return the list of accelerator devices, as read as physically
         on the host.
-        '''
+        """
         raise NotImplementedError
 
-    @classmethod
     @abstractmethod
-    async def available_slots(cls) -> Mapping[SlotName, Decimal]:
-        '''
+    async def available_slots(self) -> Mapping[SlotName, Decimal]:
+        """
         Return available slot amounts for each slot key.
-        '''
+        """
         raise NotImplementedError
 
-    @classmethod
     @abstractmethod
-    def get_version(cls) -> str:
-        '''
+    def get_version(self) -> str:
+        """
         Return the version string of the plugin.
-        '''
+        """
         raise NotImplementedError
 
-    @classmethod
     @abstractmethod
-    async def extra_info(cls) -> Mapping[str, str]:
-        '''
+    async def extra_info(self) -> Mapping[str, str]:
+        """
         Return extra information related to this plugin,
         such as the underlying driver version and feature flags.
-        '''
+        """
         return {}
 
-    @classmethod
     @abstractmethod
-    async def gather_node_measures(cls, ctx: StatContext) -> Sequence[NodeMeasurement]:
-        '''
+    async def gather_node_measures(self, ctx: StatContext) -> Sequence[NodeMeasurement]:
+        """
         Return the system-level and device-level statistic metrics.
 
         It may return any number of metrics using different statistics key names in the
         returning map.
         Note that the key must not conflict with other accelerator plugins and must not
         contain dots.
-        '''
+        """
         raise NotImplementedError
 
-    @classmethod
     @abstractmethod
     async def gather_container_measures(
-        cls,
+        self,
         ctx: StatContext,
         container_ids: Sequence[str],
     ) -> Sequence[ContainerMeasurement]:
-        '''
+        """
         Return the container-level statistic metrics.
-        '''
+        """
         raise NotImplementedError
 
-    @classmethod
     @abstractmethod
-    async def create_alloc_map(cls) -> 'AbstractAllocMap':
-        '''
+    async def create_alloc_map(self) -> 'AbstractAllocMap':
+        """
         Create and return an allocation map for this plugin.
-        '''
+        """
         raise NotImplementedError
 
-    @classmethod
     @abstractmethod
-    async def get_hooks(cls, distro: str, arch: str) -> Sequence[Path]:
-        '''
+    async def get_hooks(self, distro: str, arch: str) -> Sequence[Path]:
+        """
         Return the library hook paths used by the plugin (optional).
 
         :param str distro: The target Linux distribution such as "ubuntu16.04" or
                            "alpine3.8"
         :param str arch: The target CPU architecture such as "amd64"
-        '''
+        """
         return []
 
-    @classmethod
     @abstractmethod
     async def generate_docker_args(
-        cls,
+        self,
         docker: aiodocker.docker.Docker,
         device_alloc,
     ) -> Mapping[str, Any]:
-        '''
+        """
         When starting a new container, generate device-specific options for the
         docker container create API as a dictionary, referring the given allocation
         map.  The agent will merge it with its own options.
-        '''
+        """
         return {}
 
-    @classmethod
-    async def generate_resource_data(cls, device_alloc) -> Mapping[str, str]:
-        '''
+    async def generate_resource_data(self, device_alloc) -> Mapping[str, str]:
+        """
         Generate extra resource.txt key-value pair sets to be used by the plugin's
         own hook libraries in containers.
-        '''
+        """
         return {}
 
-    @classmethod
     @abstractmethod
     async def restore_from_container(
-        cls,
+        self,
         container: Container,
         alloc_map: AbstractAllocMap,
     ) -> None:
-        '''
+        """
         When the agent restarts, retore the allocation map from the container
         metadata dictionary fetched from aiodocker.
-        '''
+        """
         pass
 
-    @classmethod
     @abstractmethod
     async def get_attached_devices(
-        cls,
+        self,
         device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
     ) -> Sequence[DeviceModelInfo]:
-        '''
+        """
         Make up container-attached device information with allocated device id.
-        '''
+        """
         return []
+
+
+class ComputePluginContext(BasePluginContext[AbstractComputePlugin]):
+    plugin_group = 'backendai_accelerator_v20'
+
+    def attach_intrinsic_device(self, plugin: AbstractComputePlugin) -> None:
+        self.plugins[plugin.key] = plugin
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -411,14 +407,14 @@ def bitmask2set(mask: int) -> FrozenSet[int]:
 
 
 class DiscretePropertyAllocMap(AbstractAllocMap):
-    '''
+    """
     An allocation map using discrete property.
     The user must pass a "property function" which returns a desired resource
     property from the device object.
 
     e.g., 1.0 means 1 device, 2.0 means 2 devices, etc.
     (no fractions allowed)
-    '''
+    """
 
     def __init__(self, *args, **kwargs) -> None:
         self.property_func = kwargs.pop('prop_func')
