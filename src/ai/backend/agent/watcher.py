@@ -354,7 +354,11 @@ def main(cli_ctx, config_path, debug):
         raise click.Abort()
 
     # Change the filename from the logging config's file section.
-    logger = Logger(cfg['logging'])
+    log_sockpath = Path(f'/tmp/backend.ai/ipc/watcher-logger-{os.getpid()}.sock')
+    log_sockpath.parent.mkdir(parents=True, exist_ok=True)
+    log_endpoint = f'ipc://{log_sockpath}'
+    cfg['logging']['endpoint'] = log_endpoint
+    logger = Logger(cfg['logging'], is_master=True, log_endpoint=log_endpoint)
     if 'file' in cfg['logging']['drivers']:
         fn = Path(cfg['logging']['file']['filename'])
         cfg['logging']['file']['filename'] = f"{fn.stem}-watcher{fn.suffix}"
