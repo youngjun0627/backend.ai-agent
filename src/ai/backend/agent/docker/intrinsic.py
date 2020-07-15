@@ -256,6 +256,7 @@ class CPUPlugin(AbstractComputePlugin):
                 attached_devices.append({
                     'device_id': device.device_id,
                     'model_name': '',
+                    'data': {'cores': len(device_ids)},
                 })
         return attached_devices
 
@@ -560,5 +561,6 @@ class MemoryPlugin(AbstractComputePlugin):
                 attached_devices.append({
                     'device_id': device.device_id,
                     'model_name': '',
+                    'data': {},
                 })
         return attached_devices
