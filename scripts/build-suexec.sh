@@ -2,7 +2,7 @@
 set -e
 
 arch=$(uname -m)
-distros=("ubuntu16.04" "ubuntu18.04" "centos7.6" "alpine3.8")
+distros=("ubuntu16.04" "ubuntu18.04" "ubuntu20.04" "centos7.6" "alpine3.8")
 
 ubuntu1604_builder_dockerfile=$(cat <<'EOF'
 FROM ubuntu:16.04
@@ -13,6 +13,13 @@ EOF
 
 ubuntu1804_builder_dockerfile=$(cat <<'EOF'
 FROM ubuntu:18.04
+RUN apt-get update
+RUN apt-get install -y make gcc
+EOF
+)
+
+ubuntu2004_builder_dockerfile=$(cat <<'EOF'
+FROM ubuntu:20.04
 RUN apt-get update
 RUN apt-get install -y make gcc
 EOF
@@ -47,6 +54,7 @@ echo "$build_script" > "$temp_dir/build.sh"
 chmod +x $temp_dir/*.sh
 echo "$ubuntu1604_builder_dockerfile" > "$SCRIPT_DIR/suexec-builder.ubuntu16.04.dockerfile"
 echo "$ubuntu1804_builder_dockerfile" > "$SCRIPT_DIR/suexec-builder.ubuntu18.04.dockerfile"
+echo "$ubuntu2004_builder_dockerfile" > "$SCRIPT_DIR/suexec-builder.ubuntu20.04.dockerfile"
 echo "$centos_builder_dockerfile" > "$SCRIPT_DIR/suexec-builder.centos7.6.dockerfile"
 echo "$alpine_builder_dockerfile" > "$SCRIPT_DIR/suexec-builder.alpine3.8.dockerfile"
 
