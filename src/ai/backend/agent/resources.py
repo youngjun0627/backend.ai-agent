@@ -7,14 +7,22 @@ import logging
 import json
 from pathlib import Path
 from typing import (
-    cast,
-    Any, Collection, Iterable,
-    List, Sequence,
-    MutableMapping, Mapping,
-    FrozenSet,
-    Tuple, Union,
+    Any,
+    Collection,
+    Container,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    MutableMapping,
     Optional,
+    FrozenSet,
+    Sequence,
     TextIO,
+    Tuple,
+    Type,
+    Union,
+    cast,
 )
 
 import attr
@@ -30,7 +38,7 @@ from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.plugin import AbstractPlugin, BasePluginContext
 from .exception import InsufficientResource
 from .stats import StatContext, NodeMeasurement, ContainerMeasurement
-from .types import Container
+from .types import Container as SessionContainer
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
 
@@ -278,7 +286,7 @@ class AbstractComputePlugin(AbstractPlugin, metaclass=ABCMeta):
     @abstractmethod
     async def restore_from_container(
         self,
-        container: Container,
+        container: SessionContainer,
         alloc_map: AbstractAllocMap,
     ) -> None:
         """
@@ -300,6 +308,23 @@ class AbstractComputePlugin(AbstractPlugin, metaclass=ABCMeta):
 
 class ComputePluginContext(BasePluginContext[AbstractComputePlugin]):
     plugin_group = 'backendai_accelerator_v20'
+
+    @classmethod
+    def discover_plugins(
+        cls,
+        plugin_group: str,
+        blocklist: Container[str] = None,
+    ) -> Iterator[Tuple[str, Type[AbstractComputePlugin]]]:
+        scanned_plugins = [*super().discover_plugins(plugin_group, blocklist)]
+
+        def accel_lt_intrinsic(item):
+            # push back "intrinsic" plugins (if exists)
+            if item[0] in ('cpu', 'mem'):
+                return 0
+            return -1
+
+        scanned_plugins.sort(key=accel_lt_intrinsic)
+        yield from scanned_plugins
 
     def attach_intrinsic_device(self, plugin: AbstractComputePlugin) -> None:
         self.plugins[plugin.key] = plugin

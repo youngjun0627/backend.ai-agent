@@ -42,17 +42,18 @@ async def detect_resources(
 
     # Initialize intrinsic plugins by ourselves.
     from .intrinsic import CPUPlugin, MemoryPlugin
-    cpu_config = await etcd.get_prefix('config/plugins/cpu')
-    memory_config = await etcd.get_prefix('config/plugins/memory')
-    cpu_plugin = CPUPlugin(cpu_config, local_config)
-    memory_plugin = MemoryPlugin(memory_config, local_config)
-
     compute_plugin_ctx = ComputePluginContext(
         etcd, local_config,
     )
-    compute_plugin_ctx.attach_intrinsic_device(cpu_plugin)
-    compute_plugin_ctx.attach_intrinsic_device(memory_plugin)
     await compute_plugin_ctx.init()
+    if 'cpu' not in compute_plugin_ctx.plugins:
+        cpu_config = await etcd.get_prefix('config/plugins/cpu')
+        cpu_plugin = CPUPlugin(cpu_config, local_config)
+        compute_plugin_ctx.attach_intrinsic_device(cpu_plugin)
+    if 'mem' not in compute_plugin_ctx.plugins:
+        memory_config = await etcd.get_prefix('config/plugins/memory')
+        memory_plugin = MemoryPlugin(memory_config, local_config)
+        compute_plugin_ctx.attach_intrinsic_device(memory_plugin)
     for plugin_name, plugin_instance in compute_plugin_ctx.plugins.items():
         if not all(
             (invalid_name := sname, sname.startswith(f'{plugin_instance.key}.'))[1]

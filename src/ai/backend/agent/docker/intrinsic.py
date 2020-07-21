@@ -72,9 +72,8 @@ class CPUPlugin(AbstractComputePlugin):
     async def update_plugin_config(self, new_plugin_config: Mapping[str, Any]) -> None:
         pass
 
-    @classmethod
-    async def list_devices(cls) -> Collection[CPUDevice]:
-        num_cores = await libnuma.get_available_cores()
+    async def list_devices(self) -> Collection[CPUDevice]:
+        cores = await libnuma.get_available_cores()
         overcommit_factor = int(os.environ.get('BACKEND_CPU_OVERCOMMIT_FACTOR', '1'))
         assert 1 <= overcommit_factor <= 4
         return [
@@ -85,30 +84,26 @@ class CPUPlugin(AbstractComputePlugin):
                 memory_size=0,
                 processing_units=1 * overcommit_factor,
             )
-            for core_idx in sorted(num_cores)
+            for core_idx in sorted(cores)
         ]
 
-    @classmethod
-    async def available_slots(cls) -> Mapping[SlotName, Decimal]:
-        devices = await cls.list_devices()
+    async def available_slots(self) -> Mapping[SlotName, Decimal]:
+        devices = await self.list_devices()
         return {
             SlotName('cpu'): Decimal(sum(dev.processing_units for dev in devices)),
         }
 
-    @classmethod
-    def get_version(cls) -> str:
+    def get_version(self) -> str:
         return __version__
 
-    @classmethod
-    async def extra_info(cls) -> Mapping[str, str]:
+    async def extra_info(self) -> Mapping[str, str]:
         return {
             'agent_version': __version__,
             'machine': platform.machine(),
             'os_type': platform.system(),
         }
 
-    @classmethod
-    async def gather_node_measures(cls, ctx: StatContext) -> Sequence[NodeMeasurement]:
+    async def gather_node_measures(self, ctx: StatContext) -> Sequence[NodeMeasurement]:
         _cstat = psutil.cpu_times(True)
         q = Decimal('0.000')
         total_cpu_used = cast(Decimal,
@@ -134,9 +129,11 @@ class CPUPlugin(AbstractComputePlugin):
             ),
         ]
 
-    @classmethod
-    async def gather_container_measures(cls, ctx: StatContext, container_ids: Sequence[str]) \
-            -> Sequence[ContainerMeasurement]:
+    async def gather_container_measures(
+        self,
+        ctx: StatContext,
+        container_ids: Sequence[str],
+    ) -> Sequence[ContainerMeasurement]:
 
         async def sysfs_impl(container_id):
             cpu_prefix = f'/sys/fs/cgroup/cpuacct/docker/{container_id}/'
@@ -202,23 +199,21 @@ class CPUPlugin(AbstractComputePlugin):
             ),
         ]
 
-    @classmethod
-    async def create_alloc_map(cls) -> AbstractAllocMap:
-        devices = await cls.list_devices()
+    async def create_alloc_map(self) -> AbstractAllocMap:
+        devices = await self.list_devices()
         return DiscretePropertyAllocMap(
             devices=devices,
             prop_func=lambda dev: dev.processing_units)
 
-    @classmethod
-    async def get_hooks(cls, distro: str, arch: str) -> Sequence[Path]:
+    async def get_hooks(self, distro: str, arch: str) -> Sequence[Path]:
         # TODO: move the sysconf hook in libbaihook.so here
         return []
 
-    @classmethod
-    async def generate_docker_args(cls,
-                                   docker: Docker,
-                                   device_alloc) \
-                                  -> Mapping[str, Any]:
+    async def generate_docker_args(
+        self,
+        docker: Docker,
+        device_alloc,
+    ) -> Mapping[str, Any]:
         cores = [*map(int, device_alloc['cpu'].keys())]
         sorted_core_ids = [*map(str, sorted(cores))]
         return {
@@ -231,9 +226,11 @@ class CPUPlugin(AbstractComputePlugin):
             }
         }
 
-    @classmethod
-    async def restore_from_container(cls, container: Container,
-                                     alloc_map: AbstractAllocMap) -> None:
+    async def restore_from_container(
+        self,
+        container: Container,
+        alloc_map: AbstractAllocMap,
+    ) -> None:
         assert isinstance(alloc_map, DiscretePropertyAllocMap)
         # Docker does not return the original cpuset.... :(
         # We need to read our own records.
@@ -245,11 +242,13 @@ class CPUPlugin(AbstractComputePlugin):
                 resource_spec.allocations[DeviceName('cpu')][SlotName('cpu')],
         })
 
-    @classmethod
-    async def get_attached_devices(cls, device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]) \
-                                   -> Sequence[DeviceModelInfo]:
+    async def get_attached_devices(
+        self,
+        device_alloc: Mapping[SlotName,
+        Mapping[DeviceId, Decimal]],
+    ) -> Sequence[DeviceModelInfo]:
         device_ids = [*device_alloc[SlotName('cpu')].keys()]
-        available_devices = await cls.list_devices()
+        available_devices = await self.list_devices()
         attached_devices: List[DeviceModelInfo] = []
         for device in available_devices:
             if device.device_id in device_ids:
@@ -289,8 +288,7 @@ class MemoryPlugin(AbstractComputePlugin):
     async def update_plugin_config(self, new_plugin_config: Mapping[str, Any]) -> None:
         pass
 
-    @classmethod
-    async def list_devices(cls) -> Collection[MemoryDevice]:
+    async def list_devices(self) -> Collection[MemoryDevice]:
         # TODO: support NUMA?
         memory_size = psutil.virtual_memory().total
         return [MemoryDevice(
@@ -301,23 +299,19 @@ class MemoryPlugin(AbstractComputePlugin):
             processing_units=0,
         )]
 
-    @classmethod
-    async def available_slots(cls) -> Mapping[SlotName, Decimal]:
-        devices = await cls.list_devices()
+    async def available_slots(self) -> Mapping[SlotName, Decimal]:
+        devices = await self.list_devices()
         return {
             SlotName('mem'): Decimal(sum(dev.memory_size for dev in devices)),
         }
 
-    @classmethod
-    def get_version(cls) -> str:
+    def get_version(self) -> str:
         return __version__
 
-    @classmethod
-    async def extra_info(cls) -> Mapping[str, str]:
+    async def extra_info(self) -> Mapping[str, str]:
         return {}
 
-    @classmethod
-    async def gather_node_measures(cls, ctx: StatContext) -> Sequence[NodeMeasurement]:
+    async def gather_node_measures(self, ctx: StatContext) -> Sequence[NodeMeasurement]:
         _mstat = psutil.virtual_memory()
         total_mem_used_bytes = Decimal(_mstat.total - _mstat.available)
         total_mem_capacity_bytes = Decimal(_mstat.total)
@@ -379,8 +373,7 @@ class MemoryPlugin(AbstractComputePlugin):
             ),
         ]
 
-    @classmethod
-    async def gather_container_measures(cls, ctx: StatContext, container_ids: Sequence[str]) \
+    async def gather_container_measures(self, ctx: StatContext, container_ids: Sequence[str]) \
             -> Sequence[ContainerMeasurement]:
 
         def get_scratch_size(container_id: str) -> int:
@@ -517,22 +510,20 @@ class MemoryPlugin(AbstractComputePlugin):
             ),
         ]
 
-    @classmethod
-    async def create_alloc_map(cls) -> AbstractAllocMap:
-        devices = await cls.list_devices()
+    async def create_alloc_map(self) -> AbstractAllocMap:
+        devices = await self.list_devices()
         return DiscretePropertyAllocMap(
             devices=devices,
             prop_func=lambda dev: dev.memory_size)
 
-    @classmethod
-    async def get_hooks(cls, distro: str, arch: str) -> Sequence[Path]:
+    async def get_hooks(self, distro: str, arch: str) -> Sequence[Path]:
         return []
 
-    @classmethod
-    async def generate_docker_args(cls,
-                                   docker: Docker,
-                                   device_alloc) \
-                                  -> Mapping[str, Any]:
+    async def generate_docker_args(
+        self,
+        docker: Docker,
+        device_alloc,
+    ) -> Mapping[str, Any]:
         memory = sum(device_alloc['mem'].values())
         return {
             'HostConfig': {
@@ -541,20 +532,23 @@ class MemoryPlugin(AbstractComputePlugin):
             }
         }
 
-    @classmethod
-    async def restore_from_container(cls, container: Container,
-                                     alloc_map: AbstractAllocMap) -> None:
+    async def restore_from_container(
+        self,
+        container: Container,
+        alloc_map: AbstractAllocMap,
+    ) -> None:
         assert isinstance(alloc_map, DiscretePropertyAllocMap)
         memory_limit = container.backend_obj['HostConfig']['Memory']
         alloc_map.apply_allocation({
             SlotName('mem'): {DeviceId('root'): memory_limit},
         })
 
-    @classmethod
-    async def get_attached_devices(cls, device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]]) \
-                                   -> Sequence[DeviceModelInfo]:
+    async def get_attached_devices(
+        self,
+        device_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
+    ) -> Sequence[DeviceModelInfo]:
         device_ids = [*device_alloc[SlotName('mem')].keys()]
-        available_devices = await cls.list_devices()
+        available_devices = await self.list_devices()
         attached_devices: List[DeviceModelInfo] = []
         for device in available_devices:
             if device.device_id in device_ids:
