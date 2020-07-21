@@ -280,6 +280,18 @@ class BaseRunner(metaclass=ABCMeta):
         # it should not do anything by default.
         return 0
 
+    async def _bootstrap(self, script_path: Path) -> None:
+        log.info('Running the user bootstrap script...')
+        ret = 0
+        try:
+            ret = await self.run_subproc(['/bin/sh', str(script_path)])
+        except Exception:
+            log.exception('unexpected error while executing the user bootstrap script')
+            ret = -1
+        finally:
+            await asyncio.sleep(0.01)  # extra delay to flush logs
+            log.info('The user bootstrap script has exited with code {}', ret)
+
     async def _build(self, build_cmd: Optional[str]) -> None:
         ret = 0
         try:
@@ -704,6 +716,11 @@ class BaseRunner(metaclass=ABCMeta):
                                        '127.0.0.1', 65000)
         await self._init_with_loop()
         await self._init_jupyter_kernel()
+
+        user_bootstrap_path = Path('/home/work/bootstrap.sh')
+        if user_bootstrap_path.is_file():
+            await self._bootstrap(user_bootstrap_path)
+
         log.debug('start serving...')
         while True:
             try:

@@ -25,14 +25,6 @@ if [ $USER_ID -eq 0 ]; then
     echo 'Image bootstrap executed.'
   fi
 
-  # Invoke user-specific bootstrap hook.
-  if [ -f "/home/work/bootstrap.sh" ]; then
-    echo 'Executing user bootstrap... '
-    chmod +x /home/work/bootstrap.sh
-    /home/work/bootstrap.sh
-    echo 'User bootstrap executed.'
-  fi
-
   # Extract dotfiles
   /opt/backend.ai/bin/python /opt/kernel/extract_dotfiles.py
 
@@ -87,14 +79,6 @@ else
 
   # Correct the ownership of agent socket.
   chown $USER_ID:$GROUP_ID /opt/kernel/agent.sock
-
-  # Invoke user-specific bootstrap hook.
-  if [ -f "/home/work/bootstrap.sh" ]; then
-    echo 'Executing user bootstrap... '
-    chmod +x /home/work/bootstrap.sh
-    /opt/kernel/su-exec $USER_ID:$GROUP_ID /home/work/bootstrap.sh
-    echo 'User bootstrap executed.'
-  fi
 
   # Extract dotfiles
   /opt/kernel/su-exec $USER_ID:$GROUP_ID /opt/backend.ai/bin/python /opt/kernel/extract_dotfiles.py
