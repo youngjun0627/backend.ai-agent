@@ -16,6 +16,17 @@ Changes
 
 .. towncrier release notes start
 
+20.03.0rc1 (2020-07-23)
+-----------------------
+
+### Features
+* Add support for Ubuntu 20.04 as base-distro for session images
+* Allow overriding of intrinsic compute devices (`cpu` and `mem`) using compute device plugins ([#224](https://github.com/lablup/backend.ai-agent/issues/224))
+
+### Fixes
+* Move invocation of user-defined bootstrap script from the container entrypoint to the krunner's main loop for better log visibility and ability to interrupt ([#225](https://github.com/lablup/backend.ai-agent/issues/225))
+
+
 20.03.0b2 (2020-07-02)
 ----------------------
 
