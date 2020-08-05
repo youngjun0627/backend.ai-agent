@@ -16,6 +16,15 @@ Changes
 
 .. towncrier release notes start
 
+19.09.27 (2020-08-05)
+---------------------
+
+* This is also a maintenance release to update setup dependencies to make it forward-compatible with the new 2020 pip dependency resolver.
+
+### Fixes
+* Fix hang-up of service-port functionality of a session when one of its service starts but fails to initialize ([#223](https://github.com/lablup/backend.ai-agent/issues/223))
+
+
 19.09.26 (2020-05-28)
 ---------------------
 
