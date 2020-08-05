@@ -426,11 +426,15 @@ class DockerAgent(AbstractAgent):
 
             # Realize vfolder mounts.
             for vfolder in vfolders:
+                folder_name: str
+                folder_host: str
+                folder_id: str
+                folder_perm_raw: str
                 if len(vfolder) == 4:
-                    folder_name, folder_host, folder_id, folder_perm = vfolder
+                    folder_name, folder_host, folder_id, folder_perm_raw = vfolder  # type: ignore
                 elif len(vfolder) == 3:  # legacy managers
-                    folder_name, folder_host, folder_id = vfolder
-                    folder_perm = 'rw'
+                    folder_name, folder_host, folder_id = vfolder  # type: ignore
+                    folder_perm_raw = 'rw'
                 else:
                     raise RuntimeError(
                         'Unexpected number of vfolder mount detail tuple size')
@@ -443,7 +447,7 @@ class DockerAgent(AbstractAgent):
                 host_path = (self.config['vfolder']['mount'] / folder_host /
                              self.config['vfolder']['fsprefix'] / folder_id)
                 kernel_path = Path(f'/home/work/{folder_name}')
-                folder_perm = MountPermission(folder_perm)
+                folder_perm = MountPermission(folder_perm_raw)
                 if folder_perm == MountPermission.RW_DELETE:
                     # TODO: enforce readable/writable but not deletable
                     # (Currently docker's READ_WRITE includes DELETE)

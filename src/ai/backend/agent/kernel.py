@@ -105,6 +105,8 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
     clean_event: Optional[asyncio.Event]
     stats_enabled: bool
 
+    _tasks: Set[Optional[asyncio.Task]]
+
     runner: 'AbstractCodeRunner'
 
     def __init__(self, kernel_id: str, image: ImageRef, version: int, *,
@@ -124,7 +126,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
         self.clean_event = None
         self.stats_enabled = False
         self._runner_lock = asyncio.Lock()
-        self._tasks: Set[asyncio.Task] = set()
+        self._tasks = set()
 
     async def __ainit__(self) -> None:
         log.debug('kernel.__ainit__(k:{0}, api-ver:{1}, client-features:{2}): '
@@ -147,7 +149,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
         # agent_config is set by the pickle.loads() caller.
         self.clean_event = None
         self._runner_lock = asyncio.Lock()
-        self._tasks: Set[asyncio.Task] = set()
+        self._tasks = set()
 
     @abstractmethod
     async def close(self):
@@ -240,7 +242,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
             await self.runner.close()
             raise
         finally:
-            self._tasks.remove(myself)
+            self._tasks.discard(myself)
 
 
 class AbstractCodeRunner(aobject, metaclass=ABCMeta):
