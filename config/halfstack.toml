@@ -76,3 +76,7 @@ enabled = false
 path = "./coredumps"
 backup-count = 10
 szie-limit = "64M"
+
+
+[license]
+addr = { host = "127.0.0.1", port = 6099 }

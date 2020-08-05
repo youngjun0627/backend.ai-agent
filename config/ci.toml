@@ -58,3 +58,7 @@ reserved-disk = "8G"
 [debug]
 debug = false
 skip-container-deletion = false
+
+
+[license]
+addr = { host = "127.0.0.1", port = 6099 }
