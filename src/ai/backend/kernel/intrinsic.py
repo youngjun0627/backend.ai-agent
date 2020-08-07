@@ -93,6 +93,7 @@ async def prepare_vscode_service(service_info):
     return [
         '/usr/local/bin/code-server',
         '--auth', 'none',
+        '--bind-addr', '0.0.0.0',
         '--port', str(service_info['port']),
         '--extensions-dir', str(extension_dir)
     ], {'PWD': '/home/work'}
