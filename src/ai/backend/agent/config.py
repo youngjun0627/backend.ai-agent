@@ -102,15 +102,15 @@ k8s_extra_config_iv = t.Dict({
 registry_local_config_iv = t.Dict({
     t.Key('type'): t.String,
     t.Key('addr'): tx.HostPortPair()
-})
+}).allow_extra('*')
 
 registry_ecr_config_iv = t.Dict({
     t.Key('type'): t.String,
     t.Key('profile'): t.String,
     t.Key('registry-id'): t.String
-})
+}).allow_extra('*')
 
 container_etcd_config_iv = t.Dict({
     t.Key('kernel-uid', optional=True): t.ToInt,
     t.Key('kernel-gid', optional=True): t.ToInt
-})
+}).allow_extra('*')

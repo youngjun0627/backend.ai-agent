@@ -1,0 +1,1 @@
+Fix missing `allow_extra` options in config input validators, which is a newly exposed regression after ff019ac9
