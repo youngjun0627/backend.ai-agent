@@ -7,8 +7,12 @@ import platform
 from typing import (
     cast,
     Any,
-    Collection, Mapping,
-    Sequence, List,
+    Collection,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
 )
 
 import aiohttp
@@ -43,6 +47,43 @@ from ..utils import read_sysfs
 from ..vendor.linux import libnuma
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
+
+
+async def fetch_api_stats(container: DockerContainer) -> Optional[Dict[str, Any]]:
+    try:
+        short_cid = container._id[:7]
+        ret = await container.stats(stream=False)  # TODO: cache
+    except RuntimeError as e:
+        msg = str(e.args[0]).lower()
+        if 'event loop is closed' in msg or 'session is closed' in msg:
+            return None
+        raise
+    except (DockerError, aiohttp.ClientError) as e:
+        log.error(
+            'cannot read stats (cid:{}): client error: {!r}.',
+            short_cid, e,
+        )
+        return None
+    else:
+        # aiodocker 0.16 or later returns a list of dict, even when not streaming.
+        if isinstance(ret, list):
+            if not ret:
+                # The API may return an empty result upon container termination.
+                return None
+            ret = ret[0]
+        # The API may return an invalid or empty result upon container termination.
+        if ret is None or not isinstance(ret, dict):
+            log.warning(
+                'cannot read stats (cid:{}): got an empty result: {}',
+                short_cid, ret,
+            )
+            return None
+        if (
+            ret['read'].startswith('0001-01-01') or
+            ret['preread'].startswith('0001-01-01')
+        ):
+            return None
+        return ret
 
 
 # Pseudo-plugins for intrinsic devices (CPU and the main memory)
@@ -146,24 +187,10 @@ class CPUPlugin(AbstractComputePlugin):
             return cpu_used
 
         async def api_impl(container_id):
-            try:
-                container = DockerContainer(ctx.agent.docker, id=container_id)
-                ret = await container.stats(stream=False)  # TODO: cache
-            except RuntimeError as e:
-                msg = str(e.args[0]).lower()
-                if 'event loop is closed' in msg or 'session is closed' in msg:
-                    return None
-                raise
-            except (DockerError, aiohttp.ClientError):
-                short_cid = container._id[:7]
-                log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')
+            container = DockerContainer(ctx.agent.docker, id=container_id)
+            ret = await fetch_api_stats(container)
+            if ret is None:
                 return None
-            else:
-                # API returned successfully but actually the result may be empty!
-                if ret is None or not isinstance(ret, dict):
-                    return None
-                if ret['preread'].startswith('0001-01-01'):
-                    return None
             cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
             return cpu_used
 
@@ -424,24 +451,10 @@ class MemoryPlugin(AbstractComputePlugin):
             return mem_cur_bytes, io_read_bytes, io_write_bytes, scratch_sz
 
         async def api_impl(container_id):
-            try:
-                container = DockerContainer(ctx.agent.docker, id=container_id)
-                ret = await container.stats(stream=False)  # TODO: cache
-            except RuntimeError as e:
-                msg = str(e.args[0]).lower()
-                if 'event loop is closed' in msg or 'session is closed' in msg:
-                    return None
-                raise
-            except (DockerError, aiohttp.ClientError):
-                short_cid = container._id[:7]
-                log.warning(f'cannot read stats: Docker stats API error for {short_cid}.')
+            container = DockerContainer(ctx.agent.docker, id=container_id)
+            ret = await fetch_api_stats(container)
+            if ret is None:
                 return None
-            else:
-                # API returned successfully but actually the result may be empty!
-                if ret is None or not isinstance(ret, dict):
-                    return None
-                if ret['preread'].startswith('0001-01-01'):
-                    return None
             mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)
             io_read_bytes = 0
             io_write_bytes = 0
