@@ -48,7 +48,7 @@ agent_instance = None  # for live-debugging
 redis_config_iv = t.Dict({
     t.Key('addr', default=('127.0.0.1', 6379)): tx.HostPortPair,
     t.Key('password', default=None): t.Null | t.String,
-})
+}).allow_extra('*')
 
 deeplearning_image_keys = {
     'tensorflow', 'caffe',
@@ -565,13 +565,13 @@ def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
     registry_local_config_iv = t.Dict({
         t.Key('type'): t.String,
         t.Key('addr'): tx.HostPortPair()
-    })
+    }).allow_extra('*')
 
     registry_ecr_config_iv = t.Dict({
         t.Key('type'): t.String,
         t.Key('profile'): t.String,
         t.Key('registry-id'): t.String
-    })
+    }).allow_extra('*')
 
     # Determine where to read configuration.
     raw_cfg, cfg_src_path = config.read_from_file(config_path, 'agent')
