@@ -1,1 +1,0 @@
-Fix a regression of container statistics collection with recent aiodocker versions (0.16 or later)

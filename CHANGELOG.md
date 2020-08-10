@@ -16,15 +16,25 @@ Changes
 
 .. towncrier release notes start
 
+20.03.2 (2020-08-10)
+--------------------
+
+### Fixes
+* Fix a regression of container statistics collection with recent aiodocker versions (0.16 or later) ([#226](https://github.com/lablup/backend.ai-agent/issues/226))
+* Fix missing `allow_extra` options in config input validators, which is a newly exposed regression after ff019ac9 ([#227](https://github.com/lablup/backend.ai-agent/issues/227))
+
+
 20.03.1 (2020-07-28)
 --------------------
 
 * Maintenance release to fix the version reference format for `backend.ai-common` (from "~=20.03.0" to "~=20.3.0")
 
+
 20.03.0 (2020-07-28)
 --------------------
 
 * No changes since RC1
+
 
 20.03.0rc1 (2020-07-23)
 -----------------------
