@@ -104,7 +104,7 @@ class CPUPlugin(AbstractComputePlugin):
         (SlotName('cpu'), SlotTypes.COUNT)
     ]
 
-    async def init(self) -> None:
+    async def init(self, context: Any = None) -> None:
         pass
 
     async def cleanup(self) -> None:
@@ -306,7 +306,7 @@ class MemoryPlugin(AbstractComputePlugin):
         (SlotName('mem'), SlotTypes.BYTES)
     ]
 
-    async def init(self) -> None:
+    async def init(self, context: Any = None) -> None:
         pass
 
     async def cleanup(self) -> None:
