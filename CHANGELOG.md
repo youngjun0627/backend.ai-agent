@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.03.3 (2020-09-09)
+--------------------
+
+### Fixes
+* Add context parameter for init methods of intrinsic accelerators. ([#229](https://github.com/lablup/backend.ai-agent/issues/229))
+
+
 20.03.2 (2020-08-10)
 --------------------
 
