@@ -519,8 +519,13 @@ class DockerAgent(AbstractAgent):
                     if host_path_raw:
                         host_path = Path(host_path_raw)
                     else:
-                        host_path = (self.local_config['vfolder']['mount'] / folder_host /
-                                     self.local_config['vfolder']['fsprefix'] / folder_id)
+                        mount_path = Path(folder_id)
+                        if mount_path.is_absolute():
+                            # Use the storage proxy-provided path as-is.
+                            host_path = mount_path
+                        else:
+                            host_path = (self.local_config['vfolder']['mount'] / folder_host /
+                                         self.local_config['vfolder']['fsprefix'] / folder_id)
                 elif len(vfolder) == 4:  # for backward compatibility
                     folder_name, folder_host, folder_id, folder_perm_literal = \
                         cast(MountTuple4, vfolder)
