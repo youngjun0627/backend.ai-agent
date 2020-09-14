@@ -856,8 +856,15 @@ class DockerAgent(AbstractAgent):
 
                 await loop.run_in_executor(None, _populate_ssh_config)
 
+        # higher priority dotfiles are stored last to support overwriting
         for dotfile in internal_data.get('dotfiles', []):
-            file_path: Path = work_dir / dotfile['path']
+            if dotfile['path'].startswith('/'):
+                if dotfile['path'].startswith('/home/'):
+                    file_path: Path = scratch_dir / '/'.join(dotfile['path'].split('/')[2:])
+                else:
+                    file_path = Path(dotfile['path'])
+            else:
+                file_path = work_dir / dotfile['path']
             file_path.parent.mkdir(parents=True, exist_ok=True)
             await loop.run_in_executor(
                 None,
