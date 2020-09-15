@@ -512,6 +512,7 @@ class DockerAgent(AbstractAgent):
                     raise
 
             # Realize vfolder mounts.
+            vfolder_names = set([])  # set of vfolder names - used for checking conflict with dotfiles
             for vfolder in vfolders:
                 if len(vfolder) == 5:
                     folder_name, folder_host, folder_id, folder_perm_literal, host_path_raw = \
@@ -561,6 +562,7 @@ class DockerAgent(AbstractAgent):
                 mount = Mount(MountTypes.BIND, host_path, kernel_path, folder_perm)
                 resource_spec.mounts.append(mount)
                 mounts.append(mount)
+                vfolder_names.add(folder_name)
 
             # should no longer be used!
             del vfolders
@@ -860,10 +862,19 @@ class DockerAgent(AbstractAgent):
         for dotfile in internal_data.get('dotfiles', []):
             if dotfile['path'].startswith('/'):
                 if dotfile['path'].startswith('/home/'):
-                    file_path: Path = scratch_dir / '/'.join(dotfile['path'].split('/')[2:])
+                    path_arr = dotfile['path'].split('/')
+                    file_path: Path = scratch_dir / '/'.join(path_arr[2:])
+                    # check if there is a dotfile whose path equals /home/work/vfolder_name
+                    if len(path_arr) >= 3 and path_arr[2] == 'work' and path_arr[3] in vfolder_names:
+                        raise RuntimeError(
+                            f'There is vfolder whose name confflicts with dotfile {dotfile["path"]}')
                 else:
                     file_path = Path(dotfile['path'])
             else:
+                if dotfile['path'] in vfolder_names:
+                    raise RuntimeError(
+                        f'There is vfolder whose name conflicts with dotfile {dotfile["path"]}')
+
                 file_path = work_dir / dotfile['path']
             file_path.parent.mkdir(parents=True, exist_ok=True)
             await loop.run_in_executor(
