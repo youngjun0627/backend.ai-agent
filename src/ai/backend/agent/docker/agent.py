@@ -864,17 +864,9 @@ class DockerAgent(AbstractAgent):
                 if dotfile['path'].startswith('/home/'):
                     path_arr = dotfile['path'].split('/')
                     file_path: Path = scratch_dir / '/'.join(path_arr[2:])
-                    # check if there is a dotfile whose path equals /home/work/vfolder_name
-                    if len(path_arr) >= 3 and path_arr[2] == 'work' and path_arr[3] in vfolder_names:
-                        raise RuntimeError(
-                            f'There is vfolder whose name confflicts with dotfile {dotfile["path"]}')
                 else:
                     file_path = Path(dotfile['path'])
             else:
-                if dotfile['path'] in vfolder_names:
-                    raise RuntimeError(
-                        f'There is vfolder whose name conflicts with dotfile {dotfile["path"]}')
-
                 file_path = work_dir / dotfile['path']
             file_path.parent.mkdir(parents=True, exist_ok=True)
             await loop.run_in_executor(
