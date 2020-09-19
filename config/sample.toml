@@ -38,6 +38,10 @@ scaling-group = "default"
 # compatibility issues.
 # event-loop = "uvloop"
 
+# A boolean flag to check and wait until at least one manager instances are running
+# when the agent starts up. [default: false]
+# skip-manager-detection = false
+
 
 [container]
 # The port range to expose public service ports.
