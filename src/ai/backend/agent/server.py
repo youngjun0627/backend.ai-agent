@@ -246,8 +246,11 @@ class AgentRPCServer(aobject):
         self.local_config['vfolder'] = config.vfolder_config_iv.check(
             await self.etcd.get_prefix('volumes')
         )
-        log.info('configured vfolder mount base: {0}', self.local_config['vfolder']['mount'])
-        log.info('configured vfolder fs prefix: {0}', self.local_config['vfolder']['fsprefix'])
+        if self.local_config['vfolder']['mount'] is None:
+            log.info('assuming use of storage-proxy since vfolder mount path is not configured in etcd')
+        else:
+            log.info('configured vfolder mount base: {0}', self.local_config['vfolder']['mount'])
+            log.info('configured vfolder fs prefix: {0}', self.local_config['vfolder']['fsprefix'])
 
         # Fill up shared agent configurations from etcd.
         agent_etcd_config = agent_etcd_config_iv.check(

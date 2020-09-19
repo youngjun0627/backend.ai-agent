@@ -1,0 +1,1 @@
+Skip vfolder configuration checks and assume use of storage proxies if the vfolder mount path in etcd is not specified
