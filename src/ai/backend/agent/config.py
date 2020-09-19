@@ -29,6 +29,7 @@ agent_local_config_iv = t.Dict({
                                                        allow_nonexisting=True,
                                                        allow_devnull=True),
         t.Key('event-loop', default='asyncio'): t.Enum('asyncio', 'uvloop'),
+        t.Key('skip-manager-detection', default=False): t.ToBool,
     }).allow_extra('*'),
     t.Key('container'): t.Dict({
         t.Key('kernel-uid', default=-1): tx.UserID,

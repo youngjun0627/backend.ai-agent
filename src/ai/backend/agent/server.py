@@ -527,7 +527,10 @@ async def server_main(loop, pidx, _args):
 
     # Start RPC server.
     global agent_instance
-    agent = await AgentRPCServer.new(etcd, local_config)
+    agent = await AgentRPCServer.new(
+        etcd, local_config,
+        skip_detect_manager=local_config['agent']['skip-manager-detection'],
+    )
     agent_instance = agent
 
     # Run!
@@ -543,7 +546,11 @@ async def server_main(loop, pidx, _args):
 @click.option('--debug', is_flag=True,
               help='Enable the debug mode and override the global log level to DEBUG.')
 @click.pass_context
-def main(cli_ctx: click.Context, config_path: Path, debug: bool) -> int:
+def main(
+    cli_ctx: click.Context,
+    config_path: Path,
+    debug: bool,
+) -> int:
 
     # Determine where to read configuration.
     raw_cfg, cfg_src_path = config.read_from_file(config_path, 'agent')
