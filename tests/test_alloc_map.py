@@ -225,3 +225,221 @@ def test_fraction_alloc_map_random_generated_allocations():
             alloc_map.free(a)
         assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0')
         assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0')
+
+
+def test_fraction_alloc_map_even_allocation():
+    alloc_map = FractionAllocMap(
+        devices=[
+            DummyDevice(DeviceId('a0'), 'bus-00', 0, 1, 1),
+            DummyDevice(DeviceId('a1'), 'bus-01', 0, 1, 1),
+            DummyDevice(DeviceId('a2'), 'bus-02', 0, 1, 1),
+            DummyDevice(DeviceId('a3'), 'bus-03', 0, 1, 1),
+            DummyDevice(DeviceId('a4'), 'bus-04', 0, 1, 1),
+        ],
+        shares_per_device={
+            DeviceId('a0'): Decimal('0.05'),
+            DeviceId('a1'): Decimal('0.1'),
+            DeviceId('a2'): Decimal('0.2'),
+            DeviceId('a3'): Decimal('0.3'),
+            DeviceId('a4'): Decimal('0.0'),
+        },
+    )
+    for idx in range(5):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+    with pytest.raises(InsufficientResource):
+        alloc_map.allocate_evenly({
+            SlotName('x'): Decimal('0.66'),
+        })
+
+    with pytest.raises(InsufficientResource):
+        alloc_map.allocate_evenly({
+            SlotName('x'): Decimal('0.06'),
+        }, min_memory=Decimal(0.6))
+    for _ in range(20):
+        alloc_map.allocate_evenly({
+            SlotName('x'): Decimal('0.01'),
+        })
+
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0.05')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0.1')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.05')
+    alloc_map.free({SlotName('x'): {DeviceId('a0'): Decimal('0.05'),
+                                    DeviceId('a1'): Decimal('0.1'),
+                                    DeviceId('a2'): Decimal('0.05')}})
+    for idx in range(0):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('0.2')
+    })
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.2')
+
+    alloc_map.free(result)
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0')
+
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('0.2')
+    }, min_memory=Decimal('0.25'))
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('0.2')
+    alloc_map.free(result)
+    for idx in range(5):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('0.5')
+    })
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.2')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('0.3')
+    alloc_map.free(result)
+    for idx in range(5):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('0.65')
+    })
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0.05')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0.1')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.2')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('0.3')
+    alloc_map.free(result)
+    for idx in range(5):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('0.6')
+    }, min_memory=Decimal('0.1'))
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0.1')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.2')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('0.3')
+    alloc_map.free(result)
+    for idx in range(5):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+    alloc_map = FractionAllocMap(
+        devices=[
+            DummyDevice(DeviceId('a0'), 'bus-00', 0, 1, 1),
+            DummyDevice(DeviceId('a1'), 'bus-01', 0, 1, 1),
+            DummyDevice(DeviceId('a2'), 'bus-02', 0, 1, 1)
+        ],
+        shares_per_device={
+            DeviceId('a0'): Decimal('0.3'),
+            DeviceId('a1'): Decimal('0.3'),
+            DeviceId('a2'): Decimal('0.9')
+        }
+    )
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('1')
+    })
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0.3')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0.3')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.4')
+
+
+def test_fraction_alloc_map_even_allocation_fractions():
+    alloc_map = FractionAllocMap(
+        devices=[
+            DummyDevice(DeviceId('a0'), 'bus-00', 0, 1, 1),
+            DummyDevice(DeviceId('a1'), 'bus-01', 0, 1, 1),
+            DummyDevice(DeviceId('a2'), 'bus-02', 0, 1, 1),
+            DummyDevice(DeviceId('a3'), 'bus-03', 0, 1, 1),
+            DummyDevice(DeviceId('a4'), 'bus-04', 0, 1, 1),
+        ],
+        shares_per_device={
+            DeviceId('a0'): Decimal('0.8'),
+            DeviceId('a1'): Decimal('0.75'),
+            DeviceId('a2'): Decimal('0.7'),
+            DeviceId('a3'): Decimal('0.3'),
+            DeviceId('a4'): Decimal('0.0'),
+        },
+    )
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('2.31')
+    })
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0.67')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0.67')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.67')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('0.3')
+    alloc_map.free(result)
+    for idx in range(4):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('2')
+    })
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0.67')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0.67')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.66')
+    alloc_map.free(result)
+    for idx in range(3):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+
+def test_fraction_alloc_map_even_allocation_many_devices():
+    alloc_map = FractionAllocMap(
+        devices=[
+            DummyDevice(DeviceId('a0'), 'bus-00', 0, 1, 1),
+            DummyDevice(DeviceId('a1'), 'bus-01', 0, 1, 1),
+            DummyDevice(DeviceId('a2'), 'bus-02', 0, 1, 1),
+            DummyDevice(DeviceId('a3'), 'bus-03', 0, 1, 1)
+        ],
+        shares_per_device={
+            DeviceId('a0'): Decimal('2'),
+            DeviceId('a1'): Decimal('3'),
+            DeviceId('a2'): Decimal('3'),
+            DeviceId('a3'): Decimal('5')
+        },
+    )
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('6')
+    })
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('3')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('3')
+    alloc_map.free(result)
+    for idx in range(4):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+    alloc_map = FractionAllocMap(
+        devices=[
+            DummyDevice(DeviceId('a0'), 'bus-00', 0, 1, 1),
+            DummyDevice(DeviceId('a1'), 'bus-01', 0, 1, 1),
+            DummyDevice(DeviceId('a2'), 'bus-02', 0, 1, 1),
+            DummyDevice(DeviceId('a3'), 'bus-03', 0, 1, 1),
+            DummyDevice(DeviceId('a4'), 'bus-03', 0, 1, 1),
+            DummyDevice(DeviceId('a5'), 'bus-03', 0, 1, 1),
+            DummyDevice(DeviceId('a6'), 'bus-03', 0, 1, 1),
+            DummyDevice(DeviceId('a7'), 'bus-03', 0, 1, 1),
+            DummyDevice(DeviceId('a8'), 'bus-03', 0, 1, 1)
+        ],
+        shares_per_device={
+            DeviceId('a0'): Decimal('1'),
+            DeviceId('a1'): Decimal('1.5'),
+            DeviceId('a2'): Decimal('2'),
+            DeviceId('a3'): Decimal('3'),
+            DeviceId('a4'): Decimal('3'),
+            DeviceId('a5'): Decimal('4'),
+            DeviceId('a6'): Decimal('4.5'),
+            DeviceId('a7'): Decimal('5'),
+            DeviceId('a8'): Decimal('5')
+        },
+    )
+
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('6')
+    }, min_memory=Decimal('2.5'))
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('3')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a4')] == Decimal('3')
+    alloc_map.free(result)
+    for idx in range(9):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+    result = alloc_map.allocate_evenly({
+        SlotName('x'): Decimal('11')
+    }, min_memory=Decimal('0.84'))
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('2.75')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a4')] == Decimal('2.75')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a5')] == Decimal('2.75')
+    assert alloc_map.allocations[SlotName('x')][DeviceId('a5')] == Decimal('2.75')
+    alloc_map.free(result)
+    for idx in range(9):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')

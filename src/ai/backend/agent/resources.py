@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 import logging
 import json
+import operator
 from pathlib import Path
 from typing import (
     Any,
@@ -519,6 +520,8 @@ class FractionAllocMap(AbstractAllocMap):
         self.allocations = defaultdict(lambda: {
             dev_id: Decimal(0) for dev_id in self.devices.keys()
         })
+        self.digits = Decimal(10) ** -2  # decimal points that is supported by agent
+        self.powers = Decimal(100)  # reciprocal of self.digits
 
     def allocate(self, slots: Mapping[SlotName, Decimal], *,
                  context_tag: str = None) \
@@ -559,6 +562,166 @@ class FractionAllocMap(AbstractAllocMap):
                 if remaining_alloc <= 0:
                     break
             allocation[slot_name] = slot_allocation
+        return allocation
+
+    def allocate_evenly(self, slots: Mapping[SlotName, Decimal], *,
+                        context_tag: str = None,
+                        min_memory: Decimal = Decimal(0.01)) \
+                        -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
+
+        # higher value means more even with 0 being the highest value
+        def measure_evenness(alloc_map: Mapping[DeviceId, Decimal]) \
+                             -> Decimal:
+            alloc_arr = sorted([alloc_map[dev_id] for dev_id in alloc_map])
+            evenness_score = Decimal(0).quantize(self.digits)
+            for idx in range(len(alloc_arr) - 1):
+                evenness_score += abs(alloc_arr[idx + 1] - alloc_arr[idx])
+            return -evenness_score
+
+        # higher value means more fragmented
+        # i.e. the number of unusable resources is higher
+        def measure_fragmentation(allocation: Mapping[DeviceId, Decimal],
+                                  min_memory: Decimal):
+            fragmentation_arr = [self.shares_per_device[dev_id] - allocation[dev_id]
+                                 for dev_id in allocation]
+            return sum(self.digits < v.quantize(self.digits) < min_memory.quantize(self.digits)
+                       for v in fragmentation_arr)
+
+        # evenly distributes remaining_alloc across dev_allocs
+        def distribute_evenly(dev_allocs: List[Tuple[DeviceId, Decimal]],
+                              remaining_alloc: Decimal,
+                              allocation: MutableMapping[DeviceId, Decimal]):
+            n_devices = len(dev_allocs)
+            for dev_id, _ in dev_allocs:
+                dev_allocation = remaining_alloc / n_devices
+                dev_allocation = dev_allocation.quantize(self.digits, rounding=ROUND_DOWN)
+                allocation[dev_id] = dev_allocation
+
+            # need to take care of decimals
+            remainder = round(remaining_alloc * self.powers -
+                              dev_allocation * n_devices * self.powers)
+            for idx in range(remainder):
+                dev_id, _ = dev_allocs[idx]
+                allocation[dev_id] += self.digits
+
+        # allocates remaining_alloc across multiple devices i.e. dev_allocs
+        # all devices in dev_allocs are being used
+        def allocate_across_devices(dev_allocs: List[Tuple[DeviceId, Decimal]],
+                                    remaining_alloc: Decimal, slot_name: str) \
+                                    -> MutableMapping[DeviceId, Decimal]:
+            slot_allocation: MutableMapping[DeviceId, Decimal] = {}
+            n_devices = len(dev_allocs)
+            idx = n_devices - 1  # check from the device with smallest allocatable resource
+            while n_devices > 0:
+                dev_id, current_alloc = dev_allocs[idx]
+                allocatable = self.shares_per_device[dev_id] - current_alloc
+                # if the remaining_alloc can be allocated to evenly among remaining devices
+                if allocatable >= remaining_alloc / n_devices:
+                    break
+                slot_allocation[dev_id] = allocatable.quantize(self.digits)
+                remaining_alloc -= allocatable
+                idx -= 1
+                n_devices -= 1
+
+            if n_devices > 0:
+                distribute_evenly(dev_allocs[:n_devices], remaining_alloc, slot_allocation)
+
+            return slot_allocation
+
+        min_memory = min_memory.quantize(self.digits)
+        allocation = {}
+        for slot_name, alloc in slots.items():
+            slot_allocation: MutableMapping[DeviceId, Decimal] = {}
+            remaining_alloc = Decimal(alloc).normalize()
+            sorted_dev_allocs = sorted(
+                self.allocations[slot_name].items(),
+                key=lambda pair: self.shares_per_device[pair[0]] - pair[1],
+                reverse=True)
+
+            # do not consider devices whose remaining resource under min_memory
+            sorted_dev_allocs = list(filter(
+                lambda pair: self.shares_per_device[pair[0]] - pair[1] >= min_memory,
+                sorted_dev_allocs))
+
+            log.debug('FractionAllocMap: allocating {} {}', slot_name, alloc)
+            log.debug('FractionAllocMap: current-alloc: {!r}', sorted_dev_allocs)
+
+            # check if there is enough resource for allocation
+            total_allocatable = Decimal(0)
+            for dev_id, current_alloc in sorted_dev_allocs:
+                current_alloc = self.allocations[slot_name][dev_id]
+                total_allocatable += (self.shares_per_device[dev_id] -
+                                      current_alloc)
+            if total_allocatable.quantize(self.digits) < \
+                    remaining_alloc.quantize(self.digits):
+                raise InsufficientResource(
+                    'FractionAllocMap: insufficient allocatable amount!',
+                    context_tag, slot_name, str(alloc), str(total_allocatable))
+
+            # allocate resources
+            if remaining_alloc <= self.shares_per_device[sorted_dev_allocs[0][0]] \
+                    - sorted_dev_allocs[0][1]:  # if remaining_alloc fits in one device
+                slot_allocation = {}
+                for dev_id, current_alloc in sorted_dev_allocs[::-1]:
+                    allocatable = (self.shares_per_device[dev_id] -
+                                current_alloc)
+                    if remaining_alloc <= allocatable:
+                        slot_allocation[dev_id] = remaining_alloc.quantize(self.digits)
+                        break
+            else:  # need to distribute across devices
+                # calculate the minimum number of required devices
+                n_devices, allocated = 0, Decimal(0)
+                for dev_id, current_alloc in sorted_dev_allocs:
+                    n_devices += 1
+                    allocated += self.shares_per_device[dev_id] - current_alloc
+                    if allocated.quantize(self.digits) >= \
+                            remaining_alloc.quantize(self.digits):
+                        break
+                # need to check from using minimum number of devices to using all devices
+                # evenness must be non-decreasing with the increase of window size
+                best_alloc_candidate_arr = []
+                for n_dev in range(n_devices, len(sorted_dev_allocs) + 1):
+                    allocatable = sum(map(lambda x: self.shares_per_device[x[0]] - x[1],
+                                      sorted_dev_allocs[:n_dev]))
+                    # choose the best allocation from all possible allocation candidates
+                    alloc_candidate = allocate_across_devices(sorted_dev_allocs[:n_dev],
+                                                              remaining_alloc, slot_name)
+                    max_evenness = measure_evenness(alloc_candidate)
+                    # three criteria to decide allocation are
+                    # eveness, number of resources used, and amount of fragmentatino
+                    alloc_candidate_arr = [(alloc_candidate, max_evenness, -len(alloc_candidate),
+                                            -measure_fragmentation(alloc_candidate, min_memory))]
+                    for idx in range(1, len(sorted_dev_allocs) - n_dev + 1):
+                        # update amount of allocatable space
+                        allocatable -= self.shares_per_device[sorted_dev_allocs[idx - 1][0]] - \
+                                       sorted_dev_allocs[idx - 1][1]
+                        allocatable += self.shares_per_device[sorted_dev_allocs[idx + n_dev - 1][0]] - \
+                                       sorted_dev_allocs[idx + n_dev - 1][1]
+                        # break if not enough resource
+                        if allocatable.quantize(self.digits) < \
+                                remaining_alloc.quantize(self.digits):
+                            break
+                        alloc_candidate = allocate_across_devices(
+                            sorted_dev_allocs[idx:idx + n_dev], remaining_alloc, slot_name)
+                        # evenness gets worse (or same at best) as the allocatable gets smaller
+                        evenness_score = measure_evenness(alloc_candidate)
+                        if evenness_score < max_evenness:
+                            break
+                        alloc_candidate_arr.append((alloc_candidate, evenness_score,
+                            -len(alloc_candidate), -measure_fragmentation(alloc_candidate, min_memory)))
+                    # since evenness is the same, sort by fragmentation (low is good)
+                    best_alloc_candidate_arr.append(
+                        sorted(alloc_candidate_arr, key=lambda x: x[2])[-1])
+                    # there is no need to look at more devices if the desired evenness is achieved
+                    if max_evenness.quantize(self.digits) == self.digits:
+                        best_alloc_candidate_arr = best_alloc_candidate_arr[-1:]
+                        break
+                # choose the best allocation with the three criteria
+                slot_allocation = sorted(best_alloc_candidate_arr,
+                                         key=operator.itemgetter(1, 2, 3))[-1][0]
+            allocation[slot_name] = slot_allocation
+            for dev_id in slot_allocation:
+                self.allocations[slot_name][dev_id] += slot_allocation[dev_id]
         return allocation
 
     def apply_allocation(
