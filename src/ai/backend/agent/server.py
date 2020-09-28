@@ -11,15 +11,18 @@ from pathlib import Path
 from pprint import pformat, pprint
 import signal
 import sys
-import time
 import traceback
 from typing import (
     Any,
+    AsyncGenerator,
     Callable,
     ClassVar,
     Dict,
+    Literal,
     Mapping,
+    Sequence,
     Set,
+    Tuple,
     TYPE_CHECKING,
     cast,
 )
@@ -39,8 +42,12 @@ from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.plugin.monitor import ErrorPluginContext, StatsPluginContext
 from ai.backend.common.types import (
-    aobject, HostPortPair, KernelId,
+    aobject,
+    ClusterInfo,
+    HostPortPair,
+    KernelId,
     KernelCreationConfig,
+    SessionId,
 )
 from ai.backend.common.utils import current_loop
 from . import __version__ as VERSION
@@ -49,6 +56,7 @@ from .config import (
     agent_local_config_iv,
     agent_etcd_config_iv,
     k8s_extra_config_iv,
+    docker_extra_config_iv,
     registry_local_config_iv,
     registry_ecr_config_iv,
     container_etcd_config_iv,
@@ -70,6 +78,8 @@ deeplearning_image_keys = {
 deeplearning_sample_volume = VolumeInfo(
     'deeplearning-samples', '/home/work/samples', 'ro',
 )
+
+agent_instance: AgentRPCServer
 
 
 async def get_extra_volumes(docker, lang):
@@ -96,18 +106,6 @@ async def get_extra_volumes(docker, lang):
                      'to a kernel based on image {1}',
                      vol.name, lang)
     return mount_list
-
-
-def update_last_used(meth: Callable) -> Callable:
-    @functools.wraps(meth)
-    async def _inner(self, raw_kernel_id: str, *args, **kwargs):
-        try:
-            kernel_obj = self.agent.kernel_registry[KernelId(UUID(raw_kernel_id))]
-            kernel_obj.last_used = time.monotonic()
-        except KeyError:
-            pass
-        return await meth(self, raw_kernel_id, *args, **kwargs)
-    return _inner
 
 
 def collect_error(meth: Callable) -> Callable:
@@ -295,34 +293,53 @@ class AgentRPCServer(aobject):
         return msg
 
     @rpc_function
-    @update_last_used
     @collect_error
     async def ping_kernel(self, kernel_id: str):
         log.debug('rpc::ping_kernel({0})', kernel_id)
 
     @rpc_function
-    @update_last_used
     @collect_error
-    async def create_kernel(self, kernel_id: str, config: dict):
-        log.info('rpc::create_kernel(k:{0}, img:{1})',
-                 kernel_id, config['image']['canonical'])
-        result = await self.agent.create_kernel(
-            KernelId(UUID(kernel_id)), cast(KernelCreationConfig, config))
-        return {
-            'id': str(result['id']),
-            'kernel_host': result['kernel_host'],
-            'repl_in_port': result['repl_in_port'],
-            'repl_out_port': result['repl_out_port'],
-            'stdin_port': result['stdin_port'],    # legacy
-            'stdout_port': result['stdout_port'],  # legacy
-            'service_ports': result['service_ports'],
-            'container_id': result['container_id'],
-            'resource_spec': result['resource_spec'],
-            'attached_devices': result['attached_devices'],
-        }
+    async def create_kernels(
+        self,
+        raw_session_id: str,
+        raw_kernel_ids: Sequence[str],
+        raw_configs: Sequence[dict],
+        raw_cluster_info: dict,
+    ):
+        cluster_info = cast(ClusterInfo, raw_cluster_info)
+        session_id = SessionId(UUID(raw_session_id))
+        raw_results = []
+        coros = []
+        for raw_kernel_id, raw_config in zip(raw_kernel_ids, raw_configs):
+            log.info('rpc::create_kernel(k:{0}, img:{1})',
+                     raw_kernel_id, raw_config['image']['canonical'])
+            kernel_id = KernelId(UUID(raw_kernel_id))
+            kernel_config = cast(KernelCreationConfig, raw_config)
+            coros.append(self.agent.create_kernel(
+                session_id,
+                kernel_id,
+                kernel_config,
+                cluster_info,
+            ))
+        results = await asyncio.gather(*coros)
+        raw_results = [
+            {
+                'id': str(result['id']),
+                'kernel_host': result['kernel_host'],
+                'repl_in_port': result['repl_in_port'],
+                'repl_out_port': result['repl_out_port'],
+                'stdin_port': result['stdin_port'],    # legacy
+                'stdout_port': result['stdout_port'],  # legacy
+                'service_ports': result['service_ports'],
+                'container_id': result['container_id'],
+                'resource_spec': result['resource_spec'],
+                'attached_devices': result['attached_devices'],
+            }
+            for result in results
+        ]
+        return raw_results
 
     @rpc_function
-    @update_last_used
     @collect_error
     async def destroy_kernel(self, kernel_id: str, reason: str = None):
         log.info('rpc::destroy_kernel(k:{0})', kernel_id)
@@ -337,14 +354,12 @@ class AgentRPCServer(aobject):
         return getattr(done, '_result', None)
 
     @rpc_function
-    @update_last_used
     @collect_error
     async def interrupt_kernel(self, kernel_id: str):
         log.info('rpc::interrupt_kernel(k:{0})', kernel_id)
         await self.agent.interrupt_kernel(KernelId(UUID(kernel_id)))
 
     @rpc_function
-    @update_last_used
     @collect_error
     async def get_completions(self, kernel_id: str,
                               text: str, opts: dict):
@@ -352,32 +367,38 @@ class AgentRPCServer(aobject):
         await self.agent.get_completions(KernelId(UUID(kernel_id)), text, opts)
 
     @rpc_function
-    @update_last_used
     @collect_error
     async def get_logs(self, kernel_id: str):
         log.info('rpc::get_logs(k:{0})', kernel_id)
         return await self.agent.get_logs(KernelId(UUID(kernel_id)))
 
     @rpc_function
-    @update_last_used
     @collect_error
-    async def restart_kernel(self, kernel_id: str, new_config: dict):
-        log.info('rpc::restart_kernel(k:{0})', kernel_id)
+    async def restart_kernel(
+        self,
+        session_id: str,
+        kernel_id: str,
+        updated_config: dict,
+    ):
+        log.info('rpc::restart_kernel(s:{0}, k:{1})', session_id, kernel_id)
         return await self.agent.restart_kernel(
-            KernelId(UUID(kernel_id)), cast(KernelCreationConfig, new_config))
+            SessionId(UUID(session_id)),
+            KernelId(UUID(kernel_id)),
+            cast(KernelCreationConfig, updated_config),
+        )
 
     @rpc_function
-    @update_last_used
     @collect_error
-    async def execute(self,
-                      kernel_id,          # type: str
-                      api_version,        # type: int
-                      run_id,             # type: str
-                      mode,               # type: str
-                      code,               # type: str
-                      opts,               # type: Dict[str, Any]
-                      flush_timeout,      # type: float
-                      ):
+    async def execute(
+        self,
+        kernel_id,          # type: str
+        api_version,        # type: int
+        run_id,             # type: str
+        mode,               # type: Literal['query', 'batch', 'continue', 'input']
+        code,               # type: str
+        opts,               # type: Dict[str, Any]
+        flush_timeout,      # type: float
+    ):
         # type: (...) -> Dict[str, Any]
         if mode != 'continue':
             log.info('rpc::execute(k:{0}, run-id:{1}, mode:{2}, code:{3!r})',
@@ -385,7 +406,9 @@ class AgentRPCServer(aobject):
                      code[:20] + '...' if len(code) > 20 else code)
         result = await self.agent.execute(
             KernelId(UUID(kernel_id)),
-            run_id, mode, code,
+            run_id,
+            mode,
+            code,
             opts=opts,
             api_version=api_version,
             flush_timeout=flush_timeout
@@ -393,43 +416,52 @@ class AgentRPCServer(aobject):
         return result
 
     @rpc_function
-    @update_last_used
     @collect_error
-    async def start_service(self,
-                            kernel_id,   # type: str
-                            service,     # type: str
-                            opts         # type: Dict[str, Any]
-                            ):
+    async def execute_batch(
+        self,
+        kernel_id,          # type: str
+        startup_command,    # type: str
+    ) -> None:
+        # TODO: use task-group to keep track of completion/cancellation
+        asyncio.create_task(self.agent.execute_batch(
+            KernelId(UUID(kernel_id)),
+            startup_command,
+        ))
+        await asyncio.sleep(0)
+
+    @rpc_function
+    @collect_error
+    async def start_service(
+        self,
+        kernel_id,   # type: str
+        service,     # type: str
+        opts         # type: Dict[str, Any]
+    ):
         # type: (...) -> Dict[str, Any]
         log.info('rpc::start_service(k:{0}, app:{1})', kernel_id, service)
         return await self.agent.start_service(KernelId(UUID(kernel_id)), service, opts)
 
     @rpc_function
-    @update_last_used
     @collect_error
     async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
         log.info('rpc::upload_file(k:{0}, fn:{1})', kernel_id, filename)
         await self.agent.accept_file(KernelId(UUID(kernel_id)), filename, filedata)
 
     @rpc_function
-    @update_last_used
     @collect_error
     async def download_file(self, kernel_id: str, filepath: str):
         log.info('rpc::download_file(k:{0}, fn:{1})', kernel_id, filepath)
         return await self.agent.download_file(KernelId(UUID(kernel_id)), filepath)
 
     @rpc_function
-    @update_last_used
     @collect_error
     async def list_files(self, kernel_id: str, path: str):
         log.info('rpc::list_files(k:{0}, fn:{1})', kernel_id, path)
         return await self.agent.list_files(KernelId(UUID(kernel_id)), path)
 
     @rpc_function
-    @update_last_used
     @collect_error
     async def refresh_idle(self, kernel_id: str):
-        # update_last_used decorator already implements this. :)
         log.debug('rpc::refresh_idle(k:{})', kernel_id)
         pass
 
@@ -439,6 +471,30 @@ class AgentRPCServer(aobject):
         # TODO: implement
         log.info('rpc::shutdown_agent()')
         pass
+
+    @rpc_function
+    @collect_error
+    async def create_overlay_network(self, network_name: str) -> None:
+        log.debug('rpc::create_overlay_network(name:{})', network_name)
+        return await self.agent.create_overlay_network(network_name)
+
+    @rpc_function
+    @collect_error
+    async def destroy_overlay_network(self, network_name: str) -> None:
+        log.debug('rpc::destroy_overlay_network(name:{})', network_name)
+        return await self.agent.destroy_overlay_network(network_name)
+
+    @rpc_function
+    @collect_error
+    async def create_local_network(self, network_name: str) -> None:
+        log.debug('rpc::create_local_network(name:{})', network_name)
+        return await self.agent.create_local_network(network_name)
+
+    @rpc_function
+    @collect_error
+    async def destroy_local_network(self, network_name: str) -> None:
+        log.debug('rpc::destroy_local_network(name:{})', network_name)
+        return await self.agent.destroy_local_network(network_name)
 
     @rpc_function
     @collect_error
@@ -458,7 +514,11 @@ class AgentRPCServer(aobject):
 
 
 @aiotools.server
-async def server_main_logwrapper(loop, pidx, _args):
+async def server_main_logwrapper(
+    loop: asyncio.AbstractEventLoop,
+    pidx: int,
+    _args: Tuple[Any, ...],
+) -> AsyncGenerator[None, signal.Signals]:
     setproctitle(f"backend.ai: agent worker-{pidx}")
     log_endpoint = _args[1]
     logger = Logger(_args[0]['logging'], is_master=False, log_endpoint=log_endpoint)
@@ -468,14 +528,18 @@ async def server_main_logwrapper(loop, pidx, _args):
 
 
 @aiotools.server
-async def server_main(loop, pidx, _args):
+async def server_main(
+    loop: asyncio.AbstractEventLoop,
+    pidx: int,
+    _args: Tuple[Any, ...],
+) -> AsyncGenerator[None, signal.Signals]:
     local_config = _args[0]
 
     log.info('Preparing kernel runner environments...')
     kernel_mod = importlib.import_module(
         f"ai.backend.agent.{local_config['agent']['backend'].value}.kernel",
     )
-    krunner_volumes = await kernel_mod.prepare_krunner_env(local_config)
+    krunner_volumes = await kernel_mod.prepare_krunner_env(local_config)  # type: ignore
     # TODO: merge k8s branch: nfs_mount_path = local_config['baistatic']['mounted-at']
     log.info('Kernel runner environments: {}', [*krunner_volumes.keys()])
     local_config['container']['krunner-volumes'] = krunner_volumes
@@ -596,7 +660,8 @@ def main(
 
             registry_cfg = config.check(cfg['registry'], registry_target_config_iv)
             cfg['registry'] = registry_cfg
-
+        if cfg['agent']['backend'] == AgentBackend.DOCKER:
+            config.check(raw_cfg, docker_extra_config_iv)
         if 'debug' in cfg and cfg['debug']['enabled']:
             print('== Agent configuration ==')
             pprint(cfg)

@@ -69,6 +69,12 @@ agent_local_config_iv = t.Dict({
     }).allow_extra('*'),
 }).merge(config.etcd_config_iv).allow_extra('*')
 
+docker_extra_config_iv = t.Dict({
+    t.Key('container'): t.Dict({
+        t.Key('swarm-enabled', default=False): t.Bool,
+    }).allow_extra('*')
+}).allow_extra('*')
+
 default_container_logs_config = {
     'max-length': '10M',  # the maximum tail size
     'chunk-size': '64K',  # used when storing logs to Redis as a side-channel to the event bus

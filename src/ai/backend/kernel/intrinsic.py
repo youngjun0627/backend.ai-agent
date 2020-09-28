@@ -1,5 +1,7 @@
 import asyncio
+from collections.abc import Iterable
 import logging
+import os
 from pathlib import Path
 
 from .logging import BraceStyleAdapter
@@ -65,6 +67,33 @@ async def init_sshd_service(child_env):
     if proc.returncode != 0:
         raise RuntimeError(f"sshd init error: {stderr.decode('utf8')}")
 
+    cluster_privkey_src_path = Path('/home/config/ssh/id_cluster')
+    user_ssh_config_path = Path('/home/work/.ssh/config')
+    if cluster_privkey_src_path.is_file():
+        replicas = {
+            k: v for k, v in
+            map(lambda pair: pair.rsplit(':', maxsplit=1),
+                os.environ.get('BACKENDAI_CLUSTER_REPLICAS', 'main:1').split(','))
+        }
+        for role_name, role_replica in replicas.items():
+            try:
+                existing_ssh_config = user_ssh_config_path.read_text()
+                if '\nHost {role_name}*\n' in existing_ssh_config:
+                    continue
+            except FileNotFoundError:
+                pass
+            with open(user_ssh_config_path, 'a') as f:
+                f.write(f"\nHost {role_name}*\n")
+                f.write("\tPort 2200\n")
+                f.write("\tIdentityFile /home/config/ssh/id_cluster\n")
+    cluster_pubkey_src_path = Path('/home/config/ssh/id_cluster.pub')
+    if cluster_pubkey_src_path.is_file():
+        pubkey = cluster_pubkey_src_path.read_bytes()
+        with open(auth_path, 'ab') as f:
+            f.write(b'\n')
+            f.write(pubkey)
+            f.write(b'\n')
+
 
 async def prepare_sshd_service(service_info):
     cmdargs = [
@@ -76,8 +105,13 @@ async def prepare_sshd_service(service_info):
         # '-W', str(256 * 1024),  # recv buffer size (256 KiB) -> built-in during compilation
         '-K', '15',               # keepalive interval
         '-I', '0',                # idle timeout
-        '-p', f"0.0.0.0:{service_info['port']}",
     ]
+    port_config = service_info['port']
+    if isinstance(port_config, Iterable):
+        for port in port_config:
+            cmdargs.extend(['-p', f"0.0.0.0:{port}"])
+    else:
+        cmdargs.extend(['-p', f"0.0.0.0:{port_config}"])
     env = {}
     return cmdargs, env
 

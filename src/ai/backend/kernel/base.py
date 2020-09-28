@@ -30,7 +30,8 @@ from .logging import BraceStyleAdapter, setup_logger
 from .utils import wait_local_port_open
 from .compat import current_loop
 from .intrinsic import (
-    init_sshd_service, prepare_sshd_service,
+    init_sshd_service,
+    prepare_sshd_service,
     prepare_ttyd_service,
     prepare_vscode_service,
 )
@@ -106,7 +107,6 @@ class BaseRunner(metaclass=ABCMeta):
         self.runtime_path = runtime_path
 
         self.child_env = {**os.environ, **self.default_child_env}
-        self._service_lock = asyncio.Lock()
         config_dir = Path('/home/config')
         try:
             evdata = (config_dir / 'environ.txt').read_text()
@@ -133,6 +133,8 @@ class BaseRunner(metaclass=ABCMeta):
     async def _init(self, cmdargs) -> None:
         self.cmdargs = cmdargs
         loop = current_loop()
+        self._service_lock = asyncio.Lock()
+
         # Initialize event loop.
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         loop.set_default_executor(executor)
@@ -603,7 +605,7 @@ class BaseRunner(metaclass=ABCMeta):
         """A thin wrapper for an external command."""
         loop = current_loop()
         if Path('/home/work/.logs').is_dir():
-            kernel_id = Path('/home/config/kernel_id.txt').read_text().strip()
+            kernel_id = os.environ['BACKENDAI_KERNEL_ID']
             log_path = Path(
                 '/home/work/.logs/task/'
                 f'{kernel_id[:2]}/{kernel_id[2:4]}/{kernel_id[4:]}.log'
@@ -720,6 +722,26 @@ class BaseRunner(metaclass=ABCMeta):
         user_bootstrap_path = Path('/home/work/bootstrap.sh')
         if user_bootstrap_path.is_file():
             await self._bootstrap(user_bootstrap_path)
+
+        log.debug('starting intrinsic services: sshd, ttyd ...')
+        intrinsic_spawn_coros = []
+        intrinsic_spawn_coros.append(self._start_service({
+            'name': 'sshd',
+            'port': 2200,
+            'protocol': 'tcp',
+        }))
+        intrinsic_spawn_coros.append(self._start_service({
+            'name': 'ttyd',
+            'port': 7681,
+            'protocol': 'http',
+        }))
+        results = await asyncio.gather(*intrinsic_spawn_coros, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                log.exception(
+                    'error during starting intrinsic services',
+                    exc_info=result,
+                )
 
         log.debug('start serving...')
         while True:

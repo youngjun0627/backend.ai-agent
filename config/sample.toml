@@ -95,6 +95,10 @@ scratch-root = "./scratches"    # env: BACKEND_SCRATCH_ROOT
 # If set zero, it is unlimited.
 scratch-size = "1G"
 
+# Enable legacy swarm mode.
+# This should be true to let this agent handles multi-container session.
+swarm-enabled = false
+
 
 [watcher]
 # The address to accept the watcher API requests

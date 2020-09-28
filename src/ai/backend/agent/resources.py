@@ -22,7 +22,6 @@ from typing import (
     TextIO,
     Tuple,
     Type,
-    Union,
     cast,
 )
 
@@ -74,8 +73,17 @@ class KernelResourceSpec:
     mounts: List['Mount'] = attr.Factory(list)
     """The mounted vfolder list."""
 
-    idle_timeout: Optional[int] = None
-    """The idle timeout in seconds."""
+    def freeze(self) -> None:
+        """Replace the attribute setter to make it immutable."""
+        # TODO: implement
+        pass
+
+        # def _frozen_setattr(self, name, value):
+        #     raise RuntimeError("tried to modify a frozen KernelResourceSpec object")
+
+        # self.mounts = tuple(self.mounts)  # type: ignore
+        # # TODO: wrap slots and allocations with frozendict?
+        # setattr(self, '__setattr__', _frozen_setattr)  # <-- __setattr__ is read-only... :(
 
     def write_to_string(self) -> str:
         mounts_str = ','.join(map(str, self.mounts))
@@ -87,7 +95,6 @@ class KernelResourceSpec:
         resource_str += f'SCRATCH_SIZE={BinarySize(self.scratch_disk_size):m}\n'
         resource_str += f'MOUNTS={mounts_str}\n'
         resource_str += f'SLOTS={slots_str}\n'
-        resource_str += f'IDLE_TIMEOUT={self.idle_timeout}\n'
 
         for device_name, slots in self.allocations.items():
             for slot_name, per_device_alloc in slots.items():
@@ -149,7 +156,6 @@ class KernelResourceSpec:
             allocations=dict(allocations),
             slots=ResourceSlot(json.loads(kvpairs['SLOTS'])),
             mounts=mounts,
-            idle_timeout=int(kvpairs.get('IDLE_TIMEOUT', '600')),
         )
 
     @classmethod
@@ -333,12 +339,12 @@ class ComputePluginContext(BasePluginContext[AbstractComputePlugin]):
 
 @attr.s(auto_attribs=True, slots=True)
 class Mount:
-
     type: MountTypes
-    source: Union[Path, str]
-    target: Union[Path, str]
+    source: Path
+    target: Path
     permission: MountPermission = MountPermission.READ_ONLY
     opts: Optional[Mapping[str, Any]] = None
+    is_unmanaged: bool = False
 
     def __str__(self):
         return f'{self.source}:{self.target}:{self.permission.value}'

@@ -236,7 +236,7 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_service_apps(self, service_name):
+    async def get_service_apps(self):
         raise NotImplementedError
 
     @abstractmethod
@@ -253,7 +253,10 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
 
     async def execute(
         self,
-        run_id: Optional[str], mode: str, text: str, *,
+        run_id: Optional[str],
+        mode: Literal['batch', 'query', 'input', 'continue'],
+        text: str,
+        *,
         opts: Mapping[str, Any],
         api_version: int,
         flush_timeout: float,
