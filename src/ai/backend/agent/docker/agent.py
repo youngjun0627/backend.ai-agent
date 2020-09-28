@@ -63,6 +63,7 @@ from ai.backend.common.types import (
     MountTypes,
     ResourceSlot,
     SessionTypes,
+    ServicePort,
     ServicePortProtocols,
     Sentinel,
     MountTuple5,
@@ -71,6 +72,7 @@ from ai.backend.common.types import (
     current_resource_slots,
 )
 from ai.backend.common.utils import AsyncFileWriter, current_loop
+from ai.backend.common.service_ports import parse_service_ports
 from .kernel import DockerKernel
 from .resources import detect_resources
 from ..exception import UnsupportedResource, InsufficientResource
@@ -102,7 +104,6 @@ from ..utils import (
     get_kernel_id_from_container,
     host_pid_to_container_pid,
     container_pid_to_host_pid,
-    parse_service_ports,
 )
 
 if TYPE_CHECKING:
@@ -895,11 +896,12 @@ class DockerAgent(AbstractAgent):
 
         exposed_ports = [2000, 2001]
         service_ports = []
-        port_map = {}
+        port_map: Dict[str, ServicePort] = {}
         preopen_ports = kernel_config.get('preopen_ports', [])
 
-        for sport in parse_service_ports(image_labels.get('ai.backend.service-ports', '')):
+        for sport in parse_service_ports(image_labels.get('ai.backend.service-ports', ''), ValueError):
             port_map[sport['name']] = sport
+
         port_map['sshd'] = {
             'name': 'sshd',
             'protocol': ServicePortProtocols('tcp'),

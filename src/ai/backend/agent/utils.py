@@ -13,7 +13,6 @@ from typing import (
     Mapping, MutableMapping,
     List, Sequence, Tuple, Union,
     Type, overload,
-    Set,
 )
 from typing_extensions import Final
 from uuid import UUID
@@ -28,8 +27,6 @@ from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import (
     PID, HostPID, ContainerPID, KernelId,
-    ServicePort,
-    ServicePortProtocols,
 )
 from ai.backend.common.utils import current_loop
 
@@ -41,9 +38,6 @@ IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 InOtherContainerPID: Final = ContainerPID(PID(-2))
 NotContainerPID: Final = ContainerPID(PID(-1))
 NotHostPID: Final = HostPID(PID(-1))
-
-_rx_service_ports = re.compile(
-    r'^(?P<name>[\w-]+):(?P<proto>\w+):(?P<ports>\[\d+(?:,\d+)*\]|\d+)(?:,|$)')
 
 
 def generate_agent_id(hint: str) -> str:
@@ -67,45 +61,6 @@ def update_nested_dict(dest: MutableMapping, additions: Mapping) -> None:
 
 def numeric_list(s: str) -> List[int]:
     return [int(p) for p in s.split()]
-
-
-def parse_service_ports(s: str) -> Sequence[ServicePort]:
-    items: List[ServicePort] = []
-    used_ports: Set[int] = set()
-    while True:
-        match = _rx_service_ports.search(s)
-        if match:
-            s = s[len(match.group(0)):]
-            name = match.group('name')
-            if not name:
-                raise ValueError('Service port name must be not empty.')
-            protocol = match.group('proto')
-            if protocol == 'pty':
-                # unsupported, skip
-                continue
-            if protocol not in ('tcp', 'http', 'preopen'):
-                raise ValueError(f'Unsupported service port protocol: {protocol}')
-            ports = tuple(map(int, match.group('ports').strip('[]').split(',')))
-            for p in ports:
-                if p in used_ports:
-                    raise ValueError(f'The port {p} is already used by another service port.')
-                if p >= 65535:
-                    raise ValueError(f'The service port number {p} must be smaller than 65535.')
-                if p in (2000, 2001, 2002, 2003, 2200, 7681):
-                    raise ValueError('The service ports 2000 to 2003, 2200 and 7681 '
-                                     'are reserved for internal use.')
-                used_ports.add(p)
-            items.append({
-                'name': name,
-                'protocol': ServicePortProtocols(protocol),
-                'container_ports': ports,
-                'host_ports': (None,) * len(ports),
-            })
-        else:
-            break
-        if not s:
-            break
-    return items
 
 
 def remove_exponent(num: Decimal) -> Decimal:
