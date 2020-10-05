@@ -17,6 +17,7 @@ from typing import (
     Sequence, List,
     MutableMapping, Dict,
 )
+import uuid
 
 import janus
 from jupyter_client import KernelManager
@@ -606,9 +607,10 @@ class BaseRunner(metaclass=ABCMeta):
         loop = current_loop()
         if Path('/home/work/.logs').is_dir():
             kernel_id = os.environ['BACKENDAI_KERNEL_ID']
+            kernel_id_hex = uuid.UUID(kernel_id).hex
             log_path = Path(
                 '/home/work/.logs/task/'
-                f'{kernel_id[:2]}/{kernel_id[2:4]}/{kernel_id[4:]}.log'
+                f'{kernel_id_hex[:2]}/{kernel_id_hex[2:4]}/{kernel_id_hex[4:]}.log'
             )
             log_path.parent.mkdir(parents=True, exist_ok=True)
         else:

@@ -1,0 +1,1 @@
+Fix a regression of task-log filename by introduction of new environment variables
