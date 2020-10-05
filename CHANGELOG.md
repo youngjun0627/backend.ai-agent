@@ -16,6 +16,25 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0a1 (2020-10-06)
+----------------------
+
+### Features
+* Add support for multi-container sessions ([#164](https://github.com/lablup/backend.ai-agent/issues/164))
+* Add evenly-distributed resource allocator for `AllocMap` instances ([#228](https://github.com/lablup/backend.ai-agent/issues/228))
+* Add a configuration option to allow skipping running manager detection upon agent startup ([#234](https://github.com/lablup/backend.ai-agent/issues/234))
+
+### Fixes
+* Fix a regression of container statistics collection with recent aiodocker versions (0.16 or later) ([#226](https://github.com/lablup/backend.ai-agent/issues/226))
+* Fix missing `allow_extra` options in config input validators, which is a newly exposed regression after ff019ac9 ([#227](https://github.com/lablup/backend.ai-agent/issues/227))
+* Add context parameter for init methods of intrinsic accelerators. ([#229](https://github.com/lablup/backend.ai-agent/issues/229))
+* Fix vfolder mounts for compute sessions using agent host paths provided by the storage proxy ([#231](https://github.com/lablup/backend.ai-agent/issues/231))
+* Allow keypair/group/domain dotfiles to have absolute path from / ([#232](https://github.com/lablup/backend.ai-agent/issues/232))
+* Skip vfolder configuration checks and assume use of storage proxies if the vfolder mount path in etcd is not specified ([#233](https://github.com/lablup/backend.ai-agent/issues/233))
+* Refactor out validation of service port declaration ([#235](https://github.com/lablup/backend.ai-agent/issues/235))
+* Fix a regression of task-log filename by introduction of new environment variables ([#236](https://github.com/lablup/backend.ai-agent/issues/236))
+
+
 20.03.0 (2020-07-28)
 --------------------
 
