@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.03.4 (2020-10-06)
+--------------------
+
+### Features
+* Add a configuration option to allow skipping running manager detection upon agent startup ([#234](https://github.com/lablup/backend.ai-agent/issues/234))
+
+
 20.03.3 (2020-09-09)
 --------------------
 
