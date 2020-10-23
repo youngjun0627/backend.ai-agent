@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.03.5 (2020-10-24)
+--------------------
+
+### Fixes
+* Update the krunner packages to run kernel runners (in-container daemons) on more recent Python version (3.8.6) and custom build of ttyd to fix periodic disconnection of terminals ([#237](https://github.com/lablup/backend.ai-agent/issues/237))
+
+
 20.03.4 (2020-10-06)
 --------------------
 
