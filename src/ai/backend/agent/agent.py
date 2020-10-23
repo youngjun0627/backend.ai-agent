@@ -921,7 +921,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             resource_spec.mounts.append(mount)
 
     @cached(
-        cache=LRUCache(maxsize=32),
+        cache=LRUCache(maxsize=32),  # type: ignore
         key=lambda self, ctx: (
             ctx.image_ref,
             ctx.kernel_config['image']['labels'].get('ai.backend.base-distro', 'ubuntu16.04'),

@@ -133,7 +133,8 @@ async def handle_fstab_detail(request: web.Request) -> web.Response:
     log.info('HANDLE_FSTAB_DETAIL')
     params = request.query
     fstab_path = params.get('fstab_path', '/etc/fstab')
-    async with aiofiles.open(fstab_path, mode='r') as fp:
+    # FIXME: Remove ignore if https://github.com/python/typeshed/pull/4650 is released
+    async with aiofiles.open(fstab_path, mode='r') as fp:  # type: ignore
         content = await fp.read()
         return web.Response(text=content)
 
@@ -180,7 +181,8 @@ async def handle_mount(request: web.Request) -> web.Response:
     log.info('Mounted ' + params['name'] + ' on ' + mount_prefix)
     if params['edit_fstab']:
         fstab_path = params['fstab_path'] if params['fstab_path'] else '/etc/fstab'
-        async with aiofiles.open(fstab_path, mode='r+') as fp:
+        # FIXME: Remove ignore if https://github.com/python/typeshed/pull/4650 is released
+        async with aiofiles.open(fstab_path, mode='r+') as fp:  # type: ignore
             fstab = Fstab(fp)
             await fstab.add(params['fs_location'], str(mountpoint),
                             params['fs_type'], params['options'])
@@ -213,7 +215,8 @@ async def handle_umount(request: web.Request) -> web.Response:
         pass
     if params['edit_fstab']:
         fstab_path = params['fstab_path'] if params['fstab_path'] else '/etc/fstab'
-        async with aiofiles.open(fstab_path, mode='r+') as fp:
+        # FIXME: Remove ignore if https://github.com/python/typeshed/pull/4650 is released
+        async with aiofiles.open(fstab_path, mode='r+') as fp:  # type: ignore
             fstab = Fstab(fp)
             await fstab.remove_by_mountpoint(str(mountpoint))
     return web.Response(text=out)

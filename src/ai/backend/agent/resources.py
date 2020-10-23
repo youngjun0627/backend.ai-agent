@@ -152,7 +152,7 @@ class KernelResourceSpec:
         mounts = [Mount.from_str(m) for m in kvpairs['MOUNTS'].split(',') if m]
         return cls(
             container_id=kvpairs.get('CID', 'unknown'),
-            scratch_disk_size=BinarySize.from_str(kvpairs['SCRATCH_SIZE']),
+            scratch_disk_size=BinarySize.finite_from_str(kvpairs['SCRATCH_SIZE']),
             allocations=dict(allocations),
             slots=ResourceSlot(json.loads(kvpairs['SLOTS'])),
             mounts=mounts,
