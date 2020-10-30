@@ -207,7 +207,7 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                 await self.monitor_docker_task
             await self.docker.close()
 
-        # Stop handlign agent sock.
+        # Stop handling agent sock.
         # (But we don't remove the socket file)
         if self.agent_sock_task is not None:
             self.agent_sock_task.cancel()

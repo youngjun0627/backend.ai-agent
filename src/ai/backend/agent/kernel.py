@@ -236,6 +236,10 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
+    async def shutdown_service(self, service):
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_service_apps(self):
         raise NotImplementedError
 
@@ -509,6 +513,14 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
             return {'status': 'failed', 'error': 'cancelled'}
         except asyncio.TimeoutError:
             return {'status': 'failed', 'error': 'timeout'}
+
+    async def feed_shutdown_service(self, service_name: str):
+        if self.input_sock.closed:
+            raise asyncio.CancelledError
+        await self.input_sock.send_multipart([
+            b'shutdown-service',
+            json.dumps(service_name).encode('utf8'),
+        ])
 
     async def feed_service_apps(self):
         await self.input_sock.send_multipart([

@@ -443,6 +443,16 @@ class AgentRPCServer(aobject):
 
     @rpc_function
     @collect_error
+    async def shutdown_service(
+        self,
+        kernel_id,  # type: str
+        service,    # type: str
+    ):
+        log.info('rpc::shutdown_service(k:{0}, app:{1})', kernel_id, service)
+        return await self.agent.shutdown_service(KernelId(UUID(kernel_id)), service)
+
+    @rpc_function
+    @collect_error
     async def upload_file(self, kernel_id: str, filename: str, filedata: bytes):
         log.info('rpc::upload_file(k:{0}, fn:{1})', kernel_id, filename)
         await self.agent.accept_file(KernelId(UUID(kernel_id)), filename, filedata)
