@@ -16,6 +16,17 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0a2 (2020-10-30)
+----------------------
+
+### Features
+* Add support for shutting down running in-container services ([#230](https://github.com/lablup/backend.ai-agent/issues/230))
+
+### Fixes
+* Update the krunner packages to run kernel runners (in-container daemons) on more recent Python version (3.8.6) and custom build of ttyd to fix periodic disconnection of terminals ([#237](https://github.com/lablup/backend.ai-agent/issues/237))
+* Update broken dependencies (aiohttp~=3.7.0, trafaret~=2.1) ([#238](https://github.com/lablup/backend.ai-agent/issues/238))
+
+
 20.09.0a1 (2020-10-06)
 ----------------------
 
