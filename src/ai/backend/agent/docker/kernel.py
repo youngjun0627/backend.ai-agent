@@ -108,6 +108,9 @@ class DockerKernel(AbstractKernel):
         })
         return result
 
+    async def shutdown_service(self, service: str):
+        await self.runner.feed_shutdown_service(service)
+
     async def get_service_apps(self):
         result = await self.runner.feed_service_apps()
         return result

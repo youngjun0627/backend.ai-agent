@@ -920,6 +920,14 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
     async def start_service(self, kernel_id: KernelId, service: str, opts: dict):
         return await self.kernel_registry[kernel_id].start_service(service, opts)
 
+    async def shutdown_service(self, kernel_id: KernelId, service: str):
+        try:
+            kernel_obj = self.kernel_registry[kernel_id]
+            if kernel_obj is not None:
+                await kernel_obj.shutdown_service(service)
+        except Exception:
+            log.exception('unhandled exception while shutting down service app ${}', service)
+
     async def accept_file(self, kernel_id: KernelId, filename: str, filedata):
         return await self.kernel_registry[kernel_id].accept_file(filename, filedata)
 

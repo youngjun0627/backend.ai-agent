@@ -651,6 +651,15 @@ class BaseRunner(metaclass=ABCMeta):
     async def shutdown(self):
         pass
 
+    async def _shutdown_service(self, service_name: str):
+        try:
+            async with self._service_lock:
+                if service_name in self.services_running:
+                    await terminate_and_wait(self.services_running[service_name])
+                    self.services_running.pop(service_name, None)
+        except Exception:
+            log.exception('unexpected error (shutdown_service)')
+
     async def handle_user_input(self, reader, writer):
         try:
             if self.user_input_queue is None:
@@ -751,6 +760,9 @@ class BaseRunner(metaclass=ABCMeta):
                 elif op_type == 'start-service':  # activate a service port
                     data = json.loads(text)
                     asyncio.create_task(self._start_service(data))
+                elif op_type == 'shutdown-service':  # shutdown the service by its name
+                    data = json.loads(text)
+                    await self._shutdown_service(data)
                 elif op_type == 'get-apps':
                     await self._get_apps(text)
             except asyncio.CancelledError:

@@ -50,6 +50,7 @@ def test_num_nodes():
     linux._numa_supported = original_numa_supported
 
 
+@pytest.mark.skip(reason='aioresponses 0.7 is incompatible with aiohttp 3.7+')
 @pytest.mark.asyncio
 async def test_get_available_cores_without_docker(monkeypatch):
 
