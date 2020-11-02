@@ -11,11 +11,15 @@ import signal
 import sys
 import time
 from typing import (
-    ClassVar,
-    Optional, Union,
     Awaitable,
-    Sequence, List,
-    MutableMapping, Dict,
+    ClassVar,
+    Dict,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Union,
 )
 import uuid
 
@@ -506,92 +510,97 @@ class BaseRunner(metaclass=ABCMeta):
         """Start an application service daemon."""
         return None, {}
 
-    async def _start_service(self, service_info):
-        await self._service_lock.acquire()
-        try:
-            if service_info['protocol'] == 'preopen':
-                # skip subprocess spawning as we assume the user runs it manually.
-                result = {'status': 'started'}
-                return
-            if service_info['name'] in self.services_running:
-                result = {'status': 'running'}
-                return
-            if service_info['protocol'] == 'pty':
-                result = {'status': 'failed',
-                          'error': 'not implemented yet'}
-                return
-            cwd = Path.cwd()
-            cmdargs, env = None, {}
-            if service_info['name'] == 'ttyd':
-                cmdargs, env = await prepare_ttyd_service(service_info)
-            elif service_info['name'] == 'sshd':
-                cmdargs, env = await prepare_sshd_service(service_info)
-            elif service_info['name'] == 'vscode':
-                cmdargs, env = await prepare_vscode_service(service_info)
-            elif self.service_parser is not None:
-                self.service_parser.variables['ports'] = service_info['ports']
-                cmdargs, env = await self.service_parser.start_service(
-                    service_info['name'],
-                    self.child_env.keys(),
-                    service_info['options'],
-                )
-            if cmdargs is None:
-                # fall-back to legacy service routine
-                start_info = await self.start_service(service_info)
-                if start_info is None:
-                    cmdargs, env = None, {}
-                elif len(start_info) == 3:
-                    cmdargs, env, cwd = start_info
-                elif len(start_info) == 2:
-                    cmdargs, env = start_info
-            if cmdargs is None:
-                # still not found?
-                log.warning('The service {0} is not supported.',
-                            service_info['name'])
-                result = {'status': 'failed',
-                          'error': 'unsupported service'}
-                return
-            log.debug('cmdargs: {0}', cmdargs)
-            log.debug('env: {0}', env)
-            service_env = {**self.child_env, **env}
-            # avoid conflicts with Python binary used by service apps.
-            if 'LD_LIBRARY_PATH' in service_env:
-                service_env['LD_LIBRARY_PATH'] = \
-                    service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
+    async def _start_service(self, service_info, user_requested: bool = True):
+        async with self._service_lock:
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *map(str, cmdargs),
-                    env=service_env,
-                    cwd=cwd,
-                )
-                self.services_running[service_info['name']] = proc
-                asyncio.create_task(self._wait_service_proc(service_info['name'], proc))
-                self._service_lock.release()
-                await wait_local_port_open(service_info['port'])
-                log.info("Service {} has started (pid: {}, port: {})",
-                         service_info['name'], proc.pid, service_info['port'])
-                result = {'status': 'started'}
-            except asyncio.CancelledError:
-                # This may happen if the service process gets started but it fails to
-                # open the port and then terminates (with an error).
-                result = {'status': 'failed',
-                          'error': f"the process did not start properly: {cmdargs[0]}"}
-            except PermissionError:
-                result = {'status': 'failed',
-                          'error': f"the target file is not executable: {cmdargs[0]}"}
-            except FileNotFoundError:
-                result = {'status': 'failed',
-                          'error': f"the executable file is not found: {cmdargs[0]}"}
-        except Exception as e:
-            log.exception('start_service: unexpected error')
-            result = {'status': 'failed', 'error': repr(e)}
-        finally:
-            await self.outsock.send_multipart([
-                b'service-result',
-                json.dumps(result).encode('utf8'),
-            ])
-            if self._service_lock.locked():
-                self._service_lock.release()
+                if service_info['protocol'] == 'preopen':
+                    # skip subprocess spawning as we assume the user runs it manually.
+                    result = {'status': 'started'}
+                    return
+                if service_info['name'] in self.services_running:
+                    result = {'status': 'running'}
+                    return
+                if service_info['protocol'] == 'pty':
+                    result = {'status': 'failed',
+                            'error': 'not implemented yet'}
+                    return
+                cwd = Path.cwd()
+                cmdargs: Optional[Sequence[Union[str, os.PathLike]]]
+                env: Mapping[str, str]
+                cmdargs, env = None, {}
+                if service_info['name'] == 'ttyd':
+                    cmdargs, env = await prepare_ttyd_service(service_info)
+                elif service_info['name'] == 'sshd':
+                    cmdargs, env = await prepare_sshd_service(service_info)
+                elif service_info['name'] == 'vscode':
+                    cmdargs, env = await prepare_vscode_service(service_info)
+                elif self.service_parser is not None:
+                    self.service_parser.variables['ports'] = service_info['ports']
+                    cmdargs, env = await self.service_parser.start_service(
+                        service_info['name'],
+                        self.child_env.keys(),
+                        service_info['options'],
+                    )
+                if cmdargs is None:
+                    # fall-back to legacy service routine
+                    start_info = await self.start_service(service_info)
+                    if start_info is None:
+                        cmdargs, env = None, {}
+                    elif len(start_info) == 3:
+                        cmdargs, env, cwd = start_info
+                    elif len(start_info) == 2:
+                        cmdargs, env = start_info
+                if cmdargs is None:
+                    # still not found?
+                    log.warning('The service {0} is not supported.',
+                                service_info['name'])
+                    result = {
+                        'status': 'failed',
+                        'error': 'unsupported service',
+                    }
+                    return
+                log.debug('cmdargs: {0}', cmdargs)
+                log.debug('env: {0}', env)
+                service_env = {**self.child_env, **env}
+                # avoid conflicts with Python binary used by service apps.
+                if 'LD_LIBRARY_PATH' in service_env:
+                    service_env['LD_LIBRARY_PATH'] = \
+                        service_env['LD_LIBRARY_PATH'].replace('/opt/backend.ai/lib:', '')
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *map(str, cmdargs),
+                        env=service_env,
+                        cwd=cwd,
+                    )
+                    self.services_running[service_info['name']] = proc
+                    asyncio.create_task(self._wait_service_proc(service_info['name'], proc))
+                    await wait_local_port_open(service_info['port'])
+                    log.info("Service {} has started (pid: {}, port: {})",
+                             service_info['name'], proc.pid, service_info['port'])
+                    result = {'status': 'started'}
+                except asyncio.CancelledError:
+                    # This may happen if the service process gets started but it fails to
+                    # open the port and then terminates (with an error).
+                    result = {'status': 'failed',
+                              'error': f"the process did not start properly: {cmdargs[0]}"}
+                except PermissionError:
+                    result = {'status': 'failed',
+                              'error': f"the target file is not executable: {cmdargs[0]}"}
+                except FileNotFoundError:
+                    result = {'status': 'failed',
+                              'error': f"the executable file is not found: {cmdargs[0]}"}
+            except Exception as e:
+                log.exception('start_service: unexpected error')
+                result = {
+                    'status': 'failed',
+                    'error': repr(e),
+                }
+            finally:
+                if user_requested:
+                    await self.outsock.send_multipart([
+                        b'service-result',
+                        json.dumps(result).encode('utf8'),
+                    ])
 
     async def _wait_service_proc(
         self,
@@ -740,12 +749,12 @@ class BaseRunner(metaclass=ABCMeta):
             'name': 'sshd',
             'port': 2200,
             'protocol': 'tcp',
-        }))
+        }, user_requested=False))
         intrinsic_spawn_coros.append(self._start_service({
             'name': 'ttyd',
             'port': 7681,
             'protocol': 'http',
-        }))
+        }, user_requested=False))
         results = await asyncio.gather(*intrinsic_spawn_coros, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):

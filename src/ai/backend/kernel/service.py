@@ -10,7 +10,7 @@ import json
 import logging
 from pathlib import Path
 from typing import (
-    Any, Optional, Union,
+    Any, Collection, Optional, Union,
     TypedDict,
     Mapping, MutableMapping, Dict,
     Sequence, List, Tuple,
@@ -77,11 +77,11 @@ class ServiceParser:
     async def start_service(
         self,
         service_name: str,
-        frozen_envs: List[str],
+        frozen_envs: Collection[str],
         opts: Mapping[str, Any],
-    ) -> Tuple[Optional[Sequence[str]], Optional[Mapping[str, str]]]:
+    ) -> Tuple[Optional[Sequence[str]], Mapping[str, str]]:
         if service_name not in self.services.keys():
-            return None, None
+            return None, {}
         service = self.services[service_name]
         if service.noop:
             return [], {}
