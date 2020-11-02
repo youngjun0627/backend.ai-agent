@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0a3 (2020-11-03)
+----------------------
+
+### Fixes
+* Fix a critical regression of user-requested app starts due to pre-starting sshd/ttyd services ([#240](https://github.com/lablup/backend.ai-agent/issues/240))
+
+
 20.09.0a2 (2020-10-30)
 ----------------------
 
