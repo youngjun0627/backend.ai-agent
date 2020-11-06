@@ -16,10 +16,10 @@ import click
 from setproctitle import setproctitle
 import trafaret as t
 
-from ai.backend.common import config, utils, validators as tx
+from ai.backend.common import config, identity, utils, validators as tx
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
-from ai.backend.common.utils import Fstab
+from ai.backend.common.utils import Fstab, host_health_check
 from . import __version__ as VERSION
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.watcher'))
@@ -222,6 +222,54 @@ async def handle_umount(request: web.Request) -> web.Response:
     return web.Response(text=out)
 
 
+async def health_check(request: web.Request) -> web.Request:
+    log.info('HEALTH_CHECK')
+    agent_config = request.app['config']['agent']
+    agent_id = agent_config.get('id', await identity.get_instance_id())
+    result = {
+        'daemon': {
+            'id': agent_id,
+            'type': 'agent',
+            'version': VERSION,
+        }
+    }
+    result['host'] = await host_health_check()
+
+    # Parse NVIDIA GPU status
+    # TODO: better parsing method?
+    proc = await asyncio.create_subprocess_exec(
+        'nvidia-smi',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    raw_out, raw_err = await proc.communicate()
+    out = raw_out.decode('utf-8')
+    err = raw_err.decode('utf-8')
+    nvidia_info = {}
+    if err and 'command not found' in err:
+        # no-GPU agent
+        nvidia_info = {}
+    elif err:
+        nvidia_info = {
+            'status': 'error',
+            'message': 'check NVIDIA GPU status',
+        }
+    elif 'NVIDIA-SMI' in out:
+        nvidia_info = {
+            'status': 'ok',
+            'message': '',
+        }
+    else:
+        nvidia_info = {
+            'status': 'warning',
+            'message': 'unknown GPU status',
+        }
+    result['host']['nvidia'] = nvidia_info
+    if nvidia_info:
+        result['host']['nvidia'] = nvidia_info
+    return web.json_response(result)
+
+
 async def init_app(app):
     r = app.router.add_route
     r('GET', '/', handle_status)
@@ -236,6 +284,7 @@ async def init_app(app):
     r('GET',    '/mounts', handle_list_mounts)
     r('POST',   '/mounts', handle_mount)
     r('DELETE', '/mounts', handle_umount)
+    r('GET',    '/health', health_check)
 
 
 async def shutdown_app(app):
