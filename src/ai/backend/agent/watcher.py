@@ -222,7 +222,7 @@ async def handle_umount(request: web.Request) -> web.Response:
     return web.Response(text=out)
 
 
-async def health_check(request: web.Request) -> web.Request:
+async def health_check(request: web.Request) -> web.Response:
     log.info('HEALTH_CHECK')
     agent_config = request.app['config']['agent']
     agent_id = agent_config.get('id', await identity.get_instance_id())
@@ -243,7 +243,7 @@ async def health_check(request: web.Request) -> web.Request:
     raw_out, raw_err = await proc.communicate()
     out = raw_out.decode('utf-8')
     err = raw_err.decode('utf-8')
-    nvidia_info = {}
+    nvidia_info: dict = {}
     if err and 'command not found' in err:
         # no-GPU agent
         nvidia_info = {}
