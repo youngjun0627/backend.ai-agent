@@ -227,13 +227,11 @@ async def health_check(request: web.Request) -> web.Request:
     agent_config = request.app['config']['agent']
     agent_id = agent_config.get('id', await identity.get_instance_id())
     result = {
-        'daemon': {
-            'id': agent_id,
-            'type': 'agent',
-            'version': VERSION,
-        }
+        'id': agent_id,
+        'type': 'agent',
+        'version': VERSION,
     }
-    result['host'] = await host_health_check()
+    result.update(await host_health_check())
 
     # Parse NVIDIA GPU status
     # TODO: better parsing method?
@@ -264,9 +262,9 @@ async def health_check(request: web.Request) -> web.Request:
             'status': 'warning',
             'message': 'unknown GPU status',
         }
-    result['host']['nvidia'] = nvidia_info
+    result['nvidia'] = nvidia_info
     if nvidia_info:
-        result['host']['nvidia'] = nvidia_info
+        result['nvidia'] = nvidia_info
     return web.json_response(result)
 
 
