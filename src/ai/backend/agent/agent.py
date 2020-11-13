@@ -1089,6 +1089,8 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         if kernel_obj is None:
             log.warning('execute_batch(k:{}): no such kernel', kernel_id)
             return
+
+        await self.produce_event("execution_started", str(kernel_id))
         log.debug('execute_batch(k:{}): executing {!r}', kernel_id, (startup_command or '')[:60])
         mode: Literal['batch', 'continue'] = 'batch'
         opts = {
@@ -1115,6 +1117,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                     break
 
                 if result['status'] == 'finished':
+                    await self.produce_event("execution_finished", str(kernel_id))
                     if result['exitCode'] == 0:
                         await self.produce_event(
                             'session_success',
@@ -1131,6 +1134,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                         )
                     break
                 if result['status'] == 'exec-timeout':
+                    await self.produce_event("execution_timeout", str(kernel_id))
                     await self.produce_event(
                         'session_failure',
                         str(kernel_id),
@@ -1143,6 +1147,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                 }
                 mode = 'continue'
         except asyncio.CancelledError:
+            await self.produce_event("execution_cancelled", str(kernel_id))
             await self.produce_event(
                 'session_failure',
                 str(kernel_id),
@@ -1578,6 +1583,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         if restart_tracker is not None:
             await restart_tracker.done_event.wait()
 
+        await self.produce_event("execution_started", str(kernel_id))
         try:
             kernel_obj = self.kernel_registry[kernel_id]
             result = await kernel_obj.execute(
@@ -1592,7 +1598,9 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
 
         if result['status'] in ('finished', 'exec-timeout'):
             log.debug('_execute({0}) {1}', kernel_id, result['status'])
+            await self.produce_event("execution_finished", str(kernel_id))
         if result['status'] == 'exec-timeout':
+            await self.produce_event("execution_timeout", str(kernel_id))
             await self.inject_container_lifecycle_event(
                 kernel_id,
                 LifecycleEvent.DESTROY,

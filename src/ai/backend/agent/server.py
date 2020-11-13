@@ -471,12 +471,6 @@ class AgentRPCServer(aobject):
 
     @rpc_function
     @collect_error
-    async def refresh_idle(self, kernel_id: str):
-        log.debug('rpc::refresh_idle(k:{})', kernel_id)
-        pass
-
-    @rpc_function
-    @collect_error
     async def shutdown_agent(self, terminate_kernels: bool):
         # TODO: implement
         log.info('rpc::shutdown_agent()')
