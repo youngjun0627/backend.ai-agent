@@ -126,11 +126,11 @@ class KernelDeployment:
     def append_resource(self, slot, amount):
         self.resource_def[slot] = amount
 
-    def mount_pvc(self, mountSpec: PVCMountSpec):
+    def mount_krunner_pvc(self, mountSpec: PVCMountSpec):
         mountSpec.name = 'krunner'
         self.pvcMounts.append(mountSpec)
 
-    def mount_exec(self, mountSpec: PVCMountSpec):
+    def mount_krunner_exec(self, mountSpec: PVCMountSpec):
         mountSpec.name = 'krunner'
         mountSpec.perm = 'rw'
         self.execMounts.append(mountSpec)

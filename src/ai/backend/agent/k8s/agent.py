@@ -4,7 +4,7 @@ from decimal import Decimal
 import json
 import logging, logging.config
 from pathlib import Path
-import platform
+import pkg_resources
 from pprint import pformat
 import random
 import secrets
@@ -55,16 +55,18 @@ from .k8sapi import (
 )
 from .resources import (
     AbstractComputePlugin,
+    Mount,
     detect_resources,
 )
-from ..agent import AbstractAgent
+from ..agent import (
+    AbstractAgent,
+    KernelCreationContext,
+)
 from ..exception import (
-    InsufficientResource,
     K8sError,
     AgentError
 )
 from ..resources import KernelResourceSpec
-from ..kernel import match_krunner_volume, KernelFeatures
 from ..utils import parse_service_ports
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
@@ -160,7 +162,14 @@ async def RPCContext(addr, timeout=None, *, order_key: str = None):
         raise
 
 
-class K8sAgent(AbstractAgent):
+@attr.s(auto_attribs=True, slots=True)
+class K8sKernelCreationContext(KernelCreationContext):
+    k8sCoreApi: Any  # TODO: type annotation
+    k8sAppsApi: Any  # TODO: type annotation
+    deployment: Optional[KernelDeployment]
+
+
+class K8sAgent(AbstractAgent[K8sKernel, K8sKernelCreationContext]):
     vfolder_as_pvc: bool
     k8s_images: List[str]
     workers: dict
@@ -397,201 +406,92 @@ class K8sAgent(AbstractAgent):
     async def collect_node_stat(self, interval: float):
         pass
 
-    async def create_kernel(self, _kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
-                            restarting: bool = False) -> KernelCreationResult:
-
-        kernel_id = str(_kernel_id)
+    async def create_kernel__init_context(
+        self,
+        kernel_id: KernelId,
+        kernel_config: KernelCreationConfig,
+        *,
+        restarting: bool = False,
+    ) -> K8sKernelCreationContext:
+        base_ctx = await super().create_kernel__init_context(kernel_id, kernel_config)
         # Load K8s API object
         await K8sConfig.load_kube_config()
-        k8sCoreApi = K8sClient.CoreV1Api()
-        k8sAppsApi = K8sClient.AppsV1Api()
-        log.debug(
-            'create_kernel: kernel_config -> {0}',
-            json.dumps(kernel_config, ensure_ascii=False, indent=2)
+        return K8sKernelCreationContext(
+            # k8s-specific fields
+            k8sCoreApi=K8sClient.CoreV1Api(),
+            k8sAppsApi=K8sClient.AppsV1Api(),
+            deployment=None,
+            # should come last because of python/mypy#9395
+            **attr.asdict(base_ctx),
         )
 
-        await self.produce_event('kernel_preparing', kernel_id)
+    async def create_kernel__get_extra_envs(
+        self,
+        ctx: K8sKernelCreationContext,
+    ) -> Mapping[str, str]:
+        return {}
 
-        # Read image-specific labels and settings
-        image_ref = ImageRef(
-            kernel_config['image']['canonical'],
-            [kernel_config['image']['registry']['name']])
-        environ = dict(kernel_config.get('environ', dict()))
-        # extra_mount_list = await get_extra_volumes(self.docker, image_ref.short)
-
-        image_labels = kernel_config['image']['labels']
-
-        image_status = await self.check_image(
-            kernel_config['image']['digest'],
-            AutoPullBehavior(kernel_config.get('auto_pull', 'digest')),
-            kernel_config['image']['canonical'],
-            [kernel_config['image']['registry']['name']]
-        )
-        if True in image_status.values():
-            await self.produce_event('kernel_pulling',
-                                     str(kernel_id), image_ref.canonical)
-
-        for node, do_pull in image_status.items():
-            if do_pull:
-                await self.pull_image(kernel_config['image']['registry'], node,
-                                      kernel_config['image']['canonical'],
-                                      [kernel_config['image']['registry']['name']])
-
-        version        = int(image_labels.get('ai.backend.kernelspec', '1'))
-        _envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
-        envs_corecount = _envs_corecount.split(',') if _envs_corecount else []
-        kernel_features = set(image_labels.get('ai.backend.features', '').split())
-
-        slots = ResourceSlot.from_json(kernel_config['resource_slots'])
-        vfolders = kernel_config['mounts']
-        vfolder_mount_map: Mapping[str, str] = {}
-        if 'mount_map' in kernel_config.keys():
-            vfolder_mount_map = kernel_config['mount_map']
-
-        await self.produce_event('kernel_creating', kernel_id)
-
+    async def create_kernel__prepare_resource_spec(
+        self,
+        ctx: K8sKernelCreationContext,
+    ) -> Tuple[KernelResourceSpec, Optional[Mapping[str, Any]]]:
+        assert not ctx.restarting, "restarting k8s session is not supported"
+        slots = ResourceSlot.from_json(ctx.kernel_config['resource_slots'])
+        # Ensure that we have intrinsic slots.
+        assert SlotName('cpu') in slots
+        assert SlotName('mem') in slots
         resource_spec = KernelResourceSpec(
             container_id='K8sDUMMYCID',
             allocations={},
             slots={**slots},  # copy
             mounts=[],
             scratch_disk_size=0,  # TODO: implement (#70)
-            idle_timeout=kernel_config['idle_timeout'],
+            idle_timeout=ctx.kernel_config['idle_timeout'],
         )
+        return resource_spec, None
 
-        # Inject Backend.AI-intrinsic env-variables for gosu
-        if KernelFeatures.UID_MATCH in kernel_features:
-            uid = self.config['container']['kernel-uid']
-            gid = self.config['container']['kernel-gid']
-            environ['LOCAL_GROUP_ID'] = str(gid)
-            environ['LOCAL_USER_ID'] = str(uid)
+    async def create_kernel__prepare_scratch(
+        self,
+        ctx: K8sKernelCreationContext,
+    ) -> None:
+        pass
 
-        # Ensure that we have intrinsic slots.
-        assert 'cpu' in slots
-        assert 'mem' in slots
+    async def create_kernel__get_intrinsic_mounts(
+        self,
+        ctx: K8sKernelCreationContext,
+    ) -> Sequence[Mount]:
+        return []
 
-        # Realize ComputeDevice (including accelerators) allocations.
-        dev_types = set()
-        for slot_type in slots.keys():
-            dev_type = slot_type.split('.', maxsplit=1)[0]
-            dev_types.add(dev_type)
+    async def create_kernel__prepare_network(
+        self,
+        ctx: K8sKernelCreationContext,
+    ) -> None:
+        pass
 
-        resource_spec.allocations = {}
+    async def create_kernel__process_mounts(
+        self,
+        ctx: K8sKernelCreationContext,
+        mounts: Sequence[Mount],
+    ) -> None:
 
-        for dev_type in dev_types:
-            computer_set = self.computers[dev_type]
-            # {'cpu': 2 }
-            device_specific_slots = {
-                slot_type: amount for slot_type, amount in slots.items()
-                if slot_type.startswith(dev_type)
-            }
-            try:
-                resource_spec.allocations[dev_type] = \
-                    computer_set.alloc_map.allocate(device_specific_slots,
-                                                    context_tag=dev_type)
-            except InsufficientResource:
-                log.info('insufficient resource: {} of {}\n'
-                            '(alloc map: {})',
-                            device_specific_slots, dev_type,
-                            computer_set.alloc_map.allocations)
-                raise
-
-        # Inject Backend.AI-intrinsic env-variables for libbaihook and gosu
-        cpu_core_count = len(resource_spec.allocations[DeviceName('cpu')][SlotName('cpu')])
-        environ.update({k: str(cpu_core_count) for k in envs_corecount})
-
-        # Inject Backend.AI kernel runner dependencies.
-        distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
-        matched_distro, krunner_volume = \
-            match_krunner_volume(self.config['container']['krunner-volumes'], distro)
-        matched_libc_style = 'glibc'
-        if matched_distro.startswith('alpine'):
-            matched_libc_style = 'musl'
-        log.debug('selected krunner: {}', matched_distro)
-        log.debug('selected libc style: {}', matched_libc_style)
-        log.debug('krunner volume: {}', krunner_volume)
-        arch = platform.machine()
-
-        canonical = kernel_config['image']['canonical']
+        arch, matched_distro, _, krunner_volume, _ = \
+            self._create_kernel__get_krunner_info(ctx)
 
         # Create deployment object with given image name
+        canonical = ctx.kernel_config['image']['canonical']
         registry_name, repo, name_with_tag = canonical.split('/')
         deployment = KernelDeployment(
-            str(kernel_id), f'{registry_name}/{repo}/{name_with_tag}',
+            str(ctx.kernel_id), f'{registry_name}/{repo}/{name_with_tag}',
             krunner_volume, arch,
-            name=f"kernel-{image_ref.name.split('/')[-1]}-{kernel_id}".replace('.', '-')
+            name=f"kernel-{ctx.image_ref.name.split('/')[-1]}-{ctx.kernel_id}".replace('.', '-')
         )
-
-        def _mount(kernel_id: str, hostPath: str, mountPath: str, mountType: str, perm='ro'):
-            name = (kernel_id + '-' + mountPath.split('/')[-1]).replace('.', '-')
-            deployment.mount_hostpath(HostPathMountSpec(name, hostPath, mountPath, mountType, perm))
-
-        # Check if NFS PVC for static files exists and bound
-        nfs_pvc = await k8sCoreApi.list_namespaced_persistent_volume_claim(
-            'backend-ai', label_selector='backend.ai/bai-static-nfs-server'
-        )
-        if len(nfs_pvc.items) == 0:
-            raise K8sError('No PVC for backend.ai static files')
-        pvc = nfs_pvc.items[0]
-        if pvc.status.phase != 'Bound':
-            raise K8sError('PVC not Bound')
-
-        if krunner_volume is None:
-            raise RuntimeError(f'Cannot run container based on {distro}')
-
-        deployment.baistatic_pvc = pvc.metadata.name
-
-        # Mount essential files
-        deployment.mount_pvc(
-            PVCMountSpec('entrypoint.sh', '/opt/kernel/entrypoint.sh', 'File')
-        )
-        deployment.mount_pvc(
-            PVCMountSpec(f'su-exec.{distro}.{arch}.bin', '/opt/kernel/su-exec', 'File')
-        )
-        deployment.mount_pvc(
-            PVCMountSpec(f'jail.{distro}.bin', '/opt/kernel/jail', 'File')
-        )
-        deployment.mount_pvc(
-            PVCMountSpec(f'libbaihook.{distro}.{arch}.so', '/opt/kernel/libbaihook.so', 'File')
-        )
-        deployment.mount_pvc(
-            PVCMountSpec(
-                'kernel', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/kernel', 'Directory'
-            )
-        )
-        deployment.mount_pvc(
-            PVCMountSpec(
-                'helpers', '/opt/backend.ai/lib/python3.6/site-packages/ai/backend/helpers', 'Directory'
-            )
-        )
-        deployment.mount_pvc(
-            PVCMountSpec('jupyter-custom.css', '/home/work/.jupyter/custom/custom.css', 'File')
-        )
-        deployment.mount_pvc(
-            PVCMountSpec('logo.svg', '/home/work/.jupyter/custom/logo.svg', 'File')
-        )
-        deployment.mount_pvc(
-            PVCMountSpec('roboto.ttf', '/home/work/.jupyter/custom/roboto.ttf', 'File')
-        )
-        deployment.mount_pvc(
-            PVCMountSpec('roboto-italic.ttf', '/home/work/.jupyter/custom/roboto-italic.ttf', 'File')
-        )
-
-        deployment.mount_pvc(
-            PVCMountSpec(f'dropbear.{matched_libc_style}.{arch}.bin', '/opt/kernel/dropbear', 'File')
-        )
-        deployment.mount_pvc(
-            PVCMountSpec(f'dropbearconvert.{matched_libc_style}.{arch}.bin', '/opt/kernel/dropbearconvert', 'File')
-        )
-        deployment.mount_pvc(
-            PVCMountSpec(f'dropbearkey.{matched_libc_style}.{arch}.bin', '/opt/kernel/dropbearkey', 'File')
-        )
+        ctx.deployment = deployment
 
         # If agent is using vFolder by NFS PVC, check if vFolder PVC exists and Bound
         # # otherwise raise since we can't use vfolder
-        if len(vfolders) > 0 and self.vfolder_as_pvc:
+        if self.vfolder_as_pvc:
             try:
-                nfs_pvc = await k8sCoreApi.list_namespaced_persistent_volume_claim(
+                nfs_pvc = await ctx.k8sCoreApi.list_namespaced_persistent_volume_claim(
                     'backend-ai', label_selector='backend.ai/vfolder'
                 )
                 if len(nfs_pvc.items) == 0:
@@ -603,90 +503,90 @@ class K8sAgent(AbstractAgent):
                 raise
             deployment.vfolder_pvc = pvc.metadata.name
 
-        for vfolder in vfolders:
-            mount_hostpath = False
-            if len(vfolder) == 5:
-                folder_name, folder_host, folder_id, folder_perm, host_path_raw = vfolder
-                if host_path_raw:
-                    mount_hostpath = True
-                    host_path = Path(host_path_raw)
-                else:
-                    host_path = (self.config['vfolder']['mount'] / folder_host /
-                                    self.config['vfolder']['fsprefix'] / folder_id)
-            elif len(vfolder) == 4:  # for backward compatibility
-                folder_name, folder_host, folder_id, folder_perm = vfolder
-                host_path = (self.config['vfolder']['mount'] / folder_host /
-                                self.config['vfolder']['fsprefix'] / folder_id)
-            elif len(vfolder) == 3:  # legacy managers
-                folder_name, folder_host, folder_id = vfolder
-                folder_perm = 'rw'
-                host_path = (self.config['vfolder']['mount'] / folder_host /
-                                self.config['vfolder']['fsprefix'] / folder_id)
-            else:
-                raise RuntimeError(
-                    'Unexpected number of vfolder mount detail tuple size')
+        # Check if NFS PVC for static files exists and bound
+        nfs_pvc = await ctx.k8sCoreApi.list_namespaced_persistent_volume_claim(
+            'backend-ai', label_selector='backend.ai/bai-static-nfs-server'
+        )
+        if len(nfs_pvc.items) == 0:
+            raise K8sError('No PVC for backend.ai static files')
+        pvc = nfs_pvc.items[0]
+        if pvc.status.phase != 'Bound':
+            raise K8sError('PVC not Bound')
 
-            folder_perm = MountPermission(folder_perm)
-            perm_char = 'ro'
-            if folder_perm == MountPermission.RW_DELETE or folder_perm == MountPermission.READ_WRITE:
+        if krunner_volume is None:
+            raise RuntimeError(f'Cannot run container based on {matched_distro}')
+
+        def fix_unsupported_perm(folder_perm: MountPermission) -> MountPermission:
+            if folder_perm == MountPermission.RW_DELETE:
                 # TODO: enforce readable/writable but not deletable
                 # (Currently docker's READ_WRITE includes DELETE)
-                perm_char = 'rw'
+                return MountPermission.READ_WRITE
+            return folder_perm
 
-            if kernel_path_raw := vfolder_mount_map.get(folder_name):
-                if not kernel_path_raw.startswith('/home/work/'):  # type: ignore
-                    raise ValueError(
-                        f'Error while mounting {folder_name} to {kernel_path_raw}: '
-                        'all vfolder mounts should be under /home/work')
-                kernel_path = Path(kernel_path_raw)  # type: ignore
-            else:
-                kernel_path = Path(f'/home/work/{folder_name}')
-            
-            if mount_hostpath or not self.vfolder_as_pvc:
-                _mount(
-                    kernel_id, host_path.absolute().as_posix(),
-                    kernel_path.absolute().as_posix(), 'Directory', perm=perm_char
+        # def _mount(kernel_id: str, hostPath: str, mountPath: str, mountType: str, perm='ro'):
+        #     name = (kernel_id + '-' + mountPath.split('/')[-1]).replace('.', '-')
+        #     deployment.mount_hostpath(
+        #         HostPathMountSpec(name, hostPath, mountPath, mountType, perm)
+        #     )
+
+        # Register to the deployment object
+        deployment.baistatic_pvc = pvc.metadata.name
+        krunner_root = Path(pkg_resources.resource_filename('ai.backend.runner', 'entrypoint.sh')).parent
+        for mount in mounts:
+            if krunner_root in mount.source.parents:
+                mount_type = 'Directory' if mount.source.is_dir() else 'File'
+                deployment.mount_krunner_pvc(
+                    PVCMountSpec(
+                        mount.source.relative_to(krunner_root),
+                        mount.target,
+                        mount_type,
+                        fix_unsupported_perm(mount.permission).value,
+                    )
                 )
             else:
-                subPath = (folder_host / self.config['vfolder']['fsprefix'] / folder_id)
-                deployment.mount_vfolder_pvc(
-                    PVCMountSpec(str(subPath), kernel_path.absolute().as_posix(), 'Directory', perm=perm_char)
-                )
-
-        # should no longer be used!
-        del vfolders
-
-        environ['LD_PRELOAD'] = '/opt/kernel/libbaihook.so'
-
-        injected_hooks: List[str] = []
-
-        # Inject hook library
-        for dev_type, device_alloc in resource_spec.allocations.items():
-            computer_set = self.computers[dev_type]
-            alloc_sum = Decimal(0)
-            for dev_id, per_dev_alloc in device_alloc.items():
-                alloc_sum += sum(per_dev_alloc.values())
-            log.debug('Allocation sum for device {0}: {1}', dev_type, alloc_sum)
-            if alloc_sum > 0:
-                hook_paths = await computer_set.klass.get_hooks(matched_distro, arch)
-                if hook_paths:
-                    log.debug('accelerator {} provides hooks: {}',
-                              computer_set.klass.__name__,
-                              ', '.join(map(str, hook_paths)))
-                for hook_path in hook_paths:
-                    if hook_path.absolute().as_posix() not in injected_hooks:
-                        container_hook_path = '/opt/kernel/lib{}{}.so'.format(
-                            computer_set.klass.key, secrets.token_hex(6),
+                if mount.is_unmanaged or not self.vfolder_as_pvc:
+                    name = (
+                        str(ctx.kernel_id) + '-' +
+                        str(mount.source.absolute().as_posix()).split('/')[-1]
+                    ).replace('.', '-')
+                    deployment.mount_hostpath(
+                        HostPathMountSpec(
+                            name,
+                            mount.source.absolute().as_posix(),
+                            mount.target,
+                            'Directory',
+                            fix_unsupported_perm(mount.permission).value,
                         )
-                        _mount(kernel_id, hook_path.absolute().as_posix(), container_hook_path, 'File',
-                               perm='ro')
-                        environ['LD_PRELOAD'] += ':' + container_hook_path
-                        injected_hooks.append(hook_path.absolute().as_posix())
+                    )
+                else:
+                    deployment.mount_vfolder_pvc(
+                        PVCMountSpec(
+                            mount.source.absolute().as_posix(),
+                            mount.target,
+                            'Directory',
+                            fix_unsupported_perm(mount.permission).value,
+                        )
+                    )
 
+    async def create_kernel__spawn(
+        self,
+        ctx: K8sKernelCreationContext,
+        resource_spec: KernelResourceSpec,
+        resource_opts,
+        environ: Mapping[str, str],
+        service_ports,
+        preopen_ports,
+        cmdargs: List[str],
+    ) -> K8sKernel:
+        # TODO
+        assert ctx.deployment is not None
+
+        # k8s-specific-marker: kubelet slot type
         # Request additional resources to Kubelet
+        slots = resource_spec.slots
         for slot_type in slots.keys():
             if slot_type not in ['cpu', 'mem']:
-                deployment.append_resource(f'backend.ai/{slot_type}', int(slots[slot_type]))
+                ctx.deployment.append_resource(f'backend.ai/{slot_type}', int(slots[slot_type]))
 
         # PHASE 3: Store the resource spec as plain text, and store it to ConfigMap later.
 
@@ -698,96 +598,42 @@ class K8sAgent(AbstractAgent):
             for k, v in kvpairs.items():
                 resource_txt += f'{k}={v}\n'
 
-        environ_txt = ''
-
-        for k, v in environ.items():
-            environ_txt += f'{k}={v}\n'
-
-        attached_devices = {}
-        for dev_name, device_alloc in resource_spec.allocations.items():
-            computer_set = self.computers[dev_name]
-            devices = await computer_set.klass.get_attached_devices(device_alloc)
-            attached_devices[dev_name] = devices
+        environ_txt = "\n".join(f"{k}={v}" for k, v in environ.items())
 
         # PHASE 4: Run!
-        log.info('kernel {0} starting with resource spec: \n',
-                 pformat(attr.asdict(resource_spec)))
-
         exposed_ports = [2000, 2001]
-        service_ports = []
-        port_map = {}
-
-        for sport in parse_service_ports(await self.get_service_ports_from_label(image_ref.canonical)):
-            port_map[sport['name']] = sport
-        for sport in parse_service_ports(image_labels.get('ai.backend.service-ports', '')):
-            port_map[sport['name']] = sport
-        port_map['sshd'] = {
-            'name': 'sshd',
-            'protocol': ServicePortProtocols('tcp'),
-            'container_ports': (2200,),
-            'host_ports': (None,),
-        }
-
-        port_map['ttyd'] = {
-            'name': 'ttyd',
-            'protocol': ServicePortProtocols('http'),
-            'container_ports': (7681,),
-            'host_ports': (None,),
-        }
-        for sport in port_map.values():
-            service_ports.append(sport)
-            for cport in sport['container_ports']:
-                exposed_ports.append(cport)
-
-        log.debug('exposed ports: {!r}', exposed_ports)
-
-        runtime_type = image_labels.get('ai.backend.runtime-type', 'python')
-        runtime_path = image_labels.get('ai.backend.runtime-path', None)
-        cmdargs: List[str] = []
-        if self.config['container']['sandbox-type'] == 'jail':
-            cmdargs += [
-                "/opt/kernel/jail",
-                "-policy", "/etc/backend.ai/jail/policy.yml",
-            ]
-            if self.config['container']['jail-args']:
-                cmdargs += map(lambda s: s.strip(), self.config['container']['jail-args'])
-        cmdargs += [
-            "/opt/backend.ai/bin/python",
-            "-m", "ai.backend.kernel", runtime_type,
-        ]
-        if runtime_path is not None:
-            cmdargs.append(runtime_path)
-
+        for sport in service_ports:
+            exposed_ports.extend(sport['container_ports'])
         cmdargs.append('--debug')
 
         # Prepare ConfigMap to store resource spec
-        configmap = ConfigMap(str(kernel_id), 'configmap')
+        configmap = ConfigMap(str(ctx.kernel_id), 'configmap')
         configmap.put('environ', environ_txt)
         configmap.put('resource', resource_txt)
 
         # Set up appropriate arguments for kernel image
-        deployment.cmd = cmdargs
-        deployment.env = environ
-        deployment.mount_configmap(
+        ctx.deployment.cmd = cmdargs
+        ctx.deployment.env = environ
+        ctx.deployment.mount_configmap(
             ConfigMapMountSpec('environ', configmap.name, 'environ', '/home/config/environ_base.txt')
         )
-        deployment.mount_configmap(
+        ctx.deployment.mount_configmap(
             ConfigMapMountSpec('resource', configmap.name, 'resource', '/home/config/resource_base.txt')
         )
-        deployment.ports = exposed_ports
+        ctx.deployment.ports = exposed_ports
 
         # Create K8s service object to expose REPL port
-        repl_service = Service(str(kernel_id), 'repl', deployment.name,
+        repl_service = Service(str(ctx.kernel_id), 'repl', ctx.deployment.name,
             [(2000, 'repl-in'), (2001, 'repl-out')], service_type='NodePort')
         # Create K8s service object to expose Service port
         expose_service = Service(
-            str(kernel_id), 'expose', deployment.name,
-            [(port['container_ports'][0], f'{kernel_id}-{port["name"]}')
+            str(ctx.kernel_id), 'expose', ctx.deployment.name,
+            [(port['container_ports'][0], f'{ctx.kernel_id}-{port["name"]}')
                 for port in service_ports],
             service_type='NodePort'
         )
 
-        deployment.label('backend.ai/kernel', '')
+        ctx.deployment.label('backend.ai/kernel', '')
 
         # We are all set! Create and start the container.
 
@@ -797,35 +643,35 @@ class K8sAgent(AbstractAgent):
         # Send request to K8s API
         if len(exposed_ports) > 0:
             try:
-                exposed_service_api_response = await k8sCoreApi.create_namespaced_service(
+                exposed_service_api_response = await ctx.k8sCoreApi.create_namespaced_service(
                     'backend-ai', body=expose_service.as_dict()
                 )
                 node_ports = exposed_service_api_response.spec.ports
             except:
                 raise
         try:
-            repl_service_api_response = await k8sCoreApi.create_namespaced_service(
+            repl_service_api_response = await ctx.k8sCoreApi.create_namespaced_service(
                 'backend-ai', body=repl_service.as_dict()
             )
         except:
-            await k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
+            await ctx.k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
             raise
         try:
-            await k8sCoreApi.create_namespaced_config_map(
+            await ctx.k8sCoreApi.create_namespaced_config_map(
                 'backend-ai', body=configmap.as_dict(), pretty='pretty_example'
             )
         except:
-            await k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
-            await k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
+            await ctx.k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
+            await ctx.k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
             raise
         try:
-            await k8sAppsApi.create_namespaced_deployment(
-                'backend-ai', body=deployment.as_dict(), pretty='pretty_example'
+            await ctx.k8sAppsApi.create_namespaced_deployment(
+                'backend-ai', body=ctx.deployment.as_dict(), pretty='pretty_example'
             )
         except:
-            await k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
-            await k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
-            await k8sCoreApi.delete_namespaced_config_map(configmap.name, 'backend-ai')
+            await ctx.k8sCoreApi.delete_namespaced_service(repl_service.name, 'backend-ai')
+            await ctx.k8sCoreApi.delete_namespaced_service(expose_service.name, 'backend-ai')
+            await ctx.k8sCoreApi.delete_namespaced_config_map(configmap.name, 'backend-ai')
             raise
 
         stdin_port = 0
@@ -847,7 +693,7 @@ class K8sAgent(AbstractAgent):
             host_ports = []
             for cport in port['container_ports']:
                 host_ports.append(exposed_port_results[cport])
-            port['host_ports'] =  host_ports
+            port['host_ports'] = host_ports
         # Check NodePort assigend to REPL
         for nodeport in repl_service_api_response.spec.ports:
             if nodeport.target_port == 2000:
@@ -859,16 +705,16 @@ class K8sAgent(AbstractAgent):
 
         # Settings validation
         if repl_in_port == 0:
-            await self.destroy_kernel(_kernel_id, 'nodeport-assign-error')
+            await self.destroy_kernel(ctx.kernel_id, 'nodeport-assign-error')
             raise K8sError('REPL in port not assigned')
         if repl_out_port == 0:
-            await self.destroy_kernel(_kernel_id, 'elb-assign-error')
+            await self.destroy_kernel(ctx.kernel_id, 'elb-assign-error')
             raise K8sError('REPL out port not assigned')
 
         kernel_obj: K8sKernel = await K8sKernel.new(
-            deployment.name,
-            image_ref,
-            version,
+            ctx.deployment.name,
+            ctx.image_ref,
+            ctx.kspec_version,
             config=self.config,
             resource_spec=resource_spec,
             service_ports=service_ports,
@@ -883,23 +729,15 @@ class K8sAgent(AbstractAgent):
             }
         )
         await kernel_obj.scale(1)
-        self.kernel_registry[_kernel_id] = kernel_obj
+        self.kernel_registry[ctx.kernel_id] = kernel_obj
 
-        live_services = await kernel_obj.get_service_apps()
-        if live_services['status'] != 'failed':
-            for live_service in live_services['data']:
-                for service_port in service_ports:
-                    if live_service['name'] == service_port['name']:
-                        service_port.update(live_service)
-                        break
-
-        registry_cm = ConfigMap(str(kernel_id), 'registry')
+        registry_cm = ConfigMap(str(ctx.kernel_id), 'registry')
         registry_cm.put('registry', json.dumps({
             'lang': {
-                'canonical': kernel_config['image']['canonical'],
-                'registry': [kernel_config['image']['registry']['name']]
+                'canonical': ctx.kernel_config['image']['canonical'],
+                'registry': [ctx.kernel_config['image']['registry']['name']]
             },
-            'version': version,  # Int
+            'version': ctx.kspec_version,  # Int
             'repl_in_port': repl_in_port,  # Int
             'repl_out_port': repl_out_port,  # Int
             'stdin_port': stdin_port,    # legacy, Int
@@ -908,29 +746,11 @@ class K8sAgent(AbstractAgent):
             'host_ports': list(exposed_port_results.values()),  # List[Int]
             'resource_spec': resource_spec.write_to_string(),  # JSON
         }))
-
         try:
-            await k8sCoreApi.create_namespaced_config_map('backend-ai', body=registry_cm.as_dict())
+            await ctx.k8sCoreApi.create_namespaced_config_map('backend-ai', body=registry_cm.as_dict())
         except:
             raise K8sError('Registry ConfigMap not saved')
-
-        await self.produce_event('kernel_started', kernel_id)
-
-        log.debug('kernel repl-in address: {0}:{1}', target_node_ip, repl_in_port)
-        log.debug('kernel repl-out address: {0}:{1}', target_node_ip, repl_out_port)
-
-        return {
-            'id': str(_kernel_id),
-            'kernel_host': target_node_ip,
-            'repl_in_port': repl_in_port,
-            'repl_out_port': repl_out_port,
-            'stdin_port': stdin_port,    # legacy
-            'stdout_port': stdout_port,  # legacy
-            'service_ports': service_ports,
-            'container_id': '#',
-            'resource_spec': resource_spec.to_json_serializable_dict(),
-            'attached_devices': attached_devices
-        }
+        return kernel_obj
 
     async def destroy_kernel(self, _kernel_id: KernelId, reason: str) \
             -> Optional[Mapping[MetricKey, MetricValue]]:
