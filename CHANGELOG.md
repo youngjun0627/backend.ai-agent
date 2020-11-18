@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0a4 (2020-11-16)
+----------------------
+
+### Fixes
+* Fire `execution_started` and `execution_finished` events around the code execution routine to work with the new idle checker framework ([#239](https://github.com/lablup/backend.ai-agent/issues/239))
+
+
 20.09.0a3 (2020-11-03)
 ----------------------
 

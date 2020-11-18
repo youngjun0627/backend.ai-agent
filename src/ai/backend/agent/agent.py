@@ -1578,6 +1578,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         if restart_tracker is not None:
             await restart_tracker.done_event.wait()
 
+        await self.produce_event("execution_started", str(kernel_id))
         try:
             kernel_obj = self.kernel_registry[kernel_id]
             result = await kernel_obj.execute(
@@ -1585,6 +1586,9 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                 opts=opts,
                 flush_timeout=flush_timeout,
                 api_version=api_version)
+        except asyncio.CancelledError:
+            await self.produce_event("execution_cancelled", str(kernel_id))
+            raise
         except KeyError:
             # This situation is handled in the lifecycle management subsystem.
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
@@ -1592,7 +1596,10 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
 
         if result['status'] in ('finished', 'exec-timeout'):
             log.debug('_execute({0}) {1}', kernel_id, result['status'])
-        if result['status'] == 'exec-timeout':
+        if result['status'] == 'finished':
+            await self.produce_event("execution_finished", str(kernel_id))
+        elif result['status'] == 'exec-timeout':
+            await self.produce_event("execution_timeout", str(kernel_id))
             await self.inject_container_lifecycle_event(
                 kernel_id,
                 LifecycleEvent.DESTROY,
