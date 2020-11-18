@@ -229,6 +229,7 @@ async def health_check(request: web.Request) -> web.Response:
     result = {
         'id': agent_id,
         'type': 'agent',
+        'host': f'{agent_config["rpc-listen-addr"]["host"]}:{agent_config["rpc-listen-addr"]["port"]}',
         'version': VERSION,
     }
     result.update(await host_health_check())
