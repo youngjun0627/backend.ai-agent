@@ -75,7 +75,7 @@ from .kernel import DockerKernel
 from .resources import detect_resources
 from ..exception import UnsupportedResource, InsufficientResource
 from ..fs import create_scratch_filesystem, destroy_scratch_filesystem
-from ..kernel import match_krunner_volume, KernelFeatures
+from ..kernel import match_distro_data, KernelFeatures
 from ..resources import (
     Mount,
     KernelResourceSpec,
@@ -573,17 +573,17 @@ class DockerAgent(AbstractAgent):
 
         # Inject Backend.AI kernel runner dependencies.
         distro = image_labels.get('ai.backend.base-distro', 'ubuntu16.04')
-        matched_distro, krunner_volume = match_krunner_volume(
+        matched_distro, krunner_volume = match_distro_data(
             self.local_config['container']['krunner-volumes'], distro)
         matched_libc_style = 'glibc'
-        if matched_distro.startswith('alpine'):
+        if distro.startswith('alpine'):
             matched_libc_style = 'musl'
         krunner_pyver = '3.6'  # fallback
         if m := re.search(r'^([a-z]+)\d+(\.\d+)*$', matched_distro):
-            matched_distro_type = m.group(1)
+            matched_distro_pkgname = m.group(1).replace('-', '_')
             try:
                 krunner_pyver = Path(pkg_resources.resource_filename(
-                    f'ai.backend.krunner.{matched_distro_type}',
+                    f'ai.backend.krunner.{matched_distro_pkgname}',
                     f'krunner-python.{matched_distro}.txt',
                 )).read_text().strip()
             except FileNotFoundError:
@@ -595,32 +595,44 @@ class DockerAgent(AbstractAgent):
         arch = platform.machine()
         entrypoint_sh_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '../runner/entrypoint.sh'))
-        if matched_distro == 'centos6.10':
-            # special case for image importer kernel (manylinux2010 is based on CentOS 6)
-            suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', f'su-exec.centos7.6.{arch}.bin'))
-            hook_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', f'libbaihook.centos7.6.{arch}.so'))
-            sftp_server_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner',
-                f'sftp-server.centos7.6.{arch}.bin'))
-            scp_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner',
-                f'scp.centos7.6.{arch}.bin'))
-        else:
-            suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', f'su-exec.{matched_distro}.{arch}.bin'))
-            hook_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', f'libbaihook.{matched_distro}.{arch}.so'))
-            sftp_server_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner',
-                f'sftp-server.{matched_distro}.{arch}.bin'))
-            scp_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner',
-                f'scp.{matched_distro}.{arch}.bin'))
+        artifact_path = entrypoint_sh_path.parent
+
+        def find_artifacts(pattern: str) -> Mapping[str, str]:
+            artifacts = {}
+            for p in artifact_path.glob(pattern):
+                m = self._rx_distro.search(p.name)
+                if m is not None:
+                    artifacts[m.group(1)] = p.name
+            return artifacts
+
+        suexec_candidates = find_artifacts(f"su-exec.*.{arch}.bin")
+        _, suexec_candidate = match_distro_data(suexec_candidates, distro)
+        suexec_path = Path(pkg_resources.resource_filename(
+            'ai.backend.runner', suexec_candidate))
+
+        hook_candidates = find_artifacts(f"libbaihook.*.{arch}.so")
+        _, hook_candidate = match_distro_data(hook_candidates, distro)
+        hook_path = Path(pkg_resources.resource_filename(
+            'ai.backend.runner', hook_candidate))
+
+        sftp_server_candidates = find_artifacts(f"sftp-server.*.{arch}.bin")
+        _, sftp_server_candidate = match_distro_data(sftp_server_candidates, distro)
+        sftp_server_path = Path(pkg_resources.resource_filename(
+            'ai.backend.runner', sftp_server_candidate))
+
+        scp_candidates = find_artifacts(f"scp.*.{arch}.bin")
+        _, scp_candidate = match_distro_data(scp_candidates, distro)
+        scp_path = Path(pkg_resources.resource_filename(
+            'ai.backend.runner', scp_candidate))
+
+        jail_path: Optional[Path]
         if self.local_config['container']['sandbox-type'] == 'jail':
+            jail_candidates = find_artifacts(f"jail.*.{arch}.bin")
+            _, jail_candidate = match_distro_data(jail_candidates, distro)
             jail_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', f'jail.{matched_distro}.bin'))
+                'ai.backend.runner', jail_candidate))
+        else:
+            jail_path = None
         kernel_pkg_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent', '')).parent / 'kernel'
         helpers_pkg_path = Path(pkg_resources.resource_filename(
@@ -650,7 +662,7 @@ class DockerAgent(AbstractAgent):
         _mount(MountTypes.BIND, dotfile_extractor_path.resolve(), '/opt/kernel/extract_dotfiles.py')
         _mount(MountTypes.BIND, entrypoint_sh_path.resolve(), '/opt/kernel/entrypoint.sh')
         _mount(MountTypes.BIND, suexec_path.resolve(), '/opt/kernel/su-exec')
-        if self.local_config['container']['sandbox-type'] == 'jail':
+        if jail_path is not None:
             _mount(MountTypes.BIND, jail_path.resolve(), '/opt/kernel/jail')
         _mount(MountTypes.BIND, hook_path.resolve(), '/opt/kernel/libbaihook.so')
         _mount(MountTypes.BIND, dropbear_path.resolve(), '/opt/kernel/dropbear')

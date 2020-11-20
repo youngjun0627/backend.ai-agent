@@ -16,6 +16,7 @@ from typing import (
 
 from aiodocker.docker import Docker, DockerVolume
 from aiodocker.exceptions import DockerError
+from aiotools import TaskGroup
 
 from ai.backend.common.docker import ImageRef
 from ai.backend.common.logging import BraceStyleAdapter
@@ -225,9 +226,12 @@ class DockerCodeRunner(AbstractCodeRunner):
 
 
 async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
-    if (m := re.search(r'^([a-z]+)\d+\.\d+$', distro)) is None:
-        raise ValueError('Unrecognized "distro[version]" format string.')
-    distro_name = m.group(1)
+    if distro.startswith('static-'):
+        distro_name = distro.replace('-', '_')  # pkg/mod name use underscores
+    else:
+        if (m := re.search(r'^([a-z]+)\d+\.\d+$', distro)) is None:
+            raise ValueError('Unrecognized "distro[version]" format string.')
+        distro_name = m.group(1)
     docker = Docker()
     arch = platform.machine()
     current_version = int(Path(
@@ -295,11 +299,11 @@ async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
 
 
 async def prepare_krunner_env(local_config: Mapping[str, Any]) -> Mapping[str, Sequence[str]]:
-    '''
+    """
     Check if the volume "backendai-krunner.{distro}.{arch}" exists and is up-to-date.
     If not, automatically create it and update its content from the packaged pre-built krunner
     tar archives.
-    '''
+    """
 
     all_distros = []
     entry_prefix = 'backendai_krunner_v10'
@@ -314,9 +318,10 @@ async def prepare_krunner_env(local_config: Mapping[str, Any]) -> Mapping[str, S
         all_distros.extend(provided_versions)
 
     tasks = []
-    for distro in all_distros:
-        tasks.append(prepare_krunner_env_impl(distro))
-    distro_volumes = await asyncio.gather(*tasks)
+    async with TaskGroup() as tg:
+        for distro in all_distros:
+            tasks.append(tg.create_task(prepare_krunner_env_impl(distro)))
+    distro_volumes = [t.result() for t in tasks if not t.cancelled()]
     result = {}
     for distro_name_and_version, volume_name in distro_volumes:
         if volume_name is None:

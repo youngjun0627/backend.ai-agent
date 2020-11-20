@@ -109,7 +109,7 @@ class ComputerContext:
 class AbstractAgent(aobject, metaclass=ABCMeta):
 
     loop: asyncio.AbstractEventLoop
-    config: Mapping[str, Any]
+    local_config: Mapping[str, Any]
     etcd: AsyncEtcd
     agent_id: str
     kernel_registry: MutableMapping[KernelId, AbstractKernel]
@@ -161,6 +161,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         ))
         self.stats_monitor = stats_monitor
         self.error_monitor = error_monitor
+        self._rx_distro = re.compile(r"\.([a-z-]+\d+\.\d+)\.")
 
     async def __ainit__(self) -> None:
         """
@@ -723,8 +724,13 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
                      dict(computer_ctx.alloc_map.allocations))
 
     @abstractmethod
-    async def create_kernel(self, kernel_id: KernelId, config: KernelCreationConfig, *,
-                            restarting: bool = False) -> KernelCreationResult:
+    async def create_kernel(
+        self,
+        kernel_id: KernelId,
+        config: KernelCreationConfig,
+        *,
+        restarting: bool = False,
+    ) -> KernelCreationResult:
         """
         Create a new kernel.
 
