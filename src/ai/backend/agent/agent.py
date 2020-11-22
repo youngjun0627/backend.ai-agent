@@ -7,6 +7,7 @@ from io import BytesIO, SEEK_END
 import logging
 from pathlib import Path
 import pickle
+import re
 import signal
 import time
 from typing import (
