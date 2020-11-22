@@ -229,7 +229,6 @@ class DockerCodeRunner(AbstractCodeRunner):
 
 
 async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
-    print(distro)
     if distro.startswith('static-'):
         distro_name = distro.replace('-', '_')  # pkg/mod name use underscores
     else:
