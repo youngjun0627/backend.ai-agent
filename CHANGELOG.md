@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.03.7 (2020-11-23)
+--------------------
+
+### Fixes
+* Fix a regression to spawning GPU sessions, by passing the original container distribution value (taken from image labels, e.g., `ubuntu16.04`) to compute plugins' `get_hooks()` method instead of the matched result (e.g., `static-gnu`) since the responsibility of choosing the optimal hook binary is on the plugin itself. ([#243](https://github.com/lablup/backend.ai-agent/issues/243))
+
+
 20.03.6 (2020-11-23)
 --------------------
 
