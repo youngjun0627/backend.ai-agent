@@ -16,6 +16,16 @@ Changes
 
 .. towncrier release notes start
 
+20.03.6 (2020-11-23)
+--------------------
+
+### Features
+* Improve compatibility with arbitrary Linux containers by using a statically built Python for kernel-runners compatible with manylinux2010, which eliminates, for instance, OpenSSL dependency in the containers ([#242](https://github.com/lablup/backend.ai-agent/issues/242))
+
+### Misc
+* Backport aiohttp, aiotools and other dependency version updates
+
+
 20.03.5 (2020-10-24)
 --------------------
 
