@@ -996,38 +996,25 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                     artifacts[m.group(1)] = p.name
             return artifacts
 
-        if matched_distro == 'centos6.10':
-            # special case for image importer kernel (manylinux2010 is based on CentOS 6)
-            suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', f'su-exec.centos7.6.{arch}.bin'))
-            hook_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', f'libbaihook.centos7.6.{arch}.so'))
-            sftp_server_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner',
-                f'sftp-server.centos7.6.{arch}.bin'))
-            scp_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner',
-                f'scp.centos7.6.{arch}.bin'))
-        else:
-            suexec_candidates = find_artifacts(f"su-exec.*.{arch}.bin")
-            _, suexec_candidate = match_distro_data(suexec_candidates, distro)
-            suexec_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', suexec_candidate))
+        suexec_candidates = find_artifacts(f"su-exec.*.{arch}.bin")
+        _, suexec_candidate = match_distro_data(suexec_candidates, distro)
+        suexec_path = Path(pkg_resources.resource_filename(
+            'ai.backend.runner', suexec_candidate))
 
-            hook_candidates = find_artifacts(f"libbaihook.*.{arch}.so")
-            _, hook_candidate = match_distro_data(hook_candidates, distro)
-            hook_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', hook_candidate))
+        hook_candidates = find_artifacts(f"libbaihook.*.{arch}.so")
+        _, hook_candidate = match_distro_data(hook_candidates, distro)
+        hook_path = Path(pkg_resources.resource_filename(
+            'ai.backend.runner', hook_candidate))
 
-            sftp_server_candidates = find_artifacts(f"sftp-server.*.{arch}.bin")
-            _, sftp_server_candidate = match_distro_data(sftp_server_candidates, distro)
-            sftp_server_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', sftp_server_candidate))
+        sftp_server_candidates = find_artifacts(f"sftp-server.*.{arch}.bin")
+        _, sftp_server_candidate = match_distro_data(sftp_server_candidates, distro)
+        sftp_server_path = Path(pkg_resources.resource_filename(
+            'ai.backend.runner', sftp_server_candidate))
 
-            scp_candidates = find_artifacts(f"scp.*.{arch}.bin")
-            _, scp_candidate = match_distro_data(scp_candidates, distro)
-            scp_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner', scp_candidate))
+        scp_candidates = find_artifacts(f"scp.*.{arch}.bin")
+        _, scp_candidate = match_distro_data(scp_candidates, distro)
+        scp_path = Path(pkg_resources.resource_filename(
+            'ai.backend.runner', scp_candidate))
 
         jail_path: Optional[Path]
         if self.local_config['container']['sandbox-type'] == 'jail':
@@ -1095,7 +1082,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             for dev_id, per_dev_alloc in device_alloc.items():
                 alloc_sum += sum(per_dev_alloc.values())
             if alloc_sum > 0:
-                hook_paths = await computer_set.instance.get_hooks(matched_distro, arch)
+                hook_paths = await computer_set.instance.get_hooks(distro, arch)
                 if hook_paths:
                     log.debug('accelerator {} provides hooks: {}',
                               type(computer_set.instance).__name__,
