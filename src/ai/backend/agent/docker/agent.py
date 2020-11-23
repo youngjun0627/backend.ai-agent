@@ -579,7 +579,7 @@ class DockerAgent(AbstractAgent):
         if distro.startswith('alpine'):
             matched_libc_style = 'musl'
         krunner_pyver = '3.6'  # fallback
-        if m := re.search(r'^([a-z]+)\d+(\.\d+)*$', matched_distro):
+        if m := re.search(r'^([a-z-]+)(\d+(\.\d+)*)?$', matched_distro):
             matched_distro_pkgname = m.group(1).replace('-', '_')
             try:
                 krunner_pyver = Path(pkg_resources.resource_filename(
