@@ -713,7 +713,7 @@ class DockerAgent(AbstractAgent):
             for dev_id, per_dev_alloc in device_alloc.items():
                 alloc_sum += sum(per_dev_alloc.values())
             if alloc_sum > 0:
-                hook_paths = await computer_set.instance.get_hooks(matched_distro, arch)
+                hook_paths = await computer_set.instance.get_hooks(distro, arch)
                 if hook_paths:
                     log.debug('accelerator {} provides hooks: {}',
                               type(computer_set.instance).__name__,
