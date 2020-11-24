@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ import trafaret as t
 from ai.backend.common import config, identity, utils, validators as tx
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
-from ai.backend.common.utils import Fstab, host_health_check
+from ai.backend.common.host import Fstab, host_health_check
 from . import __version__ as VERSION
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.watcher'))
@@ -237,33 +238,48 @@ async def health_check(request: web.Request) -> web.Response:
     # Parse NVIDIA GPU status
     # TODO: better parsing method?
     proc = await asyncio.create_subprocess_exec(
-        'nvidia-smi',
+        *['nvidia-smi', '--format=csv',
+         ('--query-gpu=index,name,uuid,driver_version,memory.total,'
+          'memory.used,utilization.gpu,utilization.memory'),
+         '--no-units'],
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     raw_out, raw_err = await proc.communicate()
-    out = raw_out.decode('utf-8')
-    err = raw_err.decode('utf-8')
+    out = raw_out.decode('utf-8').strip()
+    err = raw_err.decode('utf-8').strip()
     nvidia_info: dict = {}
     if err and 'command not found' in err:
-        # no-GPU agent
-        nvidia_info = {}
+        nvidia_info = {}  # not a GPU agent
     elif err:
         nvidia_info = {
             'status': 'error',
             'message': 'check NVIDIA GPU status',
         }
-    elif 'NVIDIA-SMI' in out:
+
+    gpu_details = []
+    for gpu_info in out.split('\n')[1:]:
+        gpu_items = gpu_info.split(', ')
+        gpu_details.append({
+            'index': gpu_items[0],
+            'name': gpu_items[1],
+            'uuid': gpu_items[2],
+            'driver_version': gpu_items[3],
+            'mem_total': gpu_items[4],
+            'mem_used': gpu_items[5],
+            'util_gpu': gpu_items[6],
+            'util_mem': gpu_items[7],
+        })
+    if gpu_details:
         nvidia_info = {
             'status': 'ok',
-            'message': '',
+            'message': json.dumps(gpu_details),
         }
     else:
         nvidia_info = {
             'status': 'warning',
             'message': 'unknown GPU status',
         }
-    result['nvidia'] = nvidia_info
     if nvidia_info:
         result['nvidia'] = nvidia_info
     return web.json_response(result)
