@@ -1,0 +1,1 @@
+Let dropbear (intrinsic in-container ssh client) skip checks for the host fingerprints when connecting to other hosts in the same cluster
