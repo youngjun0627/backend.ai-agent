@@ -1,0 +1,1 @@
+Keep the hook filenames consistent to support distributed computing apps such as Horovod that comes with config propagation

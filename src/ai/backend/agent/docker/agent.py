@@ -729,9 +729,7 @@ class DockerAgent(AbstractAgent):
                               type(computer_set.instance).__name__,
                               ', '.join(map(str, hook_paths)))
                 for hook_path in hook_paths:
-                    container_hook_path = '/opt/kernel/lib{}{}.so'.format(
-                        computer_set.instance.key, secrets.token_hex(6),
-                    )
+                    container_hook_path = f"/opt/kernel/{hook_path.name}"
                     _mount(MountTypes.BIND, hook_path, container_hook_path)
                     environ['LD_PRELOAD'] += ':' + container_hook_path
 
