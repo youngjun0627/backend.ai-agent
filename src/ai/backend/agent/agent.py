@@ -11,7 +11,6 @@ import pickle
 import pkg_resources
 import platform
 import re
-import secrets
 import signal
 from typing import (
     Any,
@@ -1090,9 +1089,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                 for hook_path in map(lambda p: Path(p).absolute(), hook_paths):
                     if hook_path in already_injected_hooks:
                         continue
-                    container_hook_path = '/opt/kernel/lib{}{}.so'.format(
-                        computer_set.instance.key, secrets.token_hex(6),
-                    )
+                    container_hook_path = f"/opt/kernel/{hook_path.name}"
                     _mount(MountTypes.BIND, hook_path, container_hook_path, is_unmanaged=True)
                     environ['LD_PRELOAD'] += ':' + container_hook_path
                     already_injected_hooks.add(hook_path)
