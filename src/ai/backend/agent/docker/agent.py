@@ -73,6 +73,7 @@ from ai.backend.common.types import (
 from ai.backend.common.utils import AsyncFileWriter, current_loop
 from .kernel import DockerKernel
 from .resources import detect_resources
+from .utils import PersistentServiceContainer
 from ..exception import UnsupportedResource, InsufficientResource
 from ..fs import create_scratch_filesystem, destroy_scratch_filesystem
 from ..kernel import match_distro_data, KernelFeatures
@@ -184,7 +185,31 @@ class DockerAgent(AbstractAgent):
             log.info('running with Docker {0} with API {1}',
                      docker_version['Version'], docker_version['ApiVersion'])
         await super().__ainit__()
-        self.agent_sockpath = ipc_base_path / f'agent.{self.agent_id}.sock'
+        (ipc_base_path / 'container').mkdir(parents=True, exist_ok=True)
+        self.agent_sockpath = ipc_base_path / 'container' / f'agent.{self.agent_id}.sock'
+        socket_relay_container = PersistentServiceContainer(
+            self.docker,
+            'backendai-socket-relay:latest',
+            {
+                'Cmd': [
+                    f"UNIX-LISTEN:/ipc/{self.agent_sockpath.name},unlink-early,fork,mode=777",
+                    f"TCP-CONNECT:127.0.0.1:{self.local_config['agent']['agent-sock-port']}",
+                ],
+                'HostConfig': {
+                    'Mounts': [
+                        {
+                            'Type': 'bind',
+                            'Source': '/tmp/backend.ai/ipc/container',
+                            'Target': '/ipc',
+                        },
+                    ],
+                    'NetworkMode': 'host',
+                },
+            },
+        )
+        await socket_relay_container.ensure_running_latest()
+        # TODO: deploy/check the socat container to relay the UNIX-based agent socket
+        #       to the TCP-based agent socket.
         self.agent_sock_task = asyncio.create_task(self.handle_agent_socket())
         self.monitor_docker_task = asyncio.create_task(self.monitor_docker_events())
 
@@ -284,22 +309,9 @@ class DockerAgent(AbstractAgent):
 
         All strings are UTF-8 encoded.
         '''
-        my_uid = os.geteuid()
-        my_gid = os.getegid()
-        kernel_uid = self.local_config['container']['kernel-uid']
-        kernel_gid = self.local_config['container']['kernel-gid']
         try:
             agent_sock = self.zmq_ctx.socket(zmq.REP)
-            agent_sock.bind(f'ipc://{self.agent_sockpath}')
-            if my_uid == 0:
-                os.chown(self.agent_sockpath, kernel_uid, kernel_gid)
-            else:
-                if my_uid != kernel_uid:
-                    log.error('The UID of agent ({}) must be same to the container UID ({}).',
-                              my_uid, kernel_uid)
-                if my_gid != kernel_gid:
-                    log.error('The GID of agent ({}) must be same to the container GID ({}).',
-                              my_gid, kernel_gid)
+            agent_sock.bind(f"tcp://127.0.0.1:{self.local_config['agent']['agent-sock-port']}")
             while True:
                 msg = await agent_sock.recv_multipart()
                 if not msg:
