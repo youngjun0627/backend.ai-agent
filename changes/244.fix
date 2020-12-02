@@ -1,1 +1,0 @@
-Fix hangs of existing containers which access the agent socket after agent restarts due to the dangling inode, by running a persistent socat container to relay the mounted UNIX sockets and the agent socket bound to a local TCP port

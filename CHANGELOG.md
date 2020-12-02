@@ -16,6 +16,14 @@ Changes
 
 .. towncrier release notes start
 
+20.03.8 (2020-12-02)
+--------------------
+
+### Fixes
+* Fix hangs of existing containers which access the agent socket after agent restarts due to the dangling inode, by running a persistent socat container to relay the mounted UNIX sockets and the agent socket bound to a local TCP port ([#244](https://github.com/lablup/backend.ai-agent/issues/244))
+* Keep the hook filenames consistent to support distributed computing apps such as Horovod that comes with config propagation ([#246](https://github.com/lablup/backend.ai-agent/issues/246))
+
+
 20.03.7 (2020-11-23)
 --------------------
 
