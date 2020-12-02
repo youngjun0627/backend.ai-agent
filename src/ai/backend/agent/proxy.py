@@ -32,8 +32,7 @@ async def proxy_connection(upper_sock_path: Path,
             pass
         finally:
             down_writer.close()
-            # TODO: uncomment in Python 3.7+
-            # await down_writer.wait_closed()
+            await down_writer.wait_closed()
             await asyncio.sleep(0)
 
     async def _upstream():
@@ -48,8 +47,7 @@ async def proxy_connection(upper_sock_path: Path,
             pass
         finally:
             up_writer.close()
-            # TODO: uncomment in Python 3.7+
-            # await up_writer.wait_closed()
+            await up_writer.wait_closed()
             await asyncio.sleep(0)
 
     loop = current_loop()
