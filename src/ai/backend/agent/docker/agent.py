@@ -208,8 +208,6 @@ class DockerAgent(AbstractAgent):
             },
         )
         await socket_relay_container.ensure_running_latest()
-        # TODO: deploy/check the socat container to relay the UNIX-based agent socket
-        #       to the TCP-based agent socket.
         self.agent_sock_task = asyncio.create_task(self.handle_agent_socket())
         self.monitor_docker_task = asyncio.create_task(self.monitor_docker_events())
 
