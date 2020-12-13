@@ -18,6 +18,10 @@ rpc-listen-addr = { host = "", port = 6001 }
 # env: BACKEND_AGENT_HOST_OVERRIDE
 # env: BACKEND_AGENT_PORT
 
+# The port number of agent socket which provides access to host-side information
+# to the containers (such as PID conversion).
+agent-sock-port = 6007
+
 # Override the name of this agent.
 # If empty or unspecified, the agent builds this from the hostname by prefixing it with "i-",
 # like "i-hostname".  The "i-" prefix is not mandatory, though.

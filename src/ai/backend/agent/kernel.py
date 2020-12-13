@@ -830,15 +830,15 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
                 break
 
 
-def match_krunner_volume(krunner_volumes: Mapping[str, Sequence[str]], distro: str) -> Tuple[str, Any]:
-    '''
+def match_distro_data(data: Mapping[str, Any], distro: str) -> Tuple[str, Any]:
+    """
     Find the latest or exactly matching entry from krunner_volumes mapping using the given distro
     string expression.
 
     It assumes that the keys of krunner_volumes mapping is a string concatenated with a distro
     prefix (e.g., "centos", "ubuntu") and a distro version composed of multiple integer components
     joined by single dots (e.g., "1.2.3", "18.04").
-    '''
+    """
     rx_ver_suffix = re.compile(r'(\d+(\.\d+)*)$')
     m = rx_ver_suffix.search(distro)
     if m is None:
@@ -848,9 +848,20 @@ def match_krunner_volume(krunner_volumes: Mapping[str, Sequence[str]], distro: s
     else:
         distro_prefix = distro[:-len(m.group(1))]
         distro_ver = m.group(1)
-    krunner_volume_list = [
-        (distro_key, volume)
-        for distro_key, volume in krunner_volumes.items()
+
+    # Check if there are static-build krunners first.
+    if distro_prefix == 'alpine':
+        libc_flavor = 'musl'
+    else:
+        libc_flavor = 'gnu'
+    distro_key = f'static-{libc_flavor}'
+    if volume := data.get(distro_key):
+        return distro_key, volume
+
+    # Search through the per-distro versions
+    match_list = [
+        (distro_key, value)
+        for distro_key, value in data.items()
         if distro_key.startswith(distro_prefix)
     ]
 
@@ -860,14 +871,14 @@ def match_krunner_volume(krunner_volumes: Mapping[str, Sequence[str]], distro: s
             return tuple(map(int, m.group(1).split('.')))
         return (0,)
 
-    krunner_volume_list = sorted(
-        krunner_volume_list,
+    match_list = sorted(
+        match_list,
         key=_extract_version,
         reverse=True)
-    if krunner_volume_list:
+    if match_list:
         if distro_ver is None:
-            return krunner_volume_list[0]
-        for distro_key, volume in krunner_volume_list:
+            return match_list[0]
+        for distro_key, value in match_list:
             if distro_key == distro:
-                return (distro_key, volume)
-    raise RuntimeError('krunner volume not found', distro)
+                return (distro_key, value)
+    raise RuntimeError('no match found', distro)

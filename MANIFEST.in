@@ -1,1 +1,3 @@
 include src/ai/backend/runner/*
+include src/ai/backend/agent/docker/*.tar.gz
+include src/ai/backend/agent/docker/*.version.txt

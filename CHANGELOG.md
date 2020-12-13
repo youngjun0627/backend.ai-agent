@@ -16,6 +16,19 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0a5 (2020-12-02)
+----------------------
+
+### Features
+* Improve compatibility with arbitrary Linux containers by using a statically built Python for kernel-runners compatible with manylinux2010, which eliminates, for instance, OpenSSL dependency in the containers ([#242](https://github.com/lablup/backend.ai-agent/issues/242))
+
+### Fixes
+* Fix a regression to spawning GPU sessions, by passing the original container distribution value (taken from image labels, e.g., `ubuntu16.04`) to compute plugins' `get_hooks()` method instead of the matched result (e.g., `static-gnu`) since the responsibility of choosing the optimal hook binary is on the plugin itself. ([#243](https://github.com/lablup/backend.ai-agent/issues/243))
+* Fix hangs of existing containers which access the agent socket after agent restarts due to the dangling inode, by running a persistent socat container to relay the mounted UNIX sockets and the agent socket bound to a local TCP port ([#244](https://github.com/lablup/backend.ai-agent/issues/244))
+* Let dropbear (intrinsic in-container ssh client) skip checks for the host fingerprints when connecting to other hosts in the same cluster ([#245](https://github.com/lablup/backend.ai-agent/issues/245))
+* Keep the hook filenames consistent to support distributed computing apps such as Horovod that comes with config propagation ([#246](https://github.com/lablup/backend.ai-agent/issues/246))
+
+
 20.09.0a4 (2020-11-16)
 ----------------------
 

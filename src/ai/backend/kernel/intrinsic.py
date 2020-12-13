@@ -85,6 +85,7 @@ async def init_sshd_service(child_env):
             with open(user_ssh_config_path, 'a') as f:
                 f.write(f"\nHost {role_name}*\n")
                 f.write("\tPort 2200\n")
+                f.write("\tStrictHostKeyChecking no\n")
                 f.write("\tIdentityFile /home/config/ssh/id_cluster\n")
     cluster_pubkey_src_path = Path('/home/config/ssh/id_cluster.pub')
     if cluster_pubkey_src_path.is_file():

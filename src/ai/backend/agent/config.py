@@ -21,6 +21,7 @@ agent_local_config_iv = t.Dict({
         tx.AliasedKey(['backend', 'mode']): tx.Enum(AgentBackend),
         t.Key('rpc-listen-addr', default=('', 6001)):
             tx.HostPortPair(allow_blank_host=True),
+        t.Key('agent-sock-port', default=6007): t.Int[1024:65535],
         t.Key('id', default=None): t.Null | t.String,
         t.Key('region', default=None): t.Null | t.String,
         t.Key('instance-type', default=None): t.Null | t.String,
