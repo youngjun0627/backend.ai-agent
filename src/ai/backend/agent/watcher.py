@@ -1,4 +1,6 @@
 import asyncio
+import csv
+from io import StringIO
 import json
 import logging
 import os
@@ -258,22 +260,25 @@ async def health_check(request: web.Request) -> web.Response:
         }
 
     gpu_details = []
-    for gpu_info in out.split('\n')[1:]:
-        gpu_items = gpu_info.split(', ')
+    csv_reader = csv.reader(StringIO(out), delimiter=',')
+    next(csv_reader)
+    for row in csv_reader:
+        row = [x.strip() for x in row]
         gpu_details.append({
-            'index': gpu_items[0],
-            'name': gpu_items[1],
-            'uuid': gpu_items[2],
-            'driver_version': gpu_items[3],
-            'mem_total': gpu_items[4],
-            'mem_used': gpu_items[5],
-            'util_gpu': gpu_items[6],
-            'util_mem': gpu_items[7],
+            'index': row[0],
+            'name': row[1],
+            'uuid': row[2],
+            'driver_version': row[3],
+            'mem_total': row[4],
+            'mem_used': row[5],
+            'util_gpu': row[6],
+            'util_mem': row[7],
         })
     if gpu_details:
         nvidia_info = {
             'status': 'ok',
-            'message': json.dumps(gpu_details),
+            'message': '',
+            'details': json.dumps(gpu_details),
         }
     else:
         nvidia_info = {
