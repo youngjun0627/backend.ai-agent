@@ -1,0 +1,1 @@
+Update `AbstractAllocMap` interface to have explicit per-slot/per-device resource metadata, unifying prior allocmap-sepcific init args, and thus all compute plugins must be updated to instantiate alloc maps properly though the plugin interface itself has not been changed

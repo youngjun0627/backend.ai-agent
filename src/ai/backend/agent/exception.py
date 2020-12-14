@@ -2,11 +2,23 @@ class InitializationError(Exception):
     pass
 
 
-class UnsupportedResource(Exception):
+class ResourceError(ValueError):
     pass
 
 
-class InsufficientResource(Exception):
+class UnsupportedResource(ResourceError):
+    pass
+
+
+class InvalidResourceCombination(ResourceError):
+    pass
+
+
+class InvalidResourceArgument(ResourceError):
+    pass
+
+
+class InsufficientResource(ResourceError):
     pass
 
 

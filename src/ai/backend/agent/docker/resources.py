@@ -7,6 +7,8 @@ from typing import (
     Tuple,
 )
 
+import aiofiles
+
 from ai.backend.common.etcd import AsyncEtcd
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.types import (
@@ -90,8 +92,7 @@ async def detect_resources(
 async def get_resource_spec_from_container(container_info) -> Optional[KernelResourceSpec]:
     for mount in container_info['HostConfig']['Mounts']:
         if mount['Target'] == '/home/config':
-            with open(Path(mount['Source']) / 'resource.txt', 'r') as f:
-                return KernelResourceSpec.read_from_file(f)
-            break
+            async with aiofiles.open(Path(mount['Source']) / 'resource.txt', 'r') as f:  # type: ignore
+                return await KernelResourceSpec.aread_from_file(f)
     else:
         return None

@@ -34,7 +34,7 @@ from .resources import (
 )
 from .. import __version__
 from ..resources import (
-    AbstractAllocMap,
+    AbstractAllocMap, DeviceSlotInfo,
     DiscretePropertyAllocMap,
     AbstractComputeDevice,
     AbstractComputePlugin,
@@ -50,8 +50,8 @@ log = BraceStyleAdapter(logging.getLogger(__name__))
 
 
 async def fetch_api_stats(container: DockerContainer) -> Optional[Dict[str, Any]]:
+    short_cid = container._id[:7]
     try:
-        short_cid = container._id[:7]
         ret = await container.stats(stream=False)  # TODO: cache
     except RuntimeError as e:
         msg = str(e.args[0]).lower()
@@ -198,6 +198,8 @@ class CPUPlugin(AbstractComputePlugin):
             impl = sysfs_impl
         elif ctx.mode == StatModes.DOCKER:
             impl = api_impl
+        else:
+            raise RuntimeError("should not reach here")
 
         q = Decimal('0.000')
         per_container_cpu_used = {}
@@ -229,8 +231,12 @@ class CPUPlugin(AbstractComputePlugin):
     async def create_alloc_map(self) -> AbstractAllocMap:
         devices = await self.list_devices()
         return DiscretePropertyAllocMap(
-            devices=devices,
-            prop_func=lambda dev: dev.processing_units)
+            device_slots={
+                dev.device_id:
+                    DeviceSlotInfo(SlotTypes.COUNT, SlotName('cpu'), Decimal(dev.processing_units))
+                for dev in devices
+            },
+        )
 
     async def get_hooks(self, distro: str, arch: str) -> Sequence[Path]:
         # TODO: move the sysconf hook in libbaihook.so here
@@ -472,6 +478,8 @@ class MemoryPlugin(AbstractComputePlugin):
             impl = sysfs_impl
         elif ctx.mode == StatModes.DOCKER:
             impl = api_impl
+        else:
+            raise RuntimeError("should not reach here")
 
         per_container_mem_used_bytes = {}
         per_container_io_read_bytes = {}
@@ -526,8 +534,12 @@ class MemoryPlugin(AbstractComputePlugin):
     async def create_alloc_map(self) -> AbstractAllocMap:
         devices = await self.list_devices()
         return DiscretePropertyAllocMap(
-            devices=devices,
-            prop_func=lambda dev: dev.memory_size)
+            device_slots={
+                dev.device_id:
+                    DeviceSlotInfo(SlotTypes.BYTES, SlotName('mem'), Decimal(dev.memory_size))
+                for dev in devices
+            },
+        )
 
     async def get_hooks(self, distro: str, arch: str) -> Sequence[Path]:
         return []
