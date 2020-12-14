@@ -571,10 +571,10 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                         os.chown(ctx.work_dir, uid, gid)
                         os.chown(ctx.work_dir / '.jupyter', uid, gid)
                         os.chown(ctx.work_dir / '.jupyter' / 'custom', uid, gid)
-                        os.chown(bashrc_path, uid, gid)
-                        os.chown(bash_profile_path, uid, gid)
-                        os.chown(vimrc_path, uid, gid)
-                        os.chown(tmux_conf_path, uid, gid)
+                        os.chown(ctx.work_dir / '.bashrc', uid, gid)
+                        os.chown(ctx.work_dir / '.bash_profile', uid, gid)
+                        os.chown(ctx.work_dir / '.vimrc', uid, gid)
+                        os.chown(ctx.work_dir / '.tmux.conf', uid, gid)
 
             await loop.run_in_executor(None, _clone_dotfiles)
 
