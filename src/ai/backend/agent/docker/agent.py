@@ -212,20 +212,19 @@ class DockerAgent(AbstractAgent):
         self.monitor_docker_task = asyncio.create_task(self.monitor_docker_events())
 
     async def shutdown(self, stop_signal: signal.Signals):
+        # Stop handling agent sock.
+        if self.agent_sock_task is not None:
+            self.agent_sock_task.cancel()
+            await self.agent_sock_task
         try:
             await super().shutdown(stop_signal)
+
         finally:
             # Stop docker event monitoring.
             if self.monitor_docker_task is not None:
                 self.monitor_docker_task.cancel()
                 await self.monitor_docker_task
             await self.docker.close()
-
-        # Stop handlign agent sock.
-        # (But we don't remove the socket file)
-        if self.agent_sock_task is not None:
-            self.agent_sock_task.cancel()
-            await self.agent_sock_task
 
     async def detect_resources(self) -> Tuple[
         Mapping[DeviceName, AbstractComputePlugin],
@@ -293,6 +292,13 @@ class DockerAgent(AbstractAgent):
         A simple request-reply socket handler for in-container processes.
         For ease of implementation in low-level languages such as C,
         it uses a simple C-friendly ZeroMQ-based multipart messaging protocol.
+
+        The agent listens on a local TCP port and there is a socat relay
+        that proxies this port via a UNIX domain socket mounted inside
+        actual containers.  The reason for this is to avoid inode changes
+        upon agent restarts by keeping the relay container running persistently,
+        so that the mounted UNIX socket files don't get to refere a dangling pointer
+        when the agent is restarted.
 
         Request message:
             The first part is the requested action as string,

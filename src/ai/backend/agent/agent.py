@@ -251,6 +251,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.redis_stat_pool.close()
         await self.redis_stat_pool.wait_closed()
 
+        self.zmq_ctx.term()
+
     async def produce_event(self, event_name: str, *args) -> None:
         """
         Send an event to the manager(s).
@@ -379,12 +381,13 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             log.debug('collecting container statistics')
         try:
             updated_kernel_ids = []
+            container_ids = []
             for kernel_id, kernel_obj in [*self.kernel_registry.items()]:
                 if not kernel_obj.stats_enabled:
                     continue
                 updated_kernel_ids.append(kernel_id)
-                cid = kernel_obj['container_id']
-                await self.stat_ctx.collect_container_stat(cid)
+                container_ids.append(kernel_obj['container_id'])
+            await self.stat_ctx.collect_container_stat(container_ids)
             # Let the manager store the statistics in the persistent database.
             if updated_kernel_ids:
                 await self.produce_event('kernel_stat_sync',

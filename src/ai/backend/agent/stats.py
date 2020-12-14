@@ -11,11 +11,15 @@ import logging
 import sys
 import time
 from typing import (
-    Optional,
     Callable,
-    List, Tuple,
-    Dict, Mapping, MutableMapping,
+    Dict,
     FrozenSet,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
     TYPE_CHECKING,
 )
 
@@ -273,16 +277,19 @@ class StatContext:
         Intended to be used by the agent.
         """
         async with self._lock:
-            # gather node/device metrics from compute plugins
+            # Here we use asyncio.gather() instead of aiotools.TaskGroup
+            # to keep methods of other plugins running when a plugin raises an error
+            # instead of cancelling them.
             _tasks = []
             for computer in self.agent.computers.values():
                 _tasks.append(computer.instance.gather_node_measures(self))
-            for node_measures in (await asyncio.gather(*_tasks, return_exceptions=True)):
-                if isinstance(node_measures, Exception):
-                    log.error('gather_node_measures error',
-                              exc_info=node_measures)
+            results = await asyncio.gather(*_tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    log.error('collect_node_stat(): gather_node_measures() error',
+                              exc_info=result)
                     continue
-                for node_measure in node_measures:
+                for node_measure in result:
                     metric_key = node_measure.key
                     # update node metric
                     if metric_key not in self.node_metrics:
@@ -388,7 +395,10 @@ class StatContext:
             return pipe
         await redis.execute_with_retries(_pipe_builder)
 
-    async def collect_container_stat(self, container_id: ContainerId) -> Mapping[MetricKey, Metric]:
+    async def collect_container_stat(
+        self,
+        container_ids: Sequence[ContainerId],
+    ) -> Mapping[MetricKey, Metric]:
         """
         Collect the per-container statistics only,
 
@@ -399,22 +409,25 @@ class StatContext:
             for kid, info in self.agent.kernel_registry.items():
                 cid = info['container_id']
                 kernel_id_map[ContainerId(cid)] = kid
-
+            # Here we use asyncio.gather() instead of aiotools.TaskGroup
+            # to keep methods of other plugins running when a plugin raises an error
+            # instead of cancelling them.
             _tasks = []
             kernel_id = None
             for computer in self.agent.computers.values():
-                _tasks.append(
-                    computer.instance.gather_container_measures(self, [container_id]))
-            for ctnr_measures in (await asyncio.gather(*_tasks, return_exceptions=True)):
-                if isinstance(ctnr_measures, Exception):
-                    log.error('gather_cotnainer_measures error',
-                              exc_info=ctnr_measures)
+                _tasks.append(asyncio.create_task(
+                    computer.instance.gather_container_measures(self, container_ids)
+                ))
+            results = await asyncio.gather(*_tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    log.error('collect_container_stat(): gather_container_measures() error',
+                              exc_info=result)
                     continue
-                for ctnr_measure in ctnr_measures:
+                for ctnr_measure in result:
                     metric_key = ctnr_measure.key
                     # update per-container metric
                     for cid, measure in ctnr_measure.per_container.items():
-                        assert cid == container_id
                         try:
                             kernel_id = kernel_id_map[cid]
                         except KeyError:
