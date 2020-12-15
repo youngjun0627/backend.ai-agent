@@ -17,6 +17,7 @@ from typing import (
     AsyncGenerator,
     Callable,
     ClassVar,
+    Coroutine,
     Dict,
     Literal,
     Mapping,
@@ -130,16 +131,19 @@ class RPCFunctionRegistry:
     def __init__(self) -> None:
         self.functions = set()
 
-    def __call__(self, meth: Callable) -> Callable[[RPCMessage], Any]:
+    def __call__(
+        self,
+        meth: Callable[..., Coroutine[None, None, Any]],
+    ) -> Callable[[RPCMessage], Coroutine[None, None, Any]]:
 
         @functools.wraps(meth)
-        async def _inner(self: AgentRPCServer, request: RPCMessage):
+        async def _inner(self_: AgentRPCServer, request: RPCMessage) -> Any:
             try:
                 if request.body is None:
-                    return await meth(self)
+                    return await meth(self_)
                 else:
                     return await meth(
-                        self,
+                        self_,
                         *request.body['args'],
                         **request.body['kwargs'],
                     )
@@ -147,7 +151,7 @@ class RPCFunctionRegistry:
                 raise
             except Exception:
                 log.exception('unexpected error')
-                await self.error_monitor.capture_exception()
+                await self_.error_monitor.capture_exception()
                 raise
 
         self.functions.add(meth.__name__)

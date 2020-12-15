@@ -220,6 +220,11 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
         self.monitor_swarm_task = asyncio.create_task(self.check_swarm_status(as_task=True))
 
     async def shutdown(self, stop_signal: signal.Signals):
+        # Stop handling agent sock.
+        if self.agent_sock_task is not None:
+            self.agent_sock_task.cancel()
+            await self.agent_sock_task
+
         try:
             await super().shutdown(stop_signal)
         finally:
@@ -228,12 +233,6 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                 self.monitor_docker_task.cancel()
                 await self.monitor_docker_task
             await self.docker.close()
-
-        # Stop handling agent sock.
-        # (But we don't remove the socket file)
-        if self.agent_sock_task is not None:
-            self.agent_sock_task.cancel()
-            await self.agent_sock_task
 
         if self.monitor_swarm_task is not None:
             self.monitor_swarm_task.cancel()
@@ -345,10 +344,17 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
         return updated_images
 
     async def handle_agent_socket(self):
-        '''
+        """
         A simple request-reply socket handler for in-container processes.
         For ease of implementation in low-level languages such as C,
         it uses a simple C-friendly ZeroMQ-based multipart messaging protocol.
+
+        The agent listens on a local TCP port and there is a socat relay
+        that proxies this port via a UNIX domain socket mounted inside
+        actual containers.  The reason for this is to avoid inode changes
+        upon agent restarts by keeping the relay container running persistently,
+        so that the mounted UNIX socket files don't get to refere a dangling pointer
+        when the agent is restarted.
 
         Request message:
             The first part is the requested action as string,
@@ -362,46 +368,49 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
             The second part and later are arguments.
 
         All strings are UTF-8 encoded.
-        '''
-        try:
+        """
+        while True:
             agent_sock = self.zmq_ctx.socket(zmq.REP)
-            agent_sock.bind(f"tcp://127.0.0.1:{self.local_config['agent']['agent-sock-port']}")
-            while True:
-                msg = await agent_sock.recv_multipart()
-                if not msg:
-                    break
-                try:
-                    if msg[0] == b'host-pid-to-container-pid':
-                        container_id = msg[1].decode()
-                        host_pid = struct.unpack('i', msg[2])[0]
-                        container_pid = await host_pid_to_container_pid(
-                            container_id, host_pid)
-                        reply = [
-                            struct.pack('i', 0),
-                            struct.pack('i', container_pid),
-                        ]
-                    elif msg[0] == b'container-pid-to-host-pid':
-                        container_id = msg[1].decode()
-                        container_pid = struct.unpack('i', msg[2])[0]
-                        host_pid = await container_pid_to_host_pid(
-                            container_id, container_pid)
-                        reply = [
-                            struct.pack('i', 0),
-                            struct.pack('i', host_pid),
-                        ]
-                    else:
-                        reply = [struct.pack('i', -2), b'Invalid action']
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    reply = [struct.pack('i', -1), f'Error: {e}'.encode('utf-8')]
-                await agent_sock.send_multipart(reply)
-        except asyncio.CancelledError:
-            pass
-        except zmq.ZMQError:
-            log.exception('zmq socket error with {}', self.agent_sockpath)
-        finally:
-            agent_sock.close()
+            try:
+                agent_sock.bind(f"tcp://127.0.0.1:{self.local_config['agent']['agent-sock-port']}")
+                while True:
+                    msg = await agent_sock.recv_multipart()
+                    if not msg:
+                        break
+                    try:
+                        if msg[0] == b'host-pid-to-container-pid':
+                            container_id = msg[1].decode()
+                            host_pid = struct.unpack('i', msg[2])[0]
+                            container_pid = await host_pid_to_container_pid(
+                                container_id, host_pid)
+                            reply = [
+                                struct.pack('i', 0),
+                                struct.pack('i', container_pid),
+                            ]
+                        elif msg[0] == b'container-pid-to-host-pid':
+                            container_id = msg[1].decode()
+                            container_pid = struct.unpack('i', msg[2])[0]
+                            host_pid = await container_pid_to_host_pid(
+                                container_id, container_pid)
+                            reply = [
+                                struct.pack('i', 0),
+                                struct.pack('i', host_pid),
+                            ]
+                        else:
+                            reply = [struct.pack('i', -2), b'Invalid action']
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        log.exception("handle_agent_socket(): internal error")
+                        reply = [struct.pack('i', -1), f'Error: {e}'.encode('utf-8')]
+                    await agent_sock.send_multipart(reply)
+            except asyncio.CancelledError:
+                return
+            except zmq.ZMQError:
+                log.exception("handle_agent_socket(): zmq error")
+            finally:
+                agent_sock.close()
+                log.info("handle_agent_socket(): rebinding the socket")
 
     async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry) -> None:
         auth_config = None
@@ -562,10 +571,10 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                         os.chown(ctx.work_dir, uid, gid)
                         os.chown(ctx.work_dir / '.jupyter', uid, gid)
                         os.chown(ctx.work_dir / '.jupyter' / 'custom', uid, gid)
-                        os.chown(bashrc_path, uid, gid)
-                        os.chown(bash_profile_path, uid, gid)
-                        os.chown(vimrc_path, uid, gid)
-                        os.chown(tmux_conf_path, uid, gid)
+                        os.chown(ctx.work_dir / '.bashrc', uid, gid)
+                        os.chown(ctx.work_dir / '.bash_profile', uid, gid)
+                        os.chown(ctx.work_dir / '.vimrc', uid, gid)
+                        os.chown(ctx.work_dir / '.tmux.conf', uid, gid)
 
             await loop.run_in_executor(None, _clone_dotfiles)
 

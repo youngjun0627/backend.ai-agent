@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from decimal import Decimal, ROUND_DOWN
+import fnmatch
 import logging
 import json
 import operator
@@ -19,10 +20,12 @@ from typing import (
     Optional,
     FrozenSet,
     Sequence,
+    Set,
     TextIO,
     Tuple,
     Type,
     cast,
+    TYPE_CHECKING,
 )
 
 import attr
@@ -36,9 +39,13 @@ from ai.backend.common.types import (
 )
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.plugin import AbstractPlugin, BasePluginContext
-from .exception import InsufficientResource
+from .exception import InsufficientResource, InvalidResourceArgument, InvalidResourceCombination
 from .stats import StatContext, NodeMeasurement, ContainerMeasurement
 from .types import Container as SessionContainer
+
+if TYPE_CHECKING:
+    from aiofiles.threadpool.text import AsyncTextIOWrapper
+    from io import TextIOWrapper
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
 
@@ -123,10 +130,13 @@ class KernelResourceSpec:
                 continue
             key, val = line.strip().split('=', maxsplit=1)
             kvpairs[key] = val
-        allocations = cast(MutableMapping[DeviceName,
-                                          MutableMapping[SlotName,
-                                                         Mapping[DeviceId, Decimal]]],
-                           defaultdict(dict))
+        allocations = cast(
+            MutableMapping[
+                DeviceName,
+                MutableMapping[SlotName, Mapping[DeviceId, Decimal]]
+            ],
+            defaultdict(lambda: defaultdict(Decimal)),
+        )
         for key, val in kvpairs.items():
             if key.endswith('_SHARES'):
                 slot_name = SlotName(key[:-7].lower())
@@ -159,8 +169,13 @@ class KernelResourceSpec:
         )
 
     @classmethod
-    def read_from_file(cls, file: TextIO) -> 'KernelResourceSpec':
+    def read_from_file(cls, file: TextIOWrapper) -> 'KernelResourceSpec':
         text = '\n'.join(file.readlines())
+        return cls.read_from_string(text)
+
+    @classmethod
+    async def aread_from_file(cls, file: AsyncTextIOWrapper) -> 'KernelResourceSpec':
+        text = '\n'.join(await file.readlines())  # type: ignore
         return cls.read_from_string(text)
 
     def to_json_serializable_dict(self) -> Mapping[str, Any]:
@@ -197,7 +212,8 @@ class AbstractComputeDevice():
 class AbstractComputePlugin(AbstractPlugin, metaclass=ABCMeta):
 
     key: DeviceName = DeviceName('accelerator')
-    slot_types: Sequence[Tuple[SlotName, SlotTypes]] = []
+    slot_types: Sequence[Tuple[SlotName, SlotTypes]]
+    exclusive_slot_types: Set[str]
 
     @abstractmethod
     async def list_devices(self) -> Collection[AbstractComputeDevice]:
@@ -369,23 +385,62 @@ class Mount:
         return cls(type, source, target, perm, None)
 
 
+@attr.s(auto_attribs=True)
+class DeviceSlotInfo:
+    slot_type: SlotTypes
+    slot_name: SlotName
+    amount: Decimal
+
+
 class AbstractAllocMap(metaclass=ABCMeta):
 
-    devices: Mapping[DeviceId, AbstractComputeDevice]
+    device_slots: Mapping[DeviceId, DeviceSlotInfo]
     device_mask: FrozenSet[DeviceId]
+    exclusive_slot_types: Iterable[SlotName]
     allocations: MutableMapping[SlotName, MutableMapping[DeviceId, Decimal]]
 
     def __init__(
         self, *,
-        devices: Iterable[AbstractComputeDevice] = None,
+        device_slots: Mapping[DeviceId, DeviceSlotInfo] = None,
         device_mask: Iterable[DeviceId] = None,
+        exclusive_slot_types: Iterable[SlotName] = None
     ) -> None:
-        self.devices = {dev.device_id: dev for dev in devices} if devices is not None else {}
+        self.exclusive_slot_types = exclusive_slot_types or {}
+        self.device_slots = device_slots or {}
+        self.slot_types = {info.slot_name: info.slot_type for info in self.device_slots.values()}
         self.device_mask = frozenset(device_mask) if device_mask is not None else frozenset()
-        self.allocations = {}
+        self.allocations = defaultdict(lambda: defaultdict(Decimal))
+        for dev_id, dev_slot_info in self.device_slots.items():
+            self.allocations[dev_slot_info.slot_name][dev_id] = Decimal(0)
 
     def clear(self) -> None:
         self.allocations.clear()
+        for dev_id, dev_slot_info in self.device_slots.items():
+            self.allocations[dev_slot_info.slot_name][dev_id] = Decimal(0)
+
+    def check_exclusive(self, a: SlotName, b: SlotName) -> bool:
+        if not self.exclusive_slot_types:
+            return False
+        if a == b:
+            return False
+        a_in_exclusive_set = (a in self.exclusive_slot_types)
+        b_in_exclusive_set = (b in self.exclusive_slot_types)
+        if a_in_exclusive_set and b_in_exclusive_set:
+            # fast-path for exact match
+            return True
+        for t in self.exclusive_slot_types:
+            if '*' in t:
+                a_in_exclusive_set = a_in_exclusive_set or fnmatch.fnmatchcase(a, t)
+                b_in_exclusive_set = b_in_exclusive_set or fnmatch.fnmatchcase(b, t)
+        return a_in_exclusive_set and b_in_exclusive_set
+
+    def format_current_allocations(self) -> str:
+        bufs = []
+        for slot_name, per_device_alloc in self.allocations.items():
+            bufs.append(f"slot[{slot_name}]:")
+            for device_id, alloc in per_device_alloc.items():
+                bufs.append(f"  {device_id}: {alloc}")
+        return "\n".join(bufs)
 
     @abstractmethod
     def allocate(
@@ -449,12 +504,7 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
     """
 
     def __init__(self, *args, **kwargs) -> None:
-        self.property_func = kwargs.pop('prop_func')
         super().__init__(*args, **kwargs)
-        assert callable(self.property_func)
-        self.allocations = defaultdict(lambda: {
-            dev_id: Decimal(0) for dev_id in self.devices.keys()
-        })
 
     def allocate(
         self,
@@ -462,35 +512,50 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
         *,
         context_tag: str = None,
     ) -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
+        # prune zero alloc slots
+        requested_slots = {k: v for k, v in slots.items() if v > 0}
+
+        # check exclusive
+        for slot_name_a in requested_slots.keys():
+            for slot_name_b in requested_slots.keys():
+                if self.check_exclusive(slot_name_a, slot_name_b):
+                    raise InvalidResourceCombination(
+                        f"Slots {slot_name_a} and {slot_name_b} cannot be allocated at the same time.")
+
         allocation = {}
-        for slot_name, alloc in slots.items():
+        for slot_name, alloc in requested_slots.items():
             slot_allocation: MutableMapping[DeviceId, Decimal] = {}
+
+            sorted_dev_allocs = sorted(
+                self.allocations[slot_name].items(),  # k: slot_name, v: per-device alloc
+                key=lambda pair: self.device_slots[pair[0]].amount - pair[1],
+                reverse=True)
+            log.debug('DiscretePropertyAllocMap: allocating {} {}', slot_name, alloc)
+            log.debug('DiscretePropertyAllocMap: current-alloc: {!r}', sorted_dev_allocs)
+
+            slot_type = self.slot_types.get(slot_name, SlotTypes.COUNT)
+            if slot_type in (SlotTypes.COUNT, SlotTypes.BYTES):
+                pass
+            elif slot_type == SlotTypes.UNIQUE:
+                if alloc != Decimal(1):
+                    raise InvalidResourceArgument(
+                        f"You may allocate only 1 for the unique-type slot {slot_name}"
+                    )
+            total_allocatable = int(0)
             remaining_alloc = Decimal(alloc).normalize()
 
             # fill up starting from the most free devices
-            sorted_dev_allocs = sorted(
-                self.allocations[slot_name].items(),
-                key=lambda pair: self.property_func(self.devices[pair[0]]) - pair[1],
-                reverse=True)
-            log.debug('DiscretePropertyAllocMap: allocating {} {}',
-                      slot_name, alloc)
-            log.debug('DiscretePropertyAllocMap: current-alloc: {!r}',
-                      sorted_dev_allocs)
-
-            total_allocatable = int(0)
             for dev_id, current_alloc in sorted_dev_allocs:
                 current_alloc = self.allocations[slot_name][dev_id]
-                total_allocatable += (self.property_func(self.devices[dev_id]) -
-                                      current_alloc)
+                assert slot_name == self.device_slots[dev_id].slot_name
+                total_allocatable += int(self.device_slots[dev_id].amount - current_alloc)
             if total_allocatable < alloc:
                 raise InsufficientResource(
                     'DiscretePropertyAllocMap: insufficient allocatable amount!',
                     context_tag, slot_name, str(alloc), str(total_allocatable))
-
             for dev_id, current_alloc in sorted_dev_allocs:
                 current_alloc = self.allocations[slot_name][dev_id]
-                allocatable = (self.property_func(self.devices[dev_id]) -
-                               current_alloc)
+                allocatable = (self.device_slots[dev_id].amount - current_alloc)
                 if allocatable > 0:
                     allocated = Decimal(min(remaining_alloc, allocatable))
                     slot_allocation[dev_id] = allocated
@@ -506,59 +571,75 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
         existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
     ) -> None:
         for slot_name, per_device_alloc in existing_alloc.items():
-            for dev_id, alloc in per_device_alloc.items():
-                self.allocations[slot_name][dev_id] += alloc
+            for device_id, alloc in per_device_alloc.items():
+                self.allocations[slot_name][device_id] += alloc
 
     def free(
         self,
         existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
     ) -> None:
         for slot_name, per_device_alloc in existing_alloc.items():
-            for dev_id, alloc in per_device_alloc.items():
-                self.allocations[slot_name][dev_id] -= alloc
+            for device_id, alloc in per_device_alloc.items():
+                self.allocations[slot_name][device_id] -= alloc
 
 
 class FractionAllocMap(AbstractAllocMap):
 
     def __init__(self, *args, **kwargs) -> None:
-        self.shares_per_device = kwargs.pop('shares_per_device')
         super().__init__(*args, **kwargs)
-        self.allocations = defaultdict(lambda: {
-            dev_id: Decimal(0) for dev_id in self.devices.keys()
-        })
         self.digits = Decimal(10) ** -2  # decimal points that is supported by agent
         self.powers = Decimal(100)  # reciprocal of self.digits
 
     def allocate(self, slots: Mapping[SlotName, Decimal], *,
                  context_tag: str = None) \
                  -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
+        # prune zero alloc slots
+        requested_slots = {k: v for k, v in slots.items() if v > 0}
+
+        # check exclusive
+        for slot_name_a in requested_slots.keys():
+            for slot_name_b in requested_slots.keys():
+                if self.check_exclusive(slot_name_a, slot_name_b):
+                    raise InvalidResourceCombination(
+                        f"Slots {slot_name_a} and {slot_name_b} cannot be allocated at the same time."
+                    )
+
         allocation = {}
-        for slot_name, alloc in slots.items():
+        for slot_name, alloc in requested_slots.items():
             slot_allocation: MutableMapping[DeviceId, Decimal] = {}
-            remaining_alloc = Decimal(alloc).normalize()
 
             # fill up starting from the most free devices
             sorted_dev_allocs = sorted(
                 self.allocations[slot_name].items(),
-                key=lambda pair: self.shares_per_device[pair[0]] - pair[1],
+                key=lambda pair: self.device_slots[pair[0]].amount - pair[1],
                 reverse=True)
             log.debug('FractionAllocMap: allocating {} {}', slot_name, alloc)
             log.debug('FractionAllocMap: current-alloc: {!r}', sorted_dev_allocs)
 
+            slot_type = self.slot_types.get(slot_name, SlotTypes.COUNT)
+            if slot_type in (SlotTypes.COUNT, SlotTypes.BYTES):
+                pass
+            elif slot_type == SlotTypes.UNIQUE:
+                if alloc != Decimal(1):
+                    raise InvalidResourceArgument(
+                        f"You may allocate only 1 for the unique-type slot {slot_name}"
+                    )
             total_allocatable = Decimal(0)
+            remaining_alloc = Decimal(alloc).normalize()
+
             for dev_id, current_alloc in sorted_dev_allocs:
                 current_alloc = self.allocations[slot_name][dev_id]
-                total_allocatable += (self.shares_per_device[dev_id] -
+                assert slot_name == self.device_slots[dev_id].slot_name
+                total_allocatable += (self.device_slots[dev_id].amount -
                                       current_alloc)
             if total_allocatable < alloc:
                 raise InsufficientResource(
                     'FractionAllocMap: insufficient allocatable amount!',
                     context_tag, slot_name, str(alloc), str(total_allocatable))
-
             slot_allocation = {}
             for dev_id, current_alloc in sorted_dev_allocs:
                 current_alloc = self.allocations[slot_name][dev_id]
-                allocatable = (self.shares_per_device[dev_id] -
+                allocatable = (self.device_slots[dev_id].amount -
                                current_alloc)
                 if allocatable > 0:
                     allocated = min(remaining_alloc, allocatable)
@@ -574,6 +655,16 @@ class FractionAllocMap(AbstractAllocMap):
                         context_tag: str = None,
                         min_memory: Decimal = Decimal(0.01)) \
                         -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
+        # prune zero alloc slots
+        requested_slots = {k: v for k, v in slots.items() if v > 0}
+
+        # check exclusive
+        for slot_name_a in requested_slots.keys():
+            for slot_name_b in requested_slots.keys():
+                if self.check_exclusive(slot_name_a, slot_name_b):
+                    raise InvalidResourceCombination(
+                        f"Slots {slot_name_a} and {slot_name_b} cannot be allocated at the same time."
+                    )
 
         # higher value means more even with 0 being the highest value
         def measure_evenness(alloc_map: Mapping[DeviceId, Decimal]) \
@@ -588,7 +679,7 @@ class FractionAllocMap(AbstractAllocMap):
         # i.e. the number of unusable resources is higher
         def measure_fragmentation(allocation: Mapping[DeviceId, Decimal],
                                   min_memory: Decimal):
-            fragmentation_arr = [self.shares_per_device[dev_id] - allocation[dev_id]
+            fragmentation_arr = [self.device_slots[dev_id].amount - allocation[dev_id]
                                  for dev_id in allocation]
             return sum(self.digits < v.quantize(self.digits) < min_memory.quantize(self.digits)
                        for v in fragmentation_arr)
@@ -620,7 +711,7 @@ class FractionAllocMap(AbstractAllocMap):
             idx = n_devices - 1  # check from the device with smallest allocatable resource
             while n_devices > 0:
                 dev_id, current_alloc = dev_allocs[idx]
-                allocatable = self.shares_per_device[dev_id] - current_alloc
+                allocatable = self.device_slots[dev_id].amount - current_alloc
                 # if the remaining_alloc can be allocated to evenly among remaining devices
                 if allocatable >= remaining_alloc / n_devices:
                     break
@@ -641,12 +732,12 @@ class FractionAllocMap(AbstractAllocMap):
             remaining_alloc = Decimal(alloc).normalize()
             sorted_dev_allocs = sorted(
                 self.allocations[slot_name].items(),
-                key=lambda pair: self.shares_per_device[pair[0]] - pair[1],
+                key=lambda pair: self.device_slots[pair[0]].amount - pair[1],
                 reverse=True)
 
             # do not consider devices whose remaining resource under min_memory
             sorted_dev_allocs = list(filter(
-                lambda pair: self.shares_per_device[pair[0]] - pair[1] >= min_memory,
+                lambda pair: self.device_slots[pair[0]].amount - pair[1] >= min_memory,
                 sorted_dev_allocs))
 
             log.debug('FractionAllocMap: allocating {} {}', slot_name, alloc)
@@ -656,8 +747,7 @@ class FractionAllocMap(AbstractAllocMap):
             total_allocatable = Decimal(0)
             for dev_id, current_alloc in sorted_dev_allocs:
                 current_alloc = self.allocations[slot_name][dev_id]
-                total_allocatable += (self.shares_per_device[dev_id] -
-                                      current_alloc)
+                total_allocatable += (self.device_slots[dev_id].amount - current_alloc)
             if total_allocatable.quantize(self.digits) < \
                     remaining_alloc.quantize(self.digits):
                 raise InsufficientResource(
@@ -665,21 +755,22 @@ class FractionAllocMap(AbstractAllocMap):
                     context_tag, slot_name, str(alloc), str(total_allocatable))
 
             # allocate resources
-            if remaining_alloc <= self.shares_per_device[sorted_dev_allocs[0][0]] \
-                    - sorted_dev_allocs[0][1]:  # if remaining_alloc fits in one device
+            if (remaining_alloc <=
+                self.device_slots[sorted_dev_allocs[0][0]].amount - sorted_dev_allocs[0][1]):
+                # if remaining_alloc fits in one device
                 slot_allocation = {}
                 for dev_id, current_alloc in sorted_dev_allocs[::-1]:
-                    allocatable = (self.shares_per_device[dev_id] -
-                                current_alloc)
+                    allocatable = (self.device_slots[dev_id].amount - current_alloc)
                     if remaining_alloc <= allocatable:
                         slot_allocation[dev_id] = remaining_alloc.quantize(self.digits)
                         break
-            else:  # need to distribute across devices
+            else:
+                # need to distribute across devices
                 # calculate the minimum number of required devices
                 n_devices, allocated = 0, Decimal(0)
                 for dev_id, current_alloc in sorted_dev_allocs:
                     n_devices += 1
-                    allocated += self.shares_per_device[dev_id] - current_alloc
+                    allocated += self.device_slots[dev_id].amount - current_alloc
                     if allocated.quantize(self.digits) >= \
                             remaining_alloc.quantize(self.digits):
                         break
@@ -687,8 +778,8 @@ class FractionAllocMap(AbstractAllocMap):
                 # evenness must be non-decreasing with the increase of window size
                 best_alloc_candidate_arr = []
                 for n_dev in range(n_devices, len(sorted_dev_allocs) + 1):
-                    allocatable = sum(map(lambda x: self.shares_per_device[x[0]] - x[1],
-                                      sorted_dev_allocs[:n_dev]))
+                    allocatable = sum(map(lambda x: self.device_slots[x[0]].amount - x[1],
+                                      sorted_dev_allocs[:n_dev]), start=Decimal(0))
                     # choose the best allocation from all possible allocation candidates
                     alloc_candidate = allocate_across_devices(sorted_dev_allocs[:n_dev],
                                                               remaining_alloc, slot_name)
@@ -699,10 +790,12 @@ class FractionAllocMap(AbstractAllocMap):
                                             -measure_fragmentation(alloc_candidate, min_memory))]
                     for idx in range(1, len(sorted_dev_allocs) - n_dev + 1):
                         # update amount of allocatable space
-                        allocatable -= self.shares_per_device[sorted_dev_allocs[idx - 1][0]] - \
-                                       sorted_dev_allocs[idx - 1][1]
-                        allocatable += self.shares_per_device[sorted_dev_allocs[idx + n_dev - 1][0]] - \
-                                       sorted_dev_allocs[idx + n_dev - 1][1]
+                        allocatable -= \
+                            self.device_slots[sorted_dev_allocs[idx - 1][0]].amount - \
+                            sorted_dev_allocs[idx - 1][1]
+                        allocatable += \
+                            self.device_slots[sorted_dev_allocs[idx + n_dev - 1][0]].amount - \
+                            sorted_dev_allocs[idx + n_dev - 1][1]
                         # break if not enough resource
                         if allocatable.quantize(self.digits) < \
                                 remaining_alloc.quantize(self.digits):
@@ -735,13 +828,13 @@ class FractionAllocMap(AbstractAllocMap):
         existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
     ) -> None:
         for slot_name, per_device_alloc in existing_alloc.items():
-            for dev_id, alloc in per_device_alloc.items():
-                self.allocations[slot_name][dev_id] += alloc
+            for device_id, alloc in per_device_alloc.items():
+                self.allocations[slot_name][device_id] += alloc
 
     def free(
         self,
         existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
     ) -> None:
         for slot_name, per_device_alloc in existing_alloc.items():
-            for dev_id, alloc in per_device_alloc.items():
-                self.allocations[slot_name][dev_id] -= alloc
+            for device_id, alloc in per_device_alloc.items():
+                self.allocations[slot_name][device_id] -= alloc
