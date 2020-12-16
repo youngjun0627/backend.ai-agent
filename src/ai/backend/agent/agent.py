@@ -529,28 +529,29 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                     )
 
     async def process_lifecycle_events(self) -> None:
-        while True:
-            ev = await self.container_lifecycle_queue.get()
-            if isinstance(ev, Sentinel):
-                with open(ipc_base_path / f'last_registry.{self.agent_id}.dat', 'wb') as f:
-                    pickle.dump(self.kernel_registry, f)
-                return
-            # attr currently does not support customizing getstate/setstate dunder methods
-            # until the next release.
-            log.info(f'lifecycle event: {ev!r}')
-            try:
-                if ev.event == LifecycleEvent.START:
-                    asyncio.create_task(self._handle_start_event(ev))
-                elif ev.event == LifecycleEvent.DESTROY:
-                    asyncio.create_task(self._handle_destroy_event(ev))
-                elif ev.event == LifecycleEvent.CLEAN:
-                    asyncio.create_task(self._handle_clean_event(ev))
-                else:
-                    log.warning('unsupported lifecycle event: {!r}', ev)
-            except Exception:
-                log.exception('unexpected error in process_lifecycle_events(), continuing...')
-            finally:
-                self.container_lifecycle_queue.task_done()
+        async with aiotools.TaskGroup() as tg:
+            while True:
+                ev = await self.container_lifecycle_queue.get()
+                if isinstance(ev, Sentinel):
+                    with open(ipc_base_path / f'last_registry.{self.agent_id}.dat', 'wb') as f:
+                        pickle.dump(self.kernel_registry, f)
+                    return
+                # attr currently does not support customizing getstate/setstate dunder methods
+                # until the next release.
+                log.info(f'lifecycle event: {ev!r}')
+                try:
+                    if ev.event == LifecycleEvent.START:
+                        tg.create_task(self._handle_start_event(ev))
+                    elif ev.event == LifecycleEvent.DESTROY:
+                        tg.create_task(self._handle_destroy_event(ev))
+                    elif ev.event == LifecycleEvent.CLEAN:
+                        tg.create_task(self._handle_clean_event(ev))
+                    else:
+                        log.warning('unsupported lifecycle event: {!r}', ev)
+                except Exception:
+                    log.exception('unexpected error in process_lifecycle_events(), continuing...')
+                finally:
+                    self.container_lifecycle_queue.task_done()
 
     async def inject_container_lifecycle_event(
         self,
@@ -620,11 +621,23 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         terminated_kernels = {}
 
         async with self.resource_lock:
-            for kernel_id, container in (await self.enumerate_containers(ACTIVE_STATUS_SET)):
-                alive_kernels[kernel_id] = container.id
-            for kernel_id, kernel_obj in self.kernel_registry.items():
-                known_kernels[kernel_id] = kernel_obj['container_id']
             try:
+                # Check if: there are dead containers
+                for kernel_id, container in (await self.enumerate_containers(DEAD_STATUS_SET)):
+                    if kernel_id in self.restarting_kernels:
+                        continue
+                    log.info('detected dead container during lifeycle sync (k:{0}, c:{})',
+                            kernel_id, container.id)
+                    terminated_kernels[kernel_id] = ContainerLifecycleEvent(
+                        kernel_id,
+                        known_kernels[kernel_id],
+                        LifecycleEvent.CLEAN,
+                        'self-terminated',
+                    )
+                for kernel_id, container in (await self.enumerate_containers(ACTIVE_STATUS_SET)):
+                    alive_kernels[kernel_id] = container.id
+                for kernel_id, kernel_obj in self.kernel_registry.items():
+                    known_kernels[kernel_id] = kernel_obj['container_id']
                 # Check if: kernel_registry has the container but it's gone.
                 for kernel_id in (known_kernels.keys() - alive_kernels.keys()):
                     if kernel_id in self.restarting_kernels:

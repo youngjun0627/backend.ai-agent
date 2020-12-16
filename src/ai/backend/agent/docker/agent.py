@@ -369,6 +369,7 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
 
         All strings are UTF-8 encoded.
         """
+        terminating = False
         while True:
             agent_sock = self.zmq_ctx.socket(zmq.REP)
             try:
@@ -399,18 +400,21 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                         else:
                             reply = [struct.pack('i', -2), b'Invalid action']
                     except asyncio.CancelledError:
+                        terminating = True
                         raise
                     except Exception as e:
                         log.exception("handle_agent_socket(): internal error")
                         reply = [struct.pack('i', -1), f'Error: {e}'.encode('utf-8')]
                     await agent_sock.send_multipart(reply)
             except asyncio.CancelledError:
+                terminating = True
                 return
             except zmq.ZMQError:
                 log.exception("handle_agent_socket(): zmq error")
             finally:
                 agent_sock.close()
-                log.info("handle_agent_socket(): rebinding the socket")
+                if not terminating:
+                    log.info("handle_agent_socket(): rebinding the socket")
 
     async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry) -> None:
         auth_config = None
@@ -1158,50 +1162,65 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
         await network.delete()
 
     async def monitor_docker_events(self):
-        subscriber = self.docker.events.subscribe(create_task=True)
-        while True:
+
+        async def handle_action_start(kernel_id: KernelId, evdata: Mapping[str, Any]) -> None:
+            await self.inject_container_lifecycle_event(
+                kernel_id,
+                LifecycleEvent.START,
+                'new-container-started',
+                container_id=ContainerId(evdata['Actor']['ID']),
+            )
+
+        async def handle_action_die(kernel_id: KernelId, evdata: Mapping[str, Any]) -> None:
+            # When containers die, we immediately clean up them.
+            reason = None
+            kernel_obj = self.kernel_registry.get(kernel_id)
+            if kernel_obj is not None:
+                reason = kernel_obj.termination_reason
             try:
-                evdata = await subscriber.get()
-                if self.local_config['debug']['log-docker-events'] and evdata['Type'] == 'container':
-                    log.debug('docker-event: action={}, actor={}',
-                              evdata['Action'], evdata['Actor'])
-                if evdata['Action'] == 'start':
-                    container_name = evdata['Actor']['Attributes']['name']
-                    kernel_id = await get_kernel_id_from_container(container_name)
-                    if kernel_id is None:
-                        continue
-                    await self.inject_container_lifecycle_event(
-                        kernel_id,
-                        LifecycleEvent.START,
-                        'new-container-started',
-                        container_id=ContainerId(evdata['Actor']['ID']),
-                    )
-                elif evdata['Action'] == 'die':
-                    # When containers die, we immediately clean up them.
-                    container_name = evdata['Actor']['Attributes']['name']
-                    kernel_id = await get_kernel_id_from_container(container_name)
-                    if kernel_id is None:
-                        continue
-                    reason = None
-                    kernel_obj = self.kernel_registry.get(kernel_id)
-                    if kernel_obj is not None:
-                        reason = kernel_obj.termination_reason
+                exit_code = evdata['Actor']['Attributes']['exitCode']
+            except KeyError:
+                exit_code = 255
+            await self.inject_container_lifecycle_event(
+                kernel_id,
+                LifecycleEvent.CLEAN,
+                reason or 'self-terminated',
+                container_id=ContainerId(evdata['Actor']['ID']),
+                exit_code=exit_code,
+            )
+
+        while True:
+            subscriber = self.docker.events.subscribe(create_task=True)
+            try:
+                while True:
                     try:
-                        exit_code = evdata['Actor']['Attributes']['exitCode']
-                    except KeyError:
-                        exit_code = 255
-                    await self.inject_container_lifecycle_event(
-                        kernel_id,
-                        LifecycleEvent.CLEAN,
-                        reason or 'self-terminated',
-                        container_id=ContainerId(evdata['Actor']['ID']),
-                        exit_code=exit_code,
-                    )
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                log.exception('unexpected error while processing docker events')
-        await self.docker.events.stop()
+                        # ref: https://docs.docker.com/engine/api/v1.40/#operation/SystemEvents
+                        evdata = await subscriber.get()
+                        if evdata is None:
+                            # Break out to the outermost loop when the connection is closed
+                            log.info("monitor_docker_events(): restarting aiodocker event subscriber")
+                            break
+                        if evdata['Type'] != 'container':
+                            # Our interest is the container-related events
+                            continue
+                        if self.local_config['debug']['log-docker-events']:
+                            log.debug('docker-event: action={}, actor={}',
+                                      evdata['Action'], evdata['Actor'])
+                        container_name = evdata['Actor']['Attributes']['name']
+                        kernel_id = await get_kernel_id_from_container(container_name)
+                        if kernel_id is None:
+                            continue
+                        if evdata['Action'] == 'start':
+                            await asyncio.shield(handle_action_start(kernel_id, evdata))
+                        elif evdata['Action'] == 'die':
+                            await asyncio.shield(handle_action_die(kernel_id, evdata))
+                    except asyncio.CancelledError:
+                        # We are shutting down...
+                        return
+                    except Exception:
+                        log.exception("monitor_docker_events(): unexpected error")
+            finally:
+                await asyncio.shield(self.docker.events.stop())
 
     def _kernel_resource_spec_read(self, filename):
         with open(filename, 'r') as f:
