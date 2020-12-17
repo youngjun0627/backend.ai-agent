@@ -83,10 +83,16 @@ class PersistentServiceContainer:
                 *['docker', 'load'],
                 stdin=cast(BinaryIO, reader),
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
             if (await proc.wait() != 0):
-                raise RuntimeError('loading the image has failed!', self.image_ref)
+                stderr = b'(unavailable)'
+                if proc.stderr is not None:
+                    stderr = await proc.stderr.read()
+                raise RuntimeError(
+                    'loading the image has failed!',
+                    self.image_ref, proc.returncode, stderr,
+                )
 
     async def recreate(self) -> None:
         try:
