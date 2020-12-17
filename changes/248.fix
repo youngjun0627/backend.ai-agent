@@ -1,1 +1,0 @@
-Improve statistics collection by applying aiofiles and batching of per-container stat queries
