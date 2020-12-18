@@ -16,6 +16,26 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0b1 (2020-12-18)
+----------------------
+
+### Breaking Changes
+* Update `AbstractAllocMap` interface to have explicit per-slot/per-device resource metadata, unifying prior allocmap-sepcific init args, and thus all compute plugins must be updated to instantiate alloc maps properly though the plugin interface itself has not been changed ([#248](https://github.com/lablup/backend.ai-agent/issues/248))
+
+### Features
+* Implement the `UNIQUE` resource slot type and exclusive resource slot checks to support CUDA MIG devices ([#248](https://github.com/lablup/backend.ai-agent/issues/248))
+
+### Fixes
+* Improve statistics collection by applying aiofiles and batching of per-container stat queries ([#248](https://github.com/lablup/backend.ai-agent/issues/248))
+* Change dotfiles' owner inside compute session from root to work. ([#249](https://github.com/lablup/backend.ai-agent/issues/249))
+* Stabilize the container lifecycle monitoring routines to handle missed events for exited containers and keep reconnecting to the docker daemon when actively disconnected ([#250](https://github.com/lablup/backend.ai-agent/issues/250))
+* Update plugin dependencies and now they are installed together with the agent using extra requirements, e.g., `pip install backend.ai-agent[cuda,datadog,sentry]`.  This replaces the manually managed compatibility matrix in each plugin, by ensuring that pip will check the version ranges of plugis. ([#251](https://github.com/lablup/backend.ai-agent/issues/251))
+
+### Miscellaneous
+* Update dependencies and adapt with the new pip resolver ([#247](https://github.com/lablup/backend.ai-agent/issues/247))
+* Reorganize GitHub Actions workflows and drop use of psf-chronographer and Travis CI ([#252](https://github.com/lablup/backend.ai-agent/issues/252))
+
+
 20.09.0a5 (2020-12-02)
 ----------------------
 

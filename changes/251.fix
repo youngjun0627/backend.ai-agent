@@ -1,1 +1,0 @@
-Update plugin dependencies and now they are installed together with the agent using extra requirements, e.g., `pip install backend.ai-agent[cuda,datadog,sentry]`.  This replaces the manually managed compatibility matrix in each plugin, by ensuring that pip will check the version ranges of plugis.

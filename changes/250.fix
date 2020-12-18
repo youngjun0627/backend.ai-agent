@@ -1,1 +1,0 @@
-Stabilize the container lifecycle monitoring routines to handle missed events for exited containers and keep reconnecting to the docker daemon when actively disconnected
