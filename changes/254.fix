@@ -1,1 +1,0 @@
-Raise the `kernel_started` event by ourselves to fix a race condition of event handling during kernel creation

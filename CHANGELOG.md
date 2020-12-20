@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0b2 (2020-12-20)
+----------------------
+
+### Fixes
+* Raise the `kernel_started` event by ourselves to fix a race condition of event handling during kernel creation ([#254](https://github.com/lablup/backend.ai-agent/issues/254))
+
+
 20.09.0b1 (2020-12-18)
 ----------------------
 
