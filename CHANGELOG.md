@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0b3 (2020-12-21)
+----------------------
+
+### Features
+* Add `get_node_hwinfo()` base method for compute plugins for hardware metadata queries.  Currently the intrinsic compute plugins report nothing. ([#253](https://github.com/lablup/backend.ai-agent/issues/253))
+
+
 20.09.0b2 (2020-12-20)
 ----------------------
 
