@@ -36,6 +36,7 @@ from ai.backend.common.types import (
     DeviceId, DeviceName, DeviceModelInfo,
     MountPermission, MountTypes,
     BinarySize,
+    HardwareMetadata,
 )
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.plugin import AbstractPlugin, BasePluginContext
@@ -327,6 +328,9 @@ class AbstractComputePlugin(AbstractPlugin, metaclass=ABCMeta):
         Make up container-attached device information with allocated device id.
         """
         return []
+
+    async def get_node_hwinfo(self) -> HardwareMetadata:
+        raise NotImplementedError
 
 
 class ComputePluginContext(BasePluginContext[AbstractComputePlugin]):

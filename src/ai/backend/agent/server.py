@@ -43,7 +43,7 @@ from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.plugin.monitor import ErrorPluginContext, StatsPluginContext
 from ai.backend.common.types import (
-    aobject,
+    HardwareMetadata, aobject,
     ClusterInfo,
     HostPortPair,
     KernelId,
@@ -294,7 +294,14 @@ class AgentRPCServer(aobject):
     @rpc_function
     @collect_error
     async def ping(self, msg: str) -> str:
+        log.debug('rpc::ping()')
         return msg
+
+    @rpc_function
+    @collect_error
+    async def gather_hwinfo(self) -> Mapping[str, HardwareMetadata]:
+        log.debug('rpc::gather_hwinfo()')
+        return await self.agent.gather_hwinfo()
 
     @rpc_function
     @collect_error

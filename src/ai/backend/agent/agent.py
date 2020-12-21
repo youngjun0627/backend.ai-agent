@@ -52,7 +52,7 @@ from ai.backend.common.docker import (
 )
 from ai.backend.common.logging import BraceStyleAdapter, pretty
 from ai.backend.common.types import (
-    aobject,
+    HardwareMetadata, aobject,
     # TODO: eliminate use of ContainerId
     ContainerId, KernelId,
     DeviceName, SlotName,
@@ -689,6 +689,38 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         """
         Scan and define the amount of available resource slots in this node.
         """
+
+    async def gather_hwinfo(self) -> Mapping[str, HardwareMetadata]:
+        """
+        Collect the hardware metadata from the compute plugins.
+        """
+        hwinfo: Dict[str, HardwareMetadata] = {}
+        tasks = []
+
+        async def _get(
+            key: str, plugin: AbstractComputePlugin
+        ) -> Tuple[str, Union[Exception, HardwareMetadata]]:
+            try:
+                result = await plugin.get_node_hwinfo()
+                return key, result
+            except Exception as e:
+                return key, e
+
+        for key, plugin in self.computers.items():
+            tasks.append(_get(key, plugin.instance))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for key, result in results:
+            if isinstance(result, NotImplementedError):
+                continue
+            elif isinstance(result, Exception):
+                hwinfo[key] = {
+                    'status': "unavailable",
+                    'status_info': str(result),
+                    'metadata': {},
+                }
+            else:
+                hwinfo[key] = result
+        return hwinfo
 
     @abstractmethod
     async def scan_images(self) -> Mapping[str, str]:
