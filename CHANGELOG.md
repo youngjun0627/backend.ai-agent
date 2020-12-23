@@ -16,6 +16,16 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0rc1 (2020-12-23)
+-----------------------
+
+### Features
+* Improve multi-node cluster session resource management
+  - Apply the even allocator by default for `FractionAllocMap`
+  - Add more options to customize allocation strategies to `FractionAllocMap`
+  - Allow cusotmization of the quantum size (i.e., base of multiple) of allocation ([#255](https://github.com/lablup/backend.ai-agent/issues/255))
+
+
 20.09.0b3 (2020-12-21)
 ----------------------
 
