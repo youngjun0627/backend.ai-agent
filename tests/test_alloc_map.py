@@ -8,12 +8,12 @@ from ai.backend.agent.resources import (
     AbstractComputeDevice,
     DeviceSlotInfo,
     DiscretePropertyAllocMap,
-    FractionAllocMap,
+    FractionAllocMap, FractionAllocationStrategy,
 )
 from ai.backend.agent.exception import (
     InsufficientResource,
     InvalidResourceArgument,
-    InvalidResourceCombination,
+    InvalidResourceCombination, NotMultipleOfQuantum,
 )
 from ai.backend.common.types import (
     DeviceId,
@@ -93,6 +93,7 @@ def test_fraction_alloc_map():
             DeviceId('a0'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1.0)),
             DeviceId('a1'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1.0)),
         },
+        allocation_strategy=FractionAllocationStrategy.FILL,
     )
     assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0')
     assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0')
@@ -129,6 +130,7 @@ def test_fraction_alloc_map_many_device():
             DeviceId('a6'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1.0)),
             DeviceId('a7'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1.0)),
         },
+        allocation_strategy=FractionAllocationStrategy.FILL,
     )
     for idx in range(8):
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
@@ -162,6 +164,8 @@ def test_fraction_alloc_map_iteration():
             DeviceId('a0'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1.0)),
             DeviceId('a1'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1.0)),
         },
+        allocation_strategy=FractionAllocationStrategy.FILL,
+        quantum_size=Decimal("0.00001")
     )
     assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0')
     assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0')
@@ -189,6 +193,7 @@ def test_fraction_alloc_map_random_generated_allocations():
             DeviceId('a0'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1.0)),
             DeviceId('a1'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1.0)),
         },
+        allocation_strategy=FractionAllocationStrategy.FILL,
     )
     assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0')
     assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0')
@@ -218,21 +223,22 @@ def test_fraction_alloc_map_even_allocation():
             DeviceId('a3'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(0.3)),
             DeviceId('a4'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(0.0)),
         },
+        allocation_strategy=FractionAllocationStrategy.EVENLY,
     )
     for idx in range(5):
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
 
     with pytest.raises(InsufficientResource):
-        alloc_map.allocate_evenly({
+        alloc_map.allocate({
             SlotName('x'): Decimal('0.66'),
         })
 
     with pytest.raises(InsufficientResource):
-        alloc_map.allocate_evenly({
+        alloc_map.allocate({
             SlotName('x'): Decimal('0.06'),
         }, min_memory=Decimal(0.6))
     for _ in range(20):
-        alloc_map.allocate_evenly({
+        alloc_map.allocate({
             SlotName('x'): Decimal('0.01'),
         })
 
@@ -245,7 +251,7 @@ def test_fraction_alloc_map_even_allocation():
     for idx in range(0):
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
 
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('0.2')
     })
     assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.2')
@@ -253,7 +259,7 @@ def test_fraction_alloc_map_even_allocation():
     alloc_map.free(result)
     assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0')
 
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('0.2')
     }, min_memory=Decimal('0.25'))
     assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('0.2')
@@ -261,7 +267,7 @@ def test_fraction_alloc_map_even_allocation():
     for idx in range(5):
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
 
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('0.5')
     })
     assert alloc_map.allocations[SlotName('x')][DeviceId('a2')] == Decimal('0.2')
@@ -270,7 +276,7 @@ def test_fraction_alloc_map_even_allocation():
     for idx in range(5):
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
 
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('0.65')
     })
     assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0.05')
@@ -281,7 +287,7 @@ def test_fraction_alloc_map_even_allocation():
     for idx in range(5):
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
 
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('0.6')
     }, min_memory=Decimal('0.1'))
     assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('0.1')
@@ -298,7 +304,7 @@ def test_fraction_alloc_map_even_allocation():
             DeviceId('a2'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('0.9')),
         },
     )
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('1')
     })
     assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0.3')
@@ -315,8 +321,9 @@ def test_fraction_alloc_map_even_allocation_fractions():
             DeviceId('a3'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('0.3')),
             DeviceId('a4'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('0.0')),
         },
+        allocation_strategy=FractionAllocationStrategy.EVENLY,
     )
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('2.31')
     })
     assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0.67')
@@ -327,7 +334,7 @@ def test_fraction_alloc_map_even_allocation_fractions():
     for idx in range(4):
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
 
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('2')
     })
     assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal('0.67')
@@ -346,8 +353,9 @@ def test_fraction_alloc_map_even_allocation_many_devices():
             DeviceId('a2'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(3)),
             DeviceId('a3'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(5)),
         },
+        allocation_strategy=FractionAllocationStrategy.EVENLY,
     )
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('6')
     })
     assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal('3')
@@ -368,9 +376,10 @@ def test_fraction_alloc_map_even_allocation_many_devices():
             DeviceId('a7'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(5)),
             DeviceId('a8'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(5)),
         },
+        allocation_strategy=FractionAllocationStrategy.EVENLY,
     )
 
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('6')
     }, min_memory=Decimal('2.5'))
     assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('3')
@@ -379,7 +388,7 @@ def test_fraction_alloc_map_even_allocation_many_devices():
     for idx in range(9):
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
 
-    result = alloc_map.allocate_evenly({
+    result = alloc_map.allocate({
         SlotName('x'): Decimal('11')
     }, min_memory=Decimal('0.84'))
     assert alloc_map.allocations[SlotName('x')][DeviceId('a3')] == Decimal('2.75')
@@ -389,6 +398,85 @@ def test_fraction_alloc_map_even_allocation_many_devices():
     alloc_map.free(result)
     for idx in range(9):
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+
+@pytest.mark.parametrize(
+    "alloc_strategy",
+    [FractionAllocationStrategy.FILL, FractionAllocationStrategy.EVENLY],
+)
+def test_quantum_size(alloc_strategy):
+    alloc_map = FractionAllocMap(
+        device_slots={
+            DeviceId('a0'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1)),  # noqa
+            DeviceId('a1'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1)),  # noqa
+        },
+        quantum_size=Decimal("0.25"),
+        allocation_strategy=alloc_strategy,
+    )
+    result = alloc_map.allocate({
+        SlotName('x'): Decimal("0.5"),
+    })
+    assert sum(alloc_map.allocations[SlotName('x')].values()) == Decimal("0.5")
+    alloc_map.free(result)
+
+    result = alloc_map.allocate({
+        SlotName('x'): Decimal("1.5"),
+    })
+    assert sum(alloc_map.allocations[SlotName('x')].values()) == Decimal("1.5")
+    if alloc_strategy == FractionAllocationStrategy.EVENLY:
+        assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal("0.75")
+        assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal("0.75")
+    else:
+        assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal("1.00")
+        assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal("0.50")
+    alloc_map.free(result)
+
+    # inputs are not multiple of 0.25
+    with pytest.raises(NotMultipleOfQuantum):
+        alloc_map.allocate({
+            SlotName('x'): Decimal("0.52"),
+        })
+    with pytest.raises(NotMultipleOfQuantum):
+        alloc_map.allocate({
+            SlotName('x'): Decimal("0.42"),
+        })
+    with pytest.raises(NotMultipleOfQuantum):
+        alloc_map.allocate({
+            SlotName('x'): Decimal("3.99"),
+        })
+
+    if alloc_strategy == FractionAllocationStrategy.EVENLY:
+        # input IS multiple of 0.25 but the CALCULATED allocations are not multiple of 0.25
+        with pytest.raises(InsufficientResource, match="multiple-of-quantum"):
+            alloc_map.allocate({
+                SlotName('x'): Decimal("1.75"),  # divided to 0.88 and 0.87
+            })
+    else:
+        # In this case, it satisfies the quantum condition, because the capacity of devices are
+        # multiples of the quantum.
+        alloc_map.allocate({
+            SlotName('x'): Decimal("1.75"),
+        })
+        assert alloc_map.allocations[SlotName('x')][DeviceId('a0')] == Decimal("1.00")
+        assert alloc_map.allocations[SlotName('x')][DeviceId('a1')] == Decimal("0.75")
+
+        # So let's change the situation.
+        alloc_map = FractionAllocMap(
+            device_slots={
+                DeviceId('a0'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1)),  # noqa
+                DeviceId('a1'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal(1)),  # noqa
+            },
+            quantum_size=Decimal("0.3"),
+            allocation_strategy=alloc_strategy,
+        )
+        with pytest.raises(NotMultipleOfQuantum):
+            alloc_map.allocate({
+                SlotName('x'): Decimal("0.5"),
+            })
+        with pytest.raises(InsufficientResource, match="multiple-of-quantum"):
+            alloc_map.allocate({
+                SlotName('x'): Decimal("1.2"),
+            })
 
 
 def test_exclusive_resource_slots():
@@ -504,6 +592,7 @@ def test_heterogeneous_resource_slots_with_fractional_alloc_map():
             DeviceId('a4'): DeviceSlotInfo(SlotTypes.UNIQUE, SlotName('cuda.device:3g.20gb-mig'), Decimal(1)),  # noqa
         },
         exclusive_slot_types={'cuda.device:*-mig', 'cuda.device', 'cuda.shares'},
+        allocation_strategy=FractionAllocationStrategy.FILL,
     )
 
     def check_clean():

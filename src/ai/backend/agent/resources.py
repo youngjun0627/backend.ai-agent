@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from decimal import Decimal, ROUND_DOWN
+import enum
 import fnmatch
 import logging
 import json
@@ -40,7 +41,12 @@ from ai.backend.common.types import (
 )
 from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.plugin import AbstractPlugin, BasePluginContext
-from .exception import InsufficientResource, InvalidResourceArgument, InvalidResourceCombination
+from .exception import (
+    InsufficientResource,
+    InvalidResourceArgument,
+    InvalidResourceCombination,
+    NotMultipleOfQuantum,
+)
 from .stats import StatContext, NodeMeasurement, ContainerMeasurement
 from .types import Container as SessionContainer
 
@@ -52,6 +58,11 @@ log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
 
 
 known_slot_types: Mapping[SlotName, SlotTypes] = {}
+
+
+class FractionAllocationStrategy(enum.Enum):
+    FILL = 0
+    EVENLY = 1
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -589,14 +600,32 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
 
 class FractionAllocMap(AbstractAllocMap):
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        allocation_strategy: FractionAllocationStrategy = FractionAllocationStrategy.EVENLY,
+        quantum_size: Decimal = Decimal("0.01"),
+        enforce_physical_continuity: bool = True,
+        **kwargs,
+    ) -> None:
+        self.allocation_strategy = allocation_strategy
+        self.quantum_size = quantum_size
+        self.enforce_physical_continuity = enforce_physical_continuity
+        self._allocate_impl = {
+            FractionAllocationStrategy.FILL: self._allocate_by_filling,
+            FractionAllocationStrategy.EVENLY: self._allocate_evenly,
+        }
         super().__init__(*args, **kwargs)
         self.digits = Decimal(10) ** -2  # decimal points that is supported by agent
         self.powers = Decimal(100)  # reciprocal of self.digits
 
-    def allocate(self, slots: Mapping[SlotName, Decimal], *,
-                 context_tag: str = None) \
-                 -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
+    def allocate(
+        self,
+        slots: Mapping[SlotName, Decimal],
+        *,
+        context_tag: str = None,
+        min_memory: Decimal = Decimal("0.01"),
+    ) -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
         # prune zero alloc slots
         requested_slots = {k: v for k, v in slots.items() if v > 0}
 
@@ -608,6 +637,27 @@ class FractionAllocMap(AbstractAllocMap):
                         f"Slots {slot_name_a} and {slot_name_b} cannot be allocated at the same time."
                     )
 
+        # check quantum size
+        for slot_name, slot_value in requested_slots.items():
+            if slot_value.remainder_near(self.quantum_size) != 0:
+                raise NotMultipleOfQuantum(
+                    f"Requested amount {slot_value} for {slot_name} is "
+                    f"not a multiple of {self.quantum_size}."
+                )
+
+        return self._allocate_impl[self.allocation_strategy](
+            requested_slots,
+            context_tag=context_tag,
+            min_memory=min_memory,
+        )
+
+    def _allocate_by_filling(
+        self,
+        requested_slots: Mapping[SlotName, Decimal],
+        *,
+        context_tag: str = None,
+        min_memory: Decimal = Decimal(0.01),
+    ) -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
         allocation = {}
         for slot_name, alloc in requested_slots.items():
             slot_allocation: MutableMapping[DeviceId, Decimal] = {}
@@ -652,23 +702,21 @@ class FractionAllocMap(AbstractAllocMap):
                     remaining_alloc -= allocated
                 if remaining_alloc <= 0:
                     break
+            if any(value.remainder_near(self.quantum_size) != 0 for value in slot_allocation.values()):
+                alloc_repr = ", ".join(f"{k}={v}" for k, v in slot_allocation.items())
+                raise InsufficientResource(
+                    f"Could not assign multiple-of-quantum amounts to devices ({alloc_repr})"
+                )
             allocation[slot_name] = slot_allocation
         return allocation
 
-    def allocate_evenly(self, slots: Mapping[SlotName, Decimal], *,
-                        context_tag: str = None,
-                        min_memory: Decimal = Decimal(0.01)) \
-                        -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
-        # prune zero alloc slots
-        requested_slots = {k: v for k, v in slots.items() if v > 0}
-
-        # check exclusive
-        for slot_name_a in requested_slots.keys():
-            for slot_name_b in requested_slots.keys():
-                if self.check_exclusive(slot_name_a, slot_name_b):
-                    raise InvalidResourceCombination(
-                        f"Slots {slot_name_a} and {slot_name_b} cannot be allocated at the same time."
-                    )
+    def _allocate_evenly(
+        self,
+        requested_slots: Mapping[SlotName, Decimal],
+        *,
+        context_tag: str = None,
+        min_memory: Decimal = Decimal(0.01),
+    ) -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
 
         # higher value means more even with 0 being the highest value
         def measure_evenness(alloc_map: Mapping[DeviceId, Decimal]) \
@@ -731,7 +779,7 @@ class FractionAllocMap(AbstractAllocMap):
 
         min_memory = min_memory.quantize(self.digits)
         allocation = {}
-        for slot_name, alloc in slots.items():
+        for slot_name, alloc in requested_slots.items():
             slot_allocation: MutableMapping[DeviceId, Decimal] = {}
             remaining_alloc = Decimal(alloc).normalize()
             sorted_dev_allocs = sorted(
@@ -823,8 +871,13 @@ class FractionAllocMap(AbstractAllocMap):
                 slot_allocation = sorted(best_alloc_candidate_arr,
                                          key=operator.itemgetter(1, 2, 3))[-1][0]
             allocation[slot_name] = slot_allocation
-            for dev_id in slot_allocation:
-                self.allocations[slot_name][dev_id] += slot_allocation[dev_id]
+            if any(value.remainder_near(self.quantum_size) != 0 for value in slot_allocation.values()):
+                alloc_repr = ", ".join(f"{k}={v}" for k, v in slot_allocation.items())
+                raise InsufficientResource(
+                    f"Could not assign multiple-of-quantum amounts to devices ({alloc_repr})"
+                )
+            for dev_id, value in slot_allocation.items():
+                self.allocations[slot_name][dev_id] += value
         return allocation
 
     def apply_allocation(

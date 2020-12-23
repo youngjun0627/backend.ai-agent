@@ -18,6 +18,10 @@ class InvalidResourceArgument(ResourceError):
     pass
 
 
+class NotMultipleOfQuantum(InvalidResourceArgument):
+    pass
+
+
 class InsufficientResource(ResourceError):
     pass
 
