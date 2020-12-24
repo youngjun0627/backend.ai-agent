@@ -1214,6 +1214,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
 
     async def create_kernel(
         self,
+        creation_id: str,
         session_id: SessionId,
         kernel_id: KernelId,
         kernel_config: KernelCreationConfig,
@@ -1226,7 +1227,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         """
 
         if not restarting:
-            await self.produce_event('kernel_preparing', str(kernel_id))
+            await self.produce_event('kernel_preparing', str(kernel_id), creation_id)
 
         # Initialize the creation context
         log.debug('Kernel creation config: {0}', pretty(kernel_config))
@@ -1255,12 +1256,16 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             AutoPullBehavior(kernel_config.get('auto_pull', 'digest')),
         )
         if do_pull:
-            await self.produce_event('kernel_pulling',
-                                     str(kernel_id), ctx.image_ref.canonical)
+            await self.produce_event(
+                'kernel_pulling',
+                str(kernel_id),
+                creation_id,
+                ctx.image_ref.canonical,  # passed as "reason" arg
+            )
             await self.pull_image(ctx.image_ref, kernel_config['image']['registry'])
 
         if not restarting:
-            await self.produce_event('kernel_creating', str(kernel_id))
+            await self.produce_event('kernel_creating', str(kernel_id), creation_id)
 
         # Get the resource spec from existing kernel scratches
         # or create a new resource spec from ctx.kernel_config
@@ -1437,7 +1442,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         log.debug('service ports:\n{!r}', pretty(service_ports))
 
         # Finally we are done.
-        await self.produce_event('kernel_started', str(kernel_id))
+        await self.produce_event('kernel_started', str(kernel_id), creation_id)
 
         # The startup command for the batch-type sessions will be executed by the manager
         # upon firing of the "session_started" event.
@@ -1558,6 +1563,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
 
     async def restart_kernel(
         self,
+        creation_id: str,
         session_id: SessionId,
         kernel_id: KernelId,
         updating_kernel_config: KernelCreationConfig,
@@ -1604,6 +1610,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                 # tracker.destroy_event.clear()
                 try:
                     await self.create_kernel(
+                        creation_id,
                         session_id,
                         kernel_id,
                         kernel_config,
