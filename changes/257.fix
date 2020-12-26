@@ -1,4 +1,0 @@
-Stabilization of multi-node multi-container support
-- Simplify the Docker Swarm status detection
-- Handle partial failures during batch kernel creation, by reporting the first error, and let successful containers as-is because they will be destroyed by the manager
-- Add suppress-events option to `destroy_kernel()` RPC function to "silenty" destroy kernels for recovery after partial multi-node multi-container session spawn failures

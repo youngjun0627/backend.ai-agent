@@ -16,6 +16,16 @@ Changes
 
 .. towncrier release notes start
 
+20.09.0 (2020-12-27)
+--------------------
+
+### Fixes
+* Stabilization of multi-node multi-container support ([#257](https://github.com/lablup/backend.ai-agent/issues/257))
+  - Simplify the Docker Swarm status detection
+  - Handle partial failures during batch kernel creation, by reporting the first error, and let successful containers as-is because they will be destroyed by the manager
+  - Add suppress-events option to `destroy_kernel()` RPC function to "silenty" destroy kernels for recovery after partial multi-node multi-container session spawn failures
+
+
 20.09.0rc2 (2020-12-24)
 -----------------------
 
