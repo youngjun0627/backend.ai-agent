@@ -453,10 +453,11 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                             ev.kernel_id)
                 if ev.container_id is None:
                     await self.rescan_resource_usage()
-                    await self.produce_event(
-                        'kernel_terminated', str(ev.kernel_id),
-                        'already-terminated', None,
-                    )
+                    if not ev.suppress_events:
+                        await self.produce_event(
+                            'kernel_terminated', str(ev.kernel_id),
+                            'already-terminated', None,
+                        )
                     return
                 else:
                     self.container_lifecycle_queue.put_nowait(
@@ -465,6 +466,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                             ev.container_id,
                             LifecycleEvent.CLEAN,
                             ev.reason,
+                            suppress_events=ev.suppress_events,
                         )
                     )
             else:
@@ -523,10 +525,11 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                     restart_tracker.destroy_event.set()
                 else:
                     await self.rescan_resource_usage()
-                    await self.produce_event(
-                        'kernel_terminated', str(ev.kernel_id),
-                        ev.reason, None,
-                    )
+                    if not ev.suppress_events:
+                        await self.produce_event(
+                            'kernel_terminated', str(ev.kernel_id),
+                            ev.reason, None,
+                        )
 
     async def process_lifecycle_events(self) -> None:
         async with aiotools.TaskGroup() as tg:
@@ -563,6 +566,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         exit_code: int = None,
         done_event: asyncio.Event = None,
         clean_event: asyncio.Event = None,
+        suppress_events: bool = False,
     ) -> None:
         try:
             kernel_obj = self.kernel_registry[kernel_id]
@@ -587,6 +591,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                 reason,
                 done_event,
                 exit_code,
+                suppress_events,
             )
         )
 

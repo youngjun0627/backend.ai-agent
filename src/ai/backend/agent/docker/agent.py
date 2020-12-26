@@ -30,12 +30,10 @@ from typing import (
 
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError, DockerContainerError
-import aiohttp
 import aiotools
 from async_timeout import timeout
 import attr
 import zmq
-import yarl
 
 from ai.backend.common.docker import (
     ImageRef,
@@ -191,7 +189,7 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
         await super().__ainit__()
         await self.check_swarm_status()
         if self.heartbeat_extra_info['swarm_enabled']:
-            log.info('Legacy swarm cluster configured and enabled')
+            log.info('The Docker Swarm cluster is configured and enabled')
         (ipc_base_path / 'container').mkdir(parents=True, exist_ok=True)
         self.agent_sockpath = ipc_base_path / 'container' / f'agent.{self.agent_id}.sock'
         socket_relay_container = PersistentServiceContainer(
@@ -286,29 +284,12 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                     swarm_enabled = self.local_config['container'].get('swarm-enabled', False)
                     if not swarm_enabled:
                         continue
-                    docker_engine = await self.docker.system.info()
-                    cluster_store = docker_engine['ClusterStore']
-                    cluster_advertise = docker_engine['ClusterAdvertise']
-                    if not cluster_store:
+                    docker_info = await self.docker.system.info()
+                    if docker_info['Swarm']['LocalNodeState'] == 'inactive':
                         raise InitializationError(
-                            'swarm mode enabled but ClusterStore is not configured'
+                            "The swarm mode is enabled but the node state of "
+                            "the local Docker daemon is inactive."
                         )
-                    if not cluster_advertise:
-                        raise InitializationError(
-                            'swarm mode enabled but ClusterAdvertise is not configured'
-                        )
-                    connector = aiohttp.TCPConnector(ssl=False)
-                    async with aiohttp.ClientSession(connector=connector) as sess:
-                        raw_url = yarl.URL(cluster_store.replace('etcd://', 'http://'))
-                        base_url = raw_url.parent / 'v2' / 'keys' / ''.join(raw_url.parts[1:])
-                        query_url = base_url / 'docker' / 'nodes' / cluster_advertise
-                        log.debug('checking swarm status from {0}', query_url)
-                        async with sess.get(query_url) as resp:
-                            if resp.status == 404:
-                                raise InitializationError(
-                                    'swarm mode enabled, cluster store configured but '
-                                    'docker node not joined cluster'
-                                )
                 except InitializationError as e:
                     log.exception(str(e))
                     swarm_enabled = False
@@ -1139,6 +1120,7 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
         await self.docker.networks.create({
             'Name': network_name,
             'Driver': 'overlay',
+            'Attachable': True,
             'Labels': {
                 'ai.backend.cluster-network': '1'
             }

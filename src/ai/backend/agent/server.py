@@ -24,7 +24,6 @@ from typing import (
     Sequence,
     Set,
     Tuple,
-    TYPE_CHECKING,
     cast,
 )
 from uuid import UUID
@@ -62,11 +61,9 @@ from .config import (
     registry_ecr_config_iv,
     container_etcd_config_iv,
 )
+from .exception import ResourceError
 from .types import AgentBackend, VolumeInfo, LifecycleEvent
 from .utils import get_subnet_ip
-
-if TYPE_CHECKING:
-    from typing import Any, Dict, Optional  # noqa
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.server'))
 
@@ -148,6 +145,9 @@ class RPCFunctionRegistry:
                         **request.body['kwargs'],
                     )
             except (asyncio.CancelledError, asyncio.TimeoutError):
+                raise
+            except ResourceError:
+                # This is an expected scenario.
                 raise
             except Exception:
                 log.exception('unexpected error')
@@ -334,7 +334,11 @@ class AgentRPCServer(aobject):
                 kernel_config,
                 cluster_info,
             ))
-        results = await asyncio.gather(*coros)
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        errors = [*filter(lambda item: isinstance(item, Exception), results)]
+        if errors:
+            # Raise up the first error.
+            raise errors[0]
         raw_results = [
             {
                 'id': str(result['id']),
@@ -354,7 +358,12 @@ class AgentRPCServer(aobject):
 
     @rpc_function
     @collect_error
-    async def destroy_kernel(self, kernel_id: str, reason: str = None):
+    async def destroy_kernel(
+        self,
+        kernel_id: str,
+        reason: str = None,
+        suppress_events: bool = False,
+    ):
         log.info('rpc::destroy_kernel(k:{0})', kernel_id)
         done = asyncio.Event()
         await self.agent.inject_container_lifecycle_event(
@@ -362,6 +371,7 @@ class AgentRPCServer(aobject):
             LifecycleEvent.DESTROY,
             reason or 'user-requested',
             done_event=done,
+            suppress_events=suppress_events,
         )
         await done.wait()
         return getattr(done, '_result', None)

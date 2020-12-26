@@ -67,6 +67,7 @@ class ContainerLifecycleEvent:
     reason: str
     done_event: Optional[asyncio.Event] = None
     exit_code: Optional[int] = None
+    suppress_events: bool = False
 
     def __str__(self):
         if self.container_id:
