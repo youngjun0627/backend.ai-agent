@@ -400,6 +400,40 @@ def test_fraction_alloc_map_even_allocation_many_devices():
         assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
 
 
+def test_fraction_alloc_map_even_allocation_many_devices_2():
+    alloc_map = FractionAllocMap(
+        device_slots={
+            DeviceId('a0'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('1.0')),
+            DeviceId('a1'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('1.0')),
+            DeviceId('a2'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('1.0')),
+            DeviceId('a3'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('1.0')),
+            DeviceId('a4'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('1.0')),
+            DeviceId('a5'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('1.0')),
+            DeviceId('a6'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('1.0')),
+            DeviceId('a7'): DeviceSlotInfo(SlotTypes.COUNT, SlotName('x'), Decimal('1.0')),
+        },
+        allocation_strategy=FractionAllocationStrategy.EVENLY,
+    )
+    result = alloc_map.allocate({
+        SlotName('x'): Decimal('6')
+    })
+    count_0 = 0
+    count_1 = 0
+    # NOTE: the even allocator favors the tail of device list when it fills up.
+    # So we rely on the counting of desire per-device allocations instead of matching
+    # the device index and the allocations.
+    for idx in range(8):
+        if alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('1.0'):
+            count_1 += 1
+        if alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0'):
+            count_0 += 1
+    assert count_0 == 2
+    assert count_1 == 6
+    alloc_map.free(result)
+    for idx in range(8):
+        assert alloc_map.allocations[SlotName('x')][DeviceId(f'a{idx}')] == Decimal('0')
+
+
 @pytest.mark.parametrize(
     "alloc_strategy",
     [FractionAllocationStrategy.FILL, FractionAllocationStrategy.EVENLY],
