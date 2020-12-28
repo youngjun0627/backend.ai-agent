@@ -78,6 +78,18 @@ async def terminate_and_wait(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
+def promote_path(path_env: str, path_to_promote: Union[Path, str]) -> str:
+    paths = path_env.split(':')
+    print(f"promote_path: {path_to_promote=} {path_env=}", file=sys.stderr)
+    path_to_promote = str(path_to_promote)
+    result_paths = [
+        p for p in paths
+        if path_to_promote != p
+    ]
+    result_paths.insert(0, path_to_promote)
+    return ":".join(result_paths)
+
+
 class BaseRunner(metaclass=ABCMeta):
 
     log_prefix: ClassVar[str] = 'generic-kernel'
@@ -111,7 +123,11 @@ class BaseRunner(metaclass=ABCMeta):
         self.subproc = None
         self.runtime_path = runtime_path
 
+        default_child_env_path = self.default_child_env.pop("PATH", None)
         self.child_env = {**os.environ, **self.default_child_env}
+        if default_child_env_path is not None and "PATH" not in self.child_env:
+            # set the default PATH env-var only when it's missing from the image
+            self.child_env["PATH"] = default_child_env_path
         config_dir = Path('/home/config')
         try:
             evdata = (config_dir / 'environ.txt').read_text()
