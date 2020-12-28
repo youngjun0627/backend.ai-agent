@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.09.1 (2020-12-29)
+--------------------
+
+### Fixes
+* Fix too minimal PATH environment variable when using SSH sessions across different containers in a multi-container session due to the hard-coded default in dropbear ([#258](https://github.com/lablup/backend.ai-agent/issues/258))
+
+
 20.09.0 (2020-12-27)
 --------------------
 

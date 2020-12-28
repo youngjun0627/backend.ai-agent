@@ -1,1 +1,0 @@
-Fix too minimal PATH environment variable when using SSH sessions across different containers in a multi-container session due to the hard-coded default in dropbear
