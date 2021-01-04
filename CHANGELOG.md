@@ -16,6 +16,17 @@ Changes
 
 .. towncrier release notes start
 
+20.09.2 (2021-01-04)
+--------------------
+
+### Features
+* Allow environment customization by `/opt/container/bootstrap.sh` defined by individual images by sourcing it instead of executing ([#261](https://github.com/lablup/backend.ai-agent/issues/261))
+
+### Fixes
+* Reliable scp support inside container: scp now references correct ssh binary located in /usr/bin/.
+  - Force scp to use the specified ssh implementation in Backend.AI ([#260](https://github.com/lablup/backend.ai-agent/issues/260))
+
+
 20.09.1 (2020-12-29)
 --------------------
 
