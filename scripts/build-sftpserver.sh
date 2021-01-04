@@ -23,7 +23,7 @@ RUN echo "BUILD: zlib" && \
 
 RUN echo "BUILD: OpenSSL" && \
     cd /root/openssl-${SSL_VER} && \
-    ./config --prefix=/usr/local no-shared --openssldir=/usr/local/openssl && \
+    ./config --prefix=/usr no-shared --openssldir=/usr/local/openssl && \
     make && \
     make install
 EOF
@@ -89,7 +89,7 @@ export LDFLAGS="-L/root/zlib-${ZLIB_VER} -L/root/openssl-${SSL_VER} -pthread"
 export LIBS="-ldl"
 sed -i "s/-lcrypto/-l:libcrypto.a/" ./configure
 sed -i "s/-lz/-l:libz.a/" ./configure
-./configure --prefix=/usr/local
+./configure --prefix=/usr
 sed -i 's/\(SFTP_MAX_MSG_LENGTH\)[ \t]+\\([0-9 \*]*\\)/\1 327800/' sftp-common.h
 make sftp-server scp
 cp sftp-server ../sftp-server.$X_DISTRO.$X_ARCH.bin
