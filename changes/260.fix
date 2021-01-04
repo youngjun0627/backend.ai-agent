@@ -1,0 +1,2 @@
+Reliable scp support inside container: scp now references correct ssh binary located in /usr/bin/.
+- Force scp to use the specified ssh implementation in Backend.AI
