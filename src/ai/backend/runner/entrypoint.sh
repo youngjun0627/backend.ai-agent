@@ -21,7 +21,7 @@ if [ $USER_ID -eq 0 ]; then
   # Invoke image-specific bootstrap hook.
   if [ -x "/opt/container/bootstrap.sh" ]; then
     echo 'Executing image bootstrap... '
-    /opt/container/bootstrap.sh
+    . /opt/container/bootstrap.sh
     echo 'Image bootstrap executed.'
   fi
 
@@ -73,7 +73,7 @@ else
     echo 'Executing image bootstrap... '
     export LOCAL_USER_ID=$USER_ID
     export LOCAL_GROUP_ID=$GROUP_ID
-    /opt/container/bootstrap.sh
+    . /opt/container/bootstrap.sh
     echo 'Image bootstrap executed.'
   fi
 
