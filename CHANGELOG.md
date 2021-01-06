@@ -16,6 +16,21 @@ Changes
 
 .. towncrier release notes start
 
+20.03.10 (2021-01-06)
+---------------------
+
+### Breaking Changes
+* From this release, Agent v20.03.10, requires the Manager release v20.03.15 or higher, due to changes of the manager-to-agent RPC protocol. ([#262](https://github.com/lablup/backend.ai-agent/issues/262))
+
+### Features
+* Allow environment customization by `/opt/container/bootstrap.sh` defined by individual images by sourcing it instead of executing ([#261](https://github.com/lablup/backend.ai-agent/issues/261))
+
+### Fixes
+* Fix races of kernel creation events by tracking the creation request IDs ([#256](https://github.com/lablup/backend.ai-agent/issues/256))
+* Reliable scp support inside container: scp now references correct ssh binary located in /usr/bin/. ([#260](https://github.com/lablup/backend.ai-agent/issues/260))
+  - Force scp to use the specified ssh implementation in Backend.AI
+
+
 20.03.9 (2020-12-17)
 --------------------
 
