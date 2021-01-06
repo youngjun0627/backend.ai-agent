@@ -395,10 +395,16 @@ class DockerAgent(AbstractAgent):
                 raise
         return False
 
-    async def create_kernel(self, kernel_id: KernelId, kernel_config: KernelCreationConfig, *,
-                            restarting: bool = False) -> KernelCreationResult:
+    async def create_kernel(
+        self,
+        creation_id: str,
+        kernel_id: KernelId,
+        kernel_config: KernelCreationConfig,
+        *,
+        restarting: bool = False,
+    ) -> KernelCreationResult:
 
-        await self.produce_event('kernel_preparing', str(kernel_id))
+        await self.produce_event('kernel_preparing', str(kernel_id), creation_id)
 
         log.debug('Kernel Creation Config: {0}', json.dumps(kernel_config))
         # Read image-specific labels and settings
@@ -415,11 +421,15 @@ class DockerAgent(AbstractAgent):
             AutoPullBehavior(kernel_config.get('auto_pull', 'digest')),
         )
         if do_pull:
-            await self.produce_event('kernel_pulling',
-                                     str(kernel_id), image_ref.canonical)
+            await self.produce_event(
+                'kernel_pulling',
+                str(kernel_id),
+                creation_id,
+                image_ref.canonical,
+            )
             await self.pull_image(image_ref, kernel_config['image']['registry'])
 
-        await self.produce_event('kernel_creating', str(kernel_id))
+        await self.produce_event('kernel_creating', str(kernel_id), creation_id)
         image_labels = kernel_config['image']['labels']
         log.debug('image labels:\n{}', pretty(image_labels))
         version = int(image_labels.get('ai.backend.kernelspec', '1'))
@@ -1147,7 +1157,7 @@ class DockerAgent(AbstractAgent):
         await kernel_obj.check_status()
 
         # Finally we are done.
-        await self.produce_event('kernel_started', str(kernel_id))
+        await self.produce_event('kernel_started', str(kernel_id), creation_id)
 
         # Execute the startup command if the session type is batch.
         if SessionTypes(kernel_config['session_type']) == SessionTypes.BATCH:

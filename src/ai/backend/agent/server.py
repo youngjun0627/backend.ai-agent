@@ -304,11 +304,19 @@ class AgentRPCServer(aobject):
     @rpc_function
     @update_last_used
     @collect_error
-    async def create_kernel(self, kernel_id: str, config: dict):
+    async def create_kernel(
+        self,
+        kernel_id: str,
+        creation_id: str,  # reversed order due to update_last_used
+        config: dict,
+    ):
         log.info('rpc::create_kernel(k:{0}, img:{1})',
                  kernel_id, config['image']['canonical'])
         result = await self.agent.create_kernel(
-            KernelId(UUID(kernel_id)), cast(KernelCreationConfig, config))
+            creation_id,
+            KernelId(UUID(kernel_id)),
+            cast(KernelCreationConfig, config),
+        )
         return {
             'id': str(result['id']),
             'kernel_host': result['kernel_host'],
@@ -362,10 +370,18 @@ class AgentRPCServer(aobject):
     @rpc_function
     @update_last_used
     @collect_error
-    async def restart_kernel(self, kernel_id: str, new_config: dict):
+    async def restart_kernel(
+        self,
+        kernel_creation_id: str,
+        kernel_id: str,
+        new_config: dict,
+    ):
         log.info('rpc::restart_kernel(k:{0})', kernel_id)
         return await self.agent.restart_kernel(
-            KernelId(UUID(kernel_id)), cast(KernelCreationConfig, new_config))
+            kernel_creation_id,
+            KernelId(UUID(kernel_id)),
+            cast(KernelCreationConfig, new_config),
+        )
 
     @rpc_function
     @update_last_used

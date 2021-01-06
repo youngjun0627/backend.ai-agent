@@ -743,6 +743,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
     @abstractmethod
     async def create_kernel(
         self,
+        creation_id: str,
         kernel_id: KernelId,
         config: KernelCreationConfig,
         *,
@@ -809,7 +810,12 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         In such cases, skip container-specific cleanups.
         """
 
-    async def restart_kernel(self, kernel_id: KernelId, new_config: KernelCreationConfig):
+    async def restart_kernel(
+        self,
+        creation_id: str,
+        kernel_id: KernelId,
+        new_config: KernelCreationConfig,
+    ):
         # TODO: check/correct resource release/allocation timings during restarts
         # TODO: handle restart failure when resource allocation for new config fails
         tracker = self.restarting_kernels.get(kernel_id)
@@ -850,7 +856,9 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             else:
                 tracker.destroy_event.clear()
                 await self.create_kernel(
-                    kernel_id, new_config,
+                    creation_id,
+                    kernel_id,
+                    new_config,
                     restarting=True)
                 self.restarting_kernels.pop(kernel_id, None)
             tracker.done_event.set()
