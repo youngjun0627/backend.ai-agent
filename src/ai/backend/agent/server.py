@@ -5,7 +5,6 @@ import functools
 import importlib
 from ipaddress import ip_network, _BaseAddress as BaseIPAddress
 import logging, logging.config
-import multiprocessing
 import os, os.path
 from pathlib import Path
 from pprint import pformat, pprint
@@ -713,8 +712,6 @@ def main(
               file=sys.stderr)
         raise click.Abort()
 
-    multiprocessing.set_start_method('spawn')
-
     if cli_ctx.invoked_subcommand is None:
 
         if cfg['debug']['coredump']['enabled']:
@@ -753,10 +750,11 @@ def main(
                     import uvloop
                     uvloop.install()
                     log.info('Using uvloop as the event loop backend')
-                aiotools.start_server(server_main_logwrapper,
-                                      num_workers=1,
-                                      use_threading=False,
-                                      args=(cfg, log_endpoint))
+                aiotools.start_server(
+                    server_main_logwrapper,
+                    num_workers=1,
+                    args=(cfg, log_endpoint),
+                )
                 log.info('exit.')
         finally:
             if cfg['agent']['pid-file'].is_file():
