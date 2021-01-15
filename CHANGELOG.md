@@ -16,6 +16,16 @@ Changes
 
 .. towncrier release notes start
 
+20.03.11 (2021-01-15)
+---------------------
+
+### Features
+* Add support for shutting down running in-container services ([#230](https://github.com/lablup/backend.ai-agent/issues/230))
+
+### Fixes
+* Improve daemon shutdown stability using aiotools v1.2 ([#263](https://github.com/lablup/backend.ai-agent/issues/263))
+
+
 20.03.10 (2021-01-06)
 ---------------------
 
