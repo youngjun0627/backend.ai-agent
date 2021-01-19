@@ -1139,22 +1139,35 @@ class DockerAgent(AbstractAgent):
         self.kernel_registry[kernel_id] = kernel_obj
         log.debug('kernel repl-in address: {0}:{1}', kernel_host, repl_in_port)
         log.debug('kernel repl-out address: {0}:{1}', kernel_host, repl_out_port)
-        live_services = await kernel_obj.get_service_apps()
 
-        # Update the service-ports metadata from the image labels
-        # with the extended template metadata from the agent and krunner.
-        if live_services['status'] != 'failed':
-            for live_service in live_services['data']:
-                for service_port in service_ports:
-                    if live_service['name'] == service_port['name']:
-                        service_port.update(live_service)
-                        break
-        log.debug('service ports:\n{!r}', pretty(service_ports))
+        current_task = asyncio.current_task()
+        raw_kernel_id = str(kernel_id)
+        assert current_task is not None
+        self._pending_creation_tasks[raw_kernel_id].add(current_task)
+        try:
+            # Wait until bootstrap script is executed.
+            # - Main kernel runner is executed after bootstrap script, and
+            #   check_status is accessible only after kernel runner is loaded.
+            await kernel_obj.check_status()
 
-        # Wait until bootstrap script is executed.
-        # - Main kernel runner is executed after bootstrap script, and
-        #   check_status is accessible only after kernel runner is loaded.
-        await kernel_obj.check_status()
+            # Update the service-ports metadata from the image labels
+            # with the extended template metadata from the agent and krunner.
+            live_services = await kernel_obj.get_service_apps()
+            if live_services['status'] != 'failed':
+                for live_service in live_services['data']:
+                    for service_port in service_ports:
+                        if live_service['name'] == service_port['name']:
+                            service_port.update(live_service)
+                            break
+            log.debug('service ports:\n{!r}', pretty(service_ports))
+        except (asyncio.CancelledError, zmq.error.ZMQError):
+            log.warning("cancelled waiting of container startup (k:{})", kernel_id)
+            raise RuntimeError("cancelled waiting of container startup due to "
+                               "initialization failure or agent shutdown")
+        finally:
+            self._pending_creation_tasks[raw_kernel_id].remove(current_task)
+            if not self._pending_creation_tasks[raw_kernel_id]:
+                del self._pending_creation_tasks[raw_kernel_id]
 
         # Finally we are done.
         await self.produce_event('kernel_started', str(kernel_id), creation_id)

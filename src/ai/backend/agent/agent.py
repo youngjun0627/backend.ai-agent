@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
 import asyncio
+from collections import defaultdict
 from decimal import Decimal
 from io import BytesIO, SEEK_END
 import logging
@@ -133,6 +134,8 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
     stats_monitor: StatsPluginContext
     error_monitor: ErrorPluginContext
 
+    _pending_creation_tasks: Dict[str, Set[asyncio.Task]]
+
     def __init__(
         self,
         etcd: AsyncEtcd,
@@ -163,6 +166,7 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
         self.stats_monitor = stats_monitor
         self.error_monitor = error_monitor
         self._rx_distro = re.compile(r"\.([a-z-]+\d+\.\d+)\.")
+        self._pending_creation_tasks = defaultdict(set)
 
     async def __ainit__(self) -> None:
         """
@@ -270,6 +274,12 @@ class AbstractAgent(aobject, metaclass=ABCMeta):
             'agent_id': self.local_config['agent']['id'],
             'args': args,
         })
+        if event_name == 'kernel_terminated':
+            kernel_id = args[0]
+            pending_creation_tasks = self._pending_creation_tasks.get(kernel_id, None)
+            if pending_creation_tasks is not None:
+                for t in pending_creation_tasks:
+                    t.cancel()
         async with self.producer_lock:
             def _pipe_builder():
                 pipe = self.redis_producer_pool.pipeline()
