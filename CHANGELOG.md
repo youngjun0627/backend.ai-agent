@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+20.03.12 (2021-01-20)
+---------------------
+
+### Fixes
+* Fix indefinite hang of create_kernels() RPC call when there are in-container failures after starting a container but before the kernel runner gets ready ([#264](https://github.com/lablup/backend.ai-agent/issues/264))
+
+
 20.03.11 (2021-01-15)
 ---------------------
 
