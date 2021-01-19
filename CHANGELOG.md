@@ -16,6 +16,18 @@ Changes
 
 .. towncrier release notes start
 
+20.09.3 (2021-01-20)
+--------------------
+
+### Features
+* Use the agent's internal unique ID for the socket relay container name to improve multi-agent support ([#259](https://github.com/lablup/backend.ai-agent/issues/259))
+  - **WARNING**: Backend.AI cluster admins should terminate all running sessions, remove the "backendai-socket-relay" container manually, and then restart the agent to upgrade from prior versions.
+
+### Fixes
+* Improve daemon shutdown stability using aiotools v1.2 ([#263](https://github.com/lablup/backend.ai-agent/issues/263))
+* Fix indefinite hang of create_kernels() RPC call when there are in-container failures after starting a container but before the kernel runner gets ready ([#264](https://github.com/lablup/backend.ai-agent/issues/264))
+
+
 20.09.2 (2021-01-04)
 --------------------
 
