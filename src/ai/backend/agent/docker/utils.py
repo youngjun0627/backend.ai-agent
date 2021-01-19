@@ -18,18 +18,29 @@ log = BraceStyleAdapter(logging.getLogger(__name__))
 
 class PersistentServiceContainer:
 
-    def __init__(self, docker: Docker, image_ref: str, container_config: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        docker: Docker,
+        image_ref: str,
+        container_config: Mapping[str, Any],
+        *,
+        name: str = None,
+    ) -> None:
         self.docker = docker
         self.image_ref = image_ref
-        self.container_name = image_ref.split(':')[0].rsplit('/', maxsplit=1)[-1]
+        default_container_name = image_ref.split(':')[0].rsplit('/', maxsplit=1)[-1]
+        if name is None:
+            self.container_name = default_container_name
+        else:
+            self.container_name = name
         self.container_config = container_config
         self.img_version = int(Path(pkg_resources.resource_filename(
             'ai.backend.agent.docker',
-            f'{self.container_name}.version.txt',
+            f'{default_container_name}.version.txt',
         )).read_text())
         self.img_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent.docker',
-            f'{self.container_name}.img.tar.gz',
+            f'{default_container_name}.img.tar.gz',
         ))
 
     async def get_container_version_and_status(self) -> Tuple[int, bool]:

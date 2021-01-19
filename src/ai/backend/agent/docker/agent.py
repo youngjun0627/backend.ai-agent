@@ -192,6 +192,7 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
             log.info('The Docker Swarm cluster is configured and enabled')
         (ipc_base_path / 'container').mkdir(parents=True, exist_ok=True)
         self.agent_sockpath = ipc_base_path / 'container' / f'agent.{self.agent_id}.sock'
+        socket_relay_name = f"backendai-socket-relay.{self.agent_id}"
         socket_relay_container = PersistentServiceContainer(
             self.docker,
             'backendai-socket-relay:latest',
@@ -211,6 +212,7 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                     'NetworkMode': 'host',
                 },
             },
+            name=socket_relay_name,
         )
         await socket_relay_container.ensure_running_latest()
         self.agent_sock_task = asyncio.create_task(self.handle_agent_socket())
