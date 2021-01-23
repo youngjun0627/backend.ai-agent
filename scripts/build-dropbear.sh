@@ -28,9 +28,9 @@ autoreconf
 
 # Improve SFTP up/download throughputs.
 # FIXME: Temporarily falling back to the default to avoid PyCharm compatibility issue
-sed -i 's/\(DEFAULT_RECV_WINDOW\) [0-9][0-9]*/\1 262144/' default_options.h
-sed -i 's/\(RECV_MAX_PAYLOAD_LEN\) [0-9][0-9]*/\1 327680/' default_options.h
-sed -i 's/\(TRANS_MAX_PAYLOAD_LEN\) [0-9][0-9]*/\1 327680/' default_options.h
+sed -i 's/\(DEFAULT_RECV_WINDOW\) [0-9][0-9]*/\1 2097152/' default_options.h
+sed -i 's/\(RECV_MAX_PAYLOAD_LEN\) [0-9][0-9]*/\1 2621440/' default_options.h
+sed -i 's/\(TRANS_MAX_PAYLOAD_LEN\) [0-9][0-9]*/\1 2621440/' default_options.h
 sed -i 's/DEFAULT_PATH/getenv("PATH")/' svr-chansession.c
 
 # Disable clearing environment variables for new pty sessions and remote commands
