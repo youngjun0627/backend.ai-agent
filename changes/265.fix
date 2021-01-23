@@ -1,0 +1,1 @@
+Fix SSHJ (the SSH client library shipped with IntelliJ/PyCharm IDEs) compatibility issue when sending large files over SFTP
