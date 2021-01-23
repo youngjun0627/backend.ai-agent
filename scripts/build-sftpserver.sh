@@ -6,7 +6,7 @@ distros=("ubuntu16.04" "ubuntu18.04" "ubuntu20.04" "centos7.6" "alpine3.8")
 
 static_libs_dockerfile_part=$(cat <<'EOF'
 ENV ZLIB_VER=1.2.11 \
-    SSL_VER=1.1.1d
+    SSL_VER=1.1.1i
 
 RUN wget https://www.zlib.net/zlib-${ZLIB_VER}.tar.gz -O /root/zlib-${ZLIB_VER}.tar.gz && \
     wget https://www.openssl.org/source/openssl-${SSL_VER}.tar.gz -O /root/openssl-${SSL_VER}.tar.gz
@@ -90,7 +90,7 @@ export LIBS="-ldl"
 sed -i "s/-lcrypto/-l:libcrypto.a/" ./configure
 sed -i "s/-lz/-l:libz.a/" ./configure
 ./configure --prefix=/usr
-sed -i 's/\(SFTP_MAX_MSG_LENGTH\)[ \t]+\\([0-9 \*]*\\)/\1 327800/' sftp-common.h
+sed -i 's/^# \?define SFTP_MAX_MSG_LENGTH[ \t]*.*/#define SFTP_MAX_MSG_LENGTH 524288/g' sftp-common.h
 make sftp-server scp
 cp sftp-server ../sftp-server.$X_DISTRO.$X_ARCH.bin
 cp scp ../scp.$X_DISTRO.$X_ARCH.bin
