@@ -135,7 +135,7 @@ class RPCFunctionRegistry:
     def __call__(
         self,
         meth: Callable[..., Coroutine[None, None, Any]],
-    ) -> Callable[[RPCMessage], Coroutine[None, None, Any]]:
+    ) -> Callable[[AgentRPCServer, RPCMessage], Coroutine[None, None, Any]]:
 
         @functools.wraps(meth)
         async def _inner(self_: AgentRPCServer, request: RPCMessage) -> Any:
