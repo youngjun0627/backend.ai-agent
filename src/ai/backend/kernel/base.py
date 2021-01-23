@@ -105,7 +105,11 @@ class BaseRunner(metaclass=ABCMeta):
         self.subproc = None
         self.runtime_path = runtime_path
 
+        default_child_env_path = self.default_child_env.pop("PATH", None)
         self.child_env = {**os.environ, **self.default_child_env}
+        if default_child_env_path is not None and "PATH" not in self.child_env:
+            # set the default PATH env-var only when it's missing from the image
+            self.child_env["PATH"] = default_child_env_path
         self._service_lock = asyncio.Lock()
         config_dir = Path('/home/config')
         try:
