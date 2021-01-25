@@ -271,9 +271,9 @@ class BaseRunner(metaclass=ABCMeta):
         except Exception:
             log.exception('Unexpected error!')
             log.warning('We are skipping the error but the container may not work as expected.')
-            return
-        if self.init_done is not None:
-            self.init_done.set()
+        finally:
+            if self.init_done is not None:
+                self.init_done.set()
 
     @abstractmethod
     async def init_with_loop(self) -> None:
