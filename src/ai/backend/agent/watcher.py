@@ -372,8 +372,9 @@ def main(cli_ctx, config_path, debug):
         log_config.debug('debug mode enabled.')
 
         aiotools.start_server(
-            watcher_server, num_workers=1,
-            use_threading=True, args=(cfg, ),
+            watcher_server,
+            num_workers=1,
+            args=(cfg, ),
             stop_signals={signal.SIGINT, signal.SIGTERM, signal.SIGALRM},
         )
         log.info('exit.')
