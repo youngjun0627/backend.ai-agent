@@ -16,6 +16,19 @@ Changes
 
 .. towncrier release notes start
 
+20.09.4 (2021-02-01)
+--------------------
+
+### Features
+* Enlarge the SFTP message buffer sizes to support big frame transportation ([#266](https://github.com/lablup/backend.ai-agent/issues/266))
+
+### Fixes
+* Fix SSHJ (the SSH client library shipped with IntelliJ/PyCharm IDEs) compatibility issue when sending large files over SFTP ([#265](https://github.com/lablup/backend.ai-agent/issues/265))
+* Update dependencies including pyzmq, pytest, mypy, aioresponses, and python-snappy ([#267](https://github.com/lablup/backend.ai-agent/issues/267))
+* Ensure initialization of the kernel runner even when there are failures during sshd initialization, to prevent indefinite manager hangs ([#268](https://github.com/lablup/backend.ai-agent/issues/268))
+* Fix watcher startup failure after aiotools v1.2 upgrade ([#269](https://github.com/lablup/backend.ai-agent/issues/269))
+
+
 20.09.3 (2021-01-20)
 --------------------
 
