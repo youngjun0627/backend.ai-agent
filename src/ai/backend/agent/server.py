@@ -38,6 +38,7 @@ from trafaret.dataerror import DataError as TrafaretDataError
 
 from ai.backend.common import config, utils, identity, msgpack
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
+from ai.backend.common.events import AgentErrorEvent
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.plugin.monitor import ErrorPluginContext, StatsPluginContext
 from ai.backend.common.types import (
@@ -107,15 +108,14 @@ async def get_extra_volumes(docker, lang):
 
 def collect_error(meth: Callable) -> Callable:
     @functools.wraps(meth)
-    async def _inner(self, *args, **kwargs):
+    async def _inner(self: AgentRPCServer, *args, **kwargs):
         try:
             return await meth(self, *args, **kwargs)
         except Exception:
             exc_type, exc, tb = sys.exc_info()
             pretty_message = ''.join(traceback.format_exception_only(exc_type, exc)).strip()
             pretty_tb = ''.join(traceback.format_tb(tb)).strip()
-            # TODO: Determine severity
-            await self.agent.produce_event('agent_error', pretty_message, pretty_tb)
+            await self.agent.produce_event(AgentErrorEvent(pretty_message, pretty_tb))
             raise
     return _inner
 
