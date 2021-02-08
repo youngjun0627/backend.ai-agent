@@ -53,11 +53,14 @@ from ai.backend.common.docker import (
 )
 from ai.backend.common.logging import BraceStyleAdapter, pretty
 from ai.backend.common.types import (
-    HardwareMetadata, aobject,
-    # TODO: eliminate use of ContainerId
-    ContainerId, KernelId,
-    DeviceName, SlotName,
-    AutoPullBehavior, ImageRegistry,
+    AutoPullBehavior,
+    ContainerId,
+    KernelId,
+    SessionId,
+    DeviceName,
+    SlotName,
+    HardwareMetadata,
+    ImageRegistry,
     ClusterInfo,
     KernelCreationConfig,
     KernelCreationResult,
@@ -68,7 +71,27 @@ from ai.backend.common.types import (
     MountTuple3,
     Sentinel,
     ServicePortProtocols,
-    SessionId,
+    aobject,
+)
+from ai.backend.common.events import (
+    EventProducer,
+    AbstractEvent,
+    AgentHeartbeatEvent,
+    AgentStartedEvent,
+    AgentTerminatedEvent,
+    DoSyncKernelLogsEvent,
+    DoSyncKernelStatsEvent,
+    ExecutionCancelledEvent,
+    ExecutionFinishedEvent,
+    ExecutionStartedEvent,
+    ExecutionTimeoutEvent,
+    KernelCreatingEvent,
+    KernelPreparingEvent,
+    KernelPullingEvent,
+    KernelStartedEvent,
+    KernelTerminatedEvent,
+    SessionFailureEvent,
+    SessionSuccessEvent,
 )
 from ai.backend.common.utils import current_loop
 from ai.backend.common.plugin.monitor import ErrorPluginContext, StatsPluginContext
@@ -176,7 +199,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
     stats_monitor: StatsPluginContext
     error_monitor: ErrorPluginContext
 
-    _pending_creation_tasks: Dict[str, Set[asyncio.Task]]
+    _pending_creation_tasks: Dict[KernelId, Set[asyncio.Task]]
 
     def __init__(
         self,
@@ -216,10 +239,20 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         """
         self.resource_lock = asyncio.Lock()
         self.container_lifecycle_queue = asyncio.Queue()
-        self.producer_lock = asyncio.Lock()
-        self.redis_producer_pool = await redis.connect_with_retries(
+
+        async def connect_redis_event_db() -> aioredis.Redis:
+            return await redis.connect_with_retries(
+                self.local_config['redis']['addr'].as_sockaddr(),
+                db=4,  # REDIS_STREAM_DB in gateway.defs
+                password=(self.local_config['redis']['password']
+                        if self.local_config['redis']['password'] else None),
+                encoding=None,
+            )
+
+        self.event_producer = await EventProducer.new(connect_redis_event_db)
+        self.redis_stream_pool = await redis.connect_with_retries(
             self.local_config['redis']['addr'].as_sockaddr(),
-            db=4,  # REDIS_STREAM_DB in gateway.defs
+            db=4,  # REDIS_STREAM_DB in backend.ai-manager
             password=(self.local_config['redis']['password']
                       if self.local_config['redis']['password'] else None),
             encoding=None,
@@ -260,7 +293,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         self.container_lifecycle_handler = loop.create_task(self.process_lifecycle_events())
 
         # Notify the gateway.
-        await self.produce_event('instance_started', 'self-started')
+        await self.produce_event(AgentStartedEvent(reason="self-started"))
 
     async def shutdown(self, stop_signal: signal.Signals) -> None:
         """
@@ -288,46 +321,32 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         await self.container_lifecycle_handler
 
         # Notify the gateway.
-        await self.produce_event('instance_terminated', 'shutdown')
+        await self.produce_event(AgentTerminatedEvent(reason="shutdown"))
 
         # Close Redis connection pools.
-        self.redis_producer_pool.close()
-        await self.redis_producer_pool.wait_closed()
+        await self.event_producer.close()
+        self.redis_stream_pool.close()
+        await self.redis_stream_pool.wait_closed()
         self.redis_stat_pool.close()
         await self.redis_stat_pool.wait_closed()
 
         self.zmq_ctx.term()
 
-    async def produce_event(self, event_name: str, *args) -> None:
+    async def produce_event(self, event: AbstractEvent) -> None:
         """
         Send an event to the manager(s).
         """
         if self.local_config['debug']['log-heartbeats']:
-            _log = log.debug if event_name == 'instance_heartbeat' else log.info
+            _log = log.debug if isinstance(event, AgentHeartbeatEvent) else log.info
         else:
-            _log = (lambda *args: None) if event_name == 'instance_heartbeat' else log.info
-        if event_name.startswith('kernel_') and len(args) > 0:
-            _log('produce_event({0}, k:{1})', event_name, args[0])
-        else:
-            _log('produce_event({0})', event_name)
-        encoded_event = msgpack.packb({
-            'event_name': event_name,
-            'agent_id': self.local_config['agent']['id'],
-            'args': args,
-        })
-        if event_name == 'kernel_terminated':
-            kernel_id = args[0]
-            pending_creation_tasks = self._pending_creation_tasks.get(kernel_id, None)
+            _log = (lambda *args: None) if isinstance(event, AgentHeartbeatEvent) else log.info
+        _log('produce_event({0})', event)
+        if isinstance(event, KernelTerminatedEvent):
+            pending_creation_tasks = self._pending_creation_tasks.get(event.kernel_id, None)
             if pending_creation_tasks is not None:
                 for t in pending_creation_tasks:
                     t.cancel()
-        async with self.producer_lock:
-            def _pipe_builder():
-                pipe = self.redis_producer_pool.pipeline()
-                pipe.rpush('events.prodcons', encoded_event)
-                pipe.publish('events.pubsub', encoded_event)
-                return pipe
-            await redis.execute_with_retries(_pipe_builder)
+        await self.event_producer.produce_event(event)
 
     async def heartbeat(self, interval: float):
         """
@@ -359,7 +378,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             ])),
         }
         try:
-            await self.produce_event('instance_heartbeat', agent_info)
+            await self.produce_event(AgentHeartbeatEvent(agent_info))
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_heartbeat')
         except Exception:
@@ -387,7 +406,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                     cb = chunk_buffer.getbuffer()
                     stored_chunk = bytes(cb[:chunk_size])
                     await redis.execute_with_retries(
-                        lambda: self.redis_producer_pool.rpush(
+                        lambda: self.redis_stream_pool.rpush(
                             log_key, stored_chunk)
                     )
                     remaining = cb[chunk_size:]
@@ -400,7 +419,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             assert chunk_length < chunk_size
             if chunk_length > 0:
                 await redis.execute_with_retries(
-                    lambda: self.redis_producer_pool.rpush(
+                    lambda: self.redis_stream_pool.rpush(
                         log_key, chunk_buffer.getvalue())
                 )
         finally:
@@ -410,11 +429,9 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         # for cases when the event delivery has failed or processing
         # the log data has failed.
         await redis.execute_with_retries(
-            lambda: self.redis_producer_pool.expire(log_key, 3600.0)
+            lambda: self.redis_stream_pool.expire(log_key, 3600.0)
         )
-        await self.produce_event(
-            'kernel_log', str(kernel_id), container_id
-        )
+        await self.produce_event(DoSyncKernelLogsEvent(kernel_id, container_id))
 
     async def collect_node_stat(self, interval: float):
         if self.local_config['debug']['log-stats']:
@@ -441,8 +458,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             await self.stat_ctx.collect_container_stat(container_ids)
             # Let the manager store the statistics in the persistent database.
             if updated_kernel_ids:
-                await self.produce_event('kernel_stat_sync',
-                                         ','.join(map(str, updated_kernel_ids)))
+                await self.produce_event(DoSyncKernelStatsEvent(updated_kernel_ids))
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -465,8 +481,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                     await self.rescan_resource_usage()
                     if not ev.suppress_events:
                         await self.produce_event(
-                            'kernel_terminated', str(ev.kernel_id),
-                            'already-terminated', None,
+                            KernelTerminatedEvent(ev.kernel_id, "already-terminated")
                         )
                     return
                 else:
@@ -537,8 +552,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                     await self.rescan_resource_usage()
                     if not ev.suppress_events:
                         await self.produce_event(
-                            'kernel_terminated', str(ev.kernel_id),
-                            ev.reason, None,
+                            KernelTerminatedEvent(ev.kernel_id, ev.reason)
                         )
 
     async def process_lifecycle_events(self) -> None:
@@ -1184,35 +1198,23 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                         api_version=3)
                 except KeyError:
                     await self.produce_event(
-                        'kernel_terminated',
-                        str(kernel_id),
-                        'self-terminated',
-                        None,
+                        KernelTerminatedEvent(kernel_id, "self-terminated")
                     )
                     break
 
                 if result['status'] == 'finished':
                     if result['exitCode'] == 0:
                         await self.produce_event(
-                            'session_success',
-                            str(kernel_id),
-                            0,
-                            'task-done',
+                            SessionSuccessEvent(SessionId(kernel_id), "task-done", 0)
                         )
                     else:
                         await self.produce_event(
-                            'session_failure',
-                            str(kernel_id),
-                            result['exitCode'],
-                            'task-failed',
+                            SessionFailureEvent(SessionId(kernel_id), "task-failed", result['exitCode'])
                         )
                     break
                 if result['status'] == 'exec-timeout':
                     await self.produce_event(
-                        'session_failure',
-                        str(kernel_id),
-                        -2,
-                        'task-timeout',
+                        SessionFailureEvent(SessionId(kernel_id), "task-timeout", -2)
                     )
                     break
                 opts = {
@@ -1221,10 +1223,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                 mode = 'continue'
         except asyncio.CancelledError:
             await self.produce_event(
-                'session_failure',
-                str(kernel_id),
-                -2,
-                'task-cancelled',
+                SessionFailureEvent(SessionId(kernel_id), "task-cancelled", -2)
             )
 
     async def create_kernel(
@@ -1242,7 +1241,9 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         """
 
         if not restarting:
-            await self.produce_event('kernel_preparing', str(kernel_id), creation_id)
+            await self.produce_event(
+                KernelPreparingEvent(kernel_id, creation_id)
+            )
 
         # Initialize the creation context
         log.debug('Kernel creation config: {0}', pretty(kernel_config))
@@ -1272,15 +1273,14 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         )
         if do_pull:
             await self.produce_event(
-                'kernel_pulling',
-                str(kernel_id),
-                creation_id,
-                ctx.image_ref.canonical,  # passed as "reason" arg
+                KernelPullingEvent(kernel_id, creation_id, ctx.image_ref.canonical)
             )
             await self.pull_image(ctx.image_ref, kernel_config['image']['registry'])
 
         if not restarting:
-            await self.produce_event('kernel_creating', str(kernel_id), creation_id)
+            await self.produce_event(
+                KernelCreatingEvent(kernel_id, creation_id)
+            )
 
         # Get the resource spec from existing kernel scratches
         # or create a new resource spec from ctx.kernel_config
@@ -1441,9 +1441,8 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                   kernel_obj['kernel_host'], kernel_obj['repl_out_port'])
 
         current_task = asyncio.current_task()
-        raw_kernel_id = str(kernel_id)
         assert current_task is not None
-        self._pending_creation_tasks[raw_kernel_id].add(current_task)
+        self._pending_creation_tasks[kernel_id].add(current_task)
         try:
             # Wait until bootstrap script is executed.
             # - Main kernel runner is executed after bootstrap script, and
@@ -1465,12 +1464,14 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             raise RuntimeError("cancelled waiting of container startup due to "
                                "initialization failure or agent shutdown")
         finally:
-            self._pending_creation_tasks[raw_kernel_id].remove(current_task)
-            if not self._pending_creation_tasks[raw_kernel_id]:
-                del self._pending_creation_tasks[raw_kernel_id]
+            self._pending_creation_tasks[kernel_id].remove(current_task)
+            if not self._pending_creation_tasks[kernel_id]:
+                del self._pending_creation_tasks[kernel_id]
 
         # Finally we are done.
-        await self.produce_event('kernel_started', str(kernel_id), creation_id)
+        await self.produce_event(
+            KernelStartedEvent(kernel_id, creation_id)
+        )
 
         # The startup command for the batch-type sessions will be executed by the manager
         # upon firing of the "session_started" event.
@@ -1676,7 +1677,9 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         if restart_tracker is not None:
             await restart_tracker.done_event.wait()
 
-        await self.produce_event("execution_started", str(kernel_id))
+        await self.produce_event(
+            ExecutionStartedEvent(SessionId(kernel_id))
+        )
         try:
             kernel_obj = self.kernel_registry[kernel_id]
             result = await kernel_obj.execute(
@@ -1685,7 +1688,9 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                 flush_timeout=flush_timeout,
                 api_version=api_version)
         except asyncio.CancelledError:
-            await self.produce_event("execution_cancelled", str(kernel_id))
+            await self.produce_event(
+                ExecutionCancelledEvent(SessionId(kernel_id))
+            )
             raise
         except KeyError:
             # This situation is handled in the lifecycle management subsystem.
@@ -1695,9 +1700,13 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         if result['status'] in ('finished', 'exec-timeout'):
             log.debug('_execute({0}) {1}', kernel_id, result['status'])
         if result['status'] == 'finished':
-            await self.produce_event("execution_finished", str(kernel_id))
+            await self.produce_event(
+                ExecutionFinishedEvent(SessionId(kernel_id))
+            )
         elif result['status'] == 'exec-timeout':
-            await self.produce_event("execution_timeout", str(kernel_id))
+            await self.produce_event(
+                ExecutionTimeoutEvent(SessionId(kernel_id))
+            )
             await self.inject_container_lifecycle_event(
                 kernel_id,
                 LifecycleEvent.DESTROY,
