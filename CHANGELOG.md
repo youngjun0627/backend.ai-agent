@@ -16,6 +16,17 @@ Changes
 
 .. towncrier release notes start
 
+20.09.5 (2021-02-16)
+--------------------
+
+### BREAKING
+* You must upgrade manager to 20.09.7+, agent to 20.09.5+, and common to 20.09.4+ altogether at once to make your cluster running correctly!
+
+### Fixes
+* Refactor to use the shared `common.events` module to produce agent/kernel/session events to the internal event bus ([#270](https://github.com/lablup/backend.ai-agent/issues/270))
+* Update uvloop to 0.15.1 for better Python 3.8/3.9 support (and drop Python 3.5/3.6 support) ([#271](https://github.com/lablup/backend.ai-agent/issues/271))
+
+
 20.09.4 (2021-02-01)
 --------------------
 

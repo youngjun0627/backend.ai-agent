@@ -1,1 +1,0 @@
-Refactor to use the shared `common.events` module to produce agent/kernel/session events to the internal event bus
