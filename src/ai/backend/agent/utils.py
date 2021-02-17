@@ -289,7 +289,7 @@ async def host_pid_to_container_pid(container_id: str, host_pid: HostPID) -> Con
                     raise IndexError
                 container_pid = ContainerPID(container_table[process_idx][pid_idx])
                 log.debug('host pid {} is mapped to container pid {}', host_pid, container_pid)
-                return ContainerPID(PID(container_pid))
+                return ContainerPID(PID(int(container_pid)))
             except asyncio.CancelledError:
                 raise
             except (IndexError, KeyError, aiodocker.exceptions.DockerError):
