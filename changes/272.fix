@@ -1,0 +1,1 @@
+ Fix "get_container_pid -> -1: Error: required argument is not an integer" error in old Linux kernels (< 4.1, which may include CentOS 7).
