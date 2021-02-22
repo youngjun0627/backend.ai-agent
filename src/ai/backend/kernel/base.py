@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from abc import ABCMeta, abstractmethod
 import asyncio
 import concurrent.futures
@@ -18,6 +19,7 @@ from typing import (
     MutableMapping, Dict,
 )
 
+from async_timeout import timeout
 import janus
 from jupyter_client import KernelManager
 from jupyter_client.kernelspec import KernelSpecManager
@@ -60,11 +62,11 @@ async def pipe_output(stream, outsock, target, log_fd):
         log.exception('unexpected error')
 
 
-async def terminate_and_wait(proc: asyncio.subprocess.Process) -> None:
+async def terminate_and_wait(proc: asyncio.subprocess.Process, timeout: float = 2.0) -> None:
     try:
         proc.terminate()
         try:
-            await asyncio.wait_for(proc.wait(), timeout=2.0)
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
@@ -568,7 +570,8 @@ class BaseRunner(metaclass=ABCMeta):
                 self.services_running[service_info['name']] = proc
                 asyncio.create_task(self._wait_service_proc(service_info['name'], proc))
                 self._service_lock.release()
-                await wait_local_port_open(service_info['port'])
+                with timeout(5.0):
+                    await wait_local_port_open(service_info['port'])
                 log.info("Service {} has started (pid: {}, port: {})",
                          service_info['name'], proc.pid, service_info['port'])
                 result = {'status': 'started'}
@@ -577,6 +580,13 @@ class BaseRunner(metaclass=ABCMeta):
                 # open the port and then terminates (with an error).
                 result = {'status': 'failed',
                           'error': f"the process did not start properly: {cmdargs[0]}"}
+            except asyncio.TimeoutError:
+                # Takes too much time to open a local port.
+                if service_info['name'] in self.services_running:
+                    await terminate_and_wait(proc, timeout=10.0)
+                    self.services_running.pop(service_info['name'], None)
+                result = {'status': "failed",
+                          'error': f"opening the service port timed out: {service_info['name']}"}
             except PermissionError:
                 result = {'status': 'failed',
                           'error': f"the target file is not executable: {cmdargs[0]}"}
