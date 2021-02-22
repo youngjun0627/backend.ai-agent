@@ -16,6 +16,17 @@ Changes
 
 .. towncrier release notes start
 
+20.09.6 (2021-02-22)
+--------------------
+
+### Fixes
+* Fix "get_container_pid -> -1: Error: required argument is not an integer" error in old Linux kernels (< 4.1, which may include CentOS 7). ([#272](https://github.com/lablup/backend.ai-agent/issues/272))
+* Ensure the proper permission for the user-configured SSH keypair ([#273](https://github.com/lablup/backend.ai-agent/issues/273))
+* Fix a problem that cannot launch all service apps once one app fails to open service port. ([#274](https://github.com/lablup/backend.ai-agent/issues/274))
+* Update pyzmq to v22 series to reduce its wheel distribution size and fix a fork-safety bug introduced in v20. ([#275](https://github.com/lablup/backend.ai-agent/issues/275))
+* Fix a critical regression to miss setting `source` parameter when producing events from the event dispatcher refactoring (#270) ([#276](https://github.com/lablup/backend.ai-agent/issues/276))
+
+
 20.09.5 (2021-02-16)
 --------------------
 
