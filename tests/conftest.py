@@ -23,15 +23,15 @@ def test_id():
 
 
 @pytest.fixture(scope='session', autouse=True)
-def test_agent_id(session_mocker, test_id):
+def test_local_instance_id(session_mocker, test_id):
     registry_state_path = ipc_base_path / f'last_registry.{test_id}.dat'
     try:
         os.unlink(registry_state_path)
     except FileNotFoundError:
         pass
-    mock_generate_agent_id = session_mocker.patch(
-        'ai.backend.agent.agent.generate_agent_id')
-    mock_generate_agent_id.return_value = test_id
+    mock_generate_local_instance_id = session_mocker.patch(
+        'ai.backend.agent.agent.generate_local_instance_id')
+    mock_generate_local_instance_id.return_value = test_id
     yield
     try:
         os.unlink(registry_state_path)

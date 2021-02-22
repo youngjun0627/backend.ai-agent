@@ -121,7 +121,7 @@ from .types import (
     LifecycleEvent,
 )
 from .utils import (
-    generate_agent_id,
+    generate_local_instance_id,
 )
 
 if TYPE_CHECKING:
@@ -179,7 +179,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
     loop: asyncio.AbstractEventLoop
     local_config: Mapping[str, Any]
     etcd: AsyncEtcd
-    agent_id: str
+    local_instance_id: str
     kernel_registry: MutableMapping[KernelId, AbstractKernel]
     computers: MutableMapping[str, ComputerContext]
     images: Mapping[str, str]
@@ -214,7 +214,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         self.loop = current_loop()
         self.etcd = etcd
         self.local_config = local_config
-        self.agent_id = generate_agent_id(__file__)
+        self.local_instance_id = generate_local_instance_id(__file__)
         self.kernel_registry = {}
         self.computers = {}
         self.images = {}  # repoTag -> digest
@@ -346,7 +346,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             if pending_creation_tasks is not None:
                 for t in pending_creation_tasks:
                     t.cancel()
-        await self.event_producer.produce_event(event)
+        await self.event_producer.produce_event(event, source=self.local_config['agent']['id'])
 
     async def heartbeat(self, interval: float):
         """
@@ -560,7 +560,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             while True:
                 ev = await self.container_lifecycle_queue.get()
                 if isinstance(ev, Sentinel):
-                    with open(ipc_base_path / f'last_registry.{self.agent_id}.dat', 'wb') as f:
+                    with open(ipc_base_path / f'last_registry.{self.local_instance_id}.dat', 'wb') as f:
                         pickle.dump(self.kernel_registry, f)
                     return
                 # attr currently does not support customizing getstate/setstate dunder methods
@@ -782,7 +782,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         ``self.kernel_registry`` if any missing.
         """
         try:
-            with open(ipc_base_path / f'last_registry.{self.agent_id}.dat', 'rb') as f:
+            with open(ipc_base_path / f'last_registry.{self.local_instance_id}.dat', 'rb') as f:
                 self.kernel_registry = pickle.load(f)
                 for kernel_obj in self.kernel_registry.values():
                     kernel_obj.agent_config = self.local_config
