@@ -191,8 +191,8 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
         if self.heartbeat_extra_info['swarm_enabled']:
             log.info('The Docker Swarm cluster is configured and enabled')
         (ipc_base_path / 'container').mkdir(parents=True, exist_ok=True)
-        self.agent_sockpath = ipc_base_path / 'container' / f'agent.{self.agent_id}.sock'
-        socket_relay_name = f"backendai-socket-relay.{self.agent_id}"
+        self.agent_sockpath = ipc_base_path / 'container' / f'agent.{self.local_instance_id}.sock'
+        socket_relay_name = f"backendai-socket-relay.{self.local_instance_id}"
         socket_relay_container = PersistentServiceContainer(
             self.docker,
             'backendai-socket-relay:latest',

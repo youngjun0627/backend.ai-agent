@@ -40,7 +40,7 @@ NotContainerPID: Final = ContainerPID(PID(-1))
 NotHostPID: Final = HostPID(PID(-1))
 
 
-def generate_agent_id(hint: str) -> str:
+def generate_local_instance_id(hint: str) -> str:
     return hashlib.md5(hint.encode('utf-8')).hexdigest()[:12]
 
 
