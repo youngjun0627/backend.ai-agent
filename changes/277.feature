@@ -1,0 +1,1 @@
+Add applying .tmux.conf.local file in .tmux.conf to reflect customized tmux configuration
