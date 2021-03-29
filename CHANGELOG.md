@@ -16,6 +16,32 @@ Changes
 
 .. towncrier release notes start
 
+21.03.0 (2021-03-29)
+--------------------
+
+The v21.03.0 release is an integrated update for all features and fixes already applied to v20.09 series as additional patches, except that it now runs on top of Python 3.9.
+
+### Features
+* Use the agent's internal unique ID for the socket relay container name to improve multi-agent support ([#259](https://github.com/lablup/backend.ai-agent/issues/259))
+* Enlarge the SFTP message buffer sizes to support big frame transportation ([#266](https://github.com/lablup/backend.ai-agent/issues/266))
+* Add applying .tmux.conf.local file in .tmux.conf to reflect customized tmux configuration ([#277](https://github.com/lablup/backend.ai-agent/issues/277))
+
+### Fixes
+* Improve daemon shutdown stability using aiotools v1.2 ([#263](https://github.com/lablup/backend.ai-agent/issues/263))
+* Fix indefinite hang of create_kernels() RPC call when there are in-container failures after starting a container but before the kernel runner gets ready ([#264](https://github.com/lablup/backend.ai-agent/issues/264))
+* Fix SSHJ (the SSH client library shipped with IntelliJ/PyCharm IDEs) compatibility issue when sending large files over SFTP ([#265](https://github.com/lablup/backend.ai-agent/issues/265))
+* Update dependencies including pyzmq, pytest, mypy, aioresponses, and python-snappy ([#267](https://github.com/lablup/backend.ai-agent/issues/267))
+* Ensure initialization of the kernel runner even when there are failures during sshd initialization, to prevent indefinite manager hangs ([#268](https://github.com/lablup/backend.ai-agent/issues/268))
+* Fix watcher startup failure after aiotools v1.2 upgrade ([#269](https://github.com/lablup/backend.ai-agent/issues/269))
+* Refactor to use the shared `common.events` module to produce agent/kernel/session events to the internal event bus ([#270](https://github.com/lablup/backend.ai-agent/issues/270))
+* Update uvloop to 0.15.1 for better Python 3.8/3.9 support (and drop Python 3.5/3.6 support) ([#271](https://github.com/lablup/backend.ai-agent/issues/271))
+* Fix "get_container_pid -> -1: Error: required argument is not an integer" error in old Linux kernels (&lt; 4.1, which may include CentOS 7). ([#272](https://github.com/lablup/backend.ai-agent/issues/272))
+* Ensure the proper permission for the user-configured SSH keypair ([#273](https://github.com/lablup/backend.ai-agent/issues/273))
+* Fix a problem that cannot launch all service apps once one app fails to open service port. ([#274](https://github.com/lablup/backend.ai-agent/issues/274))
+* Update pyzmq to v22 series to reduce its wheel distribution size and fix a fork-safety bug introduced in v20. ([#275](https://github.com/lablup/backend.ai-agent/issues/275))
+* Fix a critical regression to miss setting `source` parameter when producing events from the event dispatcher refactoring (#270) ([#276](https://github.com/lablup/backend.ai-agent/issues/276))
+
+
 20.09.2 (2021-01-04)
 --------------------
 

@@ -1,1 +1,0 @@
-Fix a critical regression to miss setting `source` parameter when producing events from the event dispatcher refactoring (#270)
