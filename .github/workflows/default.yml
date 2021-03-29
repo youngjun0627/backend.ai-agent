@@ -7,10 +7,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
-    - name: Set up Python 3.8
+    - name: Set up Python 3.9
       uses: actions/setup-python@v2
       with:
-        python-version: 3.8
+        python-version: 3.9
     - name: Cache pip packages
       uses: actions/cache@v2
       with:
@@ -49,10 +49,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
-    - name: Set up Python 3.8
+    - name: Set up Python 3.9
       uses: actions/setup-python@v2
       with:
-        python-version: 3.8
+        python-version: 3.9
     - name: Cache pip packages
       uses: actions/cache@v2
       with:
@@ -93,10 +93,10 @@ jobs:
     - uses: actions/checkout@v2
       with:
         lfs: true
-    - name: Set up Python 3.8
+    - name: Set up Python 3.9
       uses: actions/setup-python@v2
       with:
-        python-version: 3.8
+        python-version: 3.9
     - name: Cache pip packages
       uses: actions/cache@v2
       with:
@@ -129,8 +129,8 @@ jobs:
         mkdir -p /tmp/scratches
         mkdir -p /tmp/vfroot/local
         docker pull alpine:3.8
-        docker pull nginx:1.17-alpine
-        docker pull redis:5.0.5-alpine
+        docker pull nginx:1.19-alpine
+        docker pull redis:6.2.1-alpine
         docker pull lablup/lua:5.3-alpine3.8
     - name: Test with pytest
       run: |
@@ -149,10 +149,10 @@ jobs:
     - uses: actions/checkout@v2
       with:
         lfs: true
-    - name: Set up Python 3.8
+    - name: Set up Python 3.9
       uses: actions/setup-python@v2
       with:
-        python-version: 3.8
+        python-version: 3.9
     - name: Install dependencies
       env:
         REQUIREMENTS_FILE: build
