@@ -18,6 +18,7 @@ from typing import (
 import aiohttp
 from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError
+import async_timeout
 import psutil
 
 from ai.backend.common.logging import BraceStyleAdapter
@@ -188,7 +189,11 @@ class CPUPlugin(AbstractComputePlugin):
 
         async def api_impl(container_id):
             container = DockerContainer(ctx.agent.docker, id=container_id)
-            ret = await fetch_api_stats(container)
+            try:
+                async with async_timeout.timeout(2.0):
+                    ret = await fetch_api_stats(container)
+            except asyncio.TimeoutError:
+                return None
             if ret is None:
                 return None
             cpu_used = nmget(ret, 'cpu_stats.cpu_usage.total_usage', 0) / 1e6
@@ -458,7 +463,11 @@ class MemoryPlugin(AbstractComputePlugin):
 
         async def api_impl(container_id):
             container = DockerContainer(ctx.agent.docker, id=container_id)
-            ret = await fetch_api_stats(container)
+            try:
+                async with async_timeout.timeout(2.0):
+                    ret = await fetch_api_stats(container)
+            except asyncio.TimeoutError:
+                return None
             if ret is None:
                 return None
             mem_cur_bytes = nmget(ret, 'memory_stats.usage', 0)

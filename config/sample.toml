@@ -205,6 +205,15 @@ enabled = false
 # launches, due to bugs in initialization steps such as jail.
 skip-container-deletion = false
 
+# Include debug-level logs for internal events.
+log-events = false
+
+# Include debug-level logs for detailed kernel creation configs and their resource spec.
+log-kernel-config = false
+
+# Include debug-level logs for allocation maps.
+log-alloc-map = false
+
 # Include debug-level logs for statistics.
 log-stats = false
 

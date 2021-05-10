@@ -183,6 +183,8 @@ class AgentRPCServer(aobject):
 
     async def __ainit__(self) -> None:
         # Start serving requests.
+        self._create_sema = asyncio.Semaphore(4)
+        self._destroy_sema = asyncio.Semaphore(4)
         await self.update_status('starting')
 
         if not self.skip_detect_manager:
@@ -317,27 +319,28 @@ class AgentRPCServer(aobject):
         raw_configs: Sequence[dict],
         raw_cluster_info: dict,
     ):
-        cluster_info = cast(ClusterInfo, raw_cluster_info)
-        session_id = SessionId(UUID(raw_session_id))
-        raw_results = []
-        coros = []
-        for raw_kernel_id, raw_config in zip(raw_kernel_ids, raw_configs):
-            log.info('rpc::create_kernel(k:{0}, img:{1})',
-                     raw_kernel_id, raw_config['image']['canonical'])
-            kernel_id = KernelId(UUID(raw_kernel_id))
-            kernel_config = cast(KernelCreationConfig, raw_config)
-            coros.append(self.agent.create_kernel(
-                creation_id,
-                session_id,
-                kernel_id,
-                kernel_config,
-                cluster_info,
-            ))
-        results = await asyncio.gather(*coros, return_exceptions=True)
-        errors = [*filter(lambda item: isinstance(item, Exception), results)]
-        if errors:
-            # Raise up the first error.
-            raise errors[0]
+        async with self._create_sema:
+            cluster_info = cast(ClusterInfo, raw_cluster_info)
+            session_id = SessionId(UUID(raw_session_id))
+            raw_results = []
+            coros = []
+            for raw_kernel_id, raw_config in zip(raw_kernel_ids, raw_configs):
+                log.info('rpc::create_kernel(k:{0}, img:{1})',
+                        raw_kernel_id, raw_config['image']['canonical'])
+                kernel_id = KernelId(UUID(raw_kernel_id))
+                kernel_config = cast(KernelCreationConfig, raw_config)
+                coros.append(self.agent.create_kernel(
+                    creation_id,
+                    session_id,
+                    kernel_id,
+                    kernel_config,
+                    cluster_info,
+                ))
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            errors = [*filter(lambda item: isinstance(item, Exception), results)]
+            if errors:
+                # Raise up the first error.
+                raise errors[0]
         raw_results = [
             {
                 'id': str(result['id']),
@@ -363,16 +366,17 @@ class AgentRPCServer(aobject):
         reason: str = None,
         suppress_events: bool = False,
     ):
-        log.info('rpc::destroy_kernel(k:{0})', kernel_id)
-        done = asyncio.Event()
-        await self.agent.inject_container_lifecycle_event(
-            KernelId(UUID(kernel_id)),
-            LifecycleEvent.DESTROY,
-            reason or 'user-requested',
-            done_event=done,
-            suppress_events=suppress_events,
-        )
-        await done.wait()
+        async with self._destroy_sema:
+            log.info('rpc::destroy_kernel(k:{0})', kernel_id)
+            done = asyncio.Event()
+            await self.agent.inject_container_lifecycle_event(
+                KernelId(UUID(kernel_id)),
+                LifecycleEvent.DESTROY,
+                reason or 'user-requested',
+                done_event=done,
+                suppress_events=suppress_events,
+            )
+            await done.wait()
         return getattr(done, '_result', None)
 
     @rpc_function
