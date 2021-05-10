@@ -56,6 +56,8 @@ if TYPE_CHECKING:
 
 log = BraceStyleAdapter(logging.getLogger('ai.backend.agent.resources'))
 
+log_alloc_map: bool = False
+
 
 known_slot_types: Mapping[SlotName, SlotTypes] = {}
 
@@ -418,7 +420,7 @@ class AbstractAllocMap(metaclass=ABCMeta):
         self, *,
         device_slots: Mapping[DeviceId, DeviceSlotInfo] = None,
         device_mask: Iterable[DeviceId] = None,
-        exclusive_slot_types: Iterable[SlotName] = None
+        exclusive_slot_types: Iterable[SlotName] = None,
     ) -> None:
         self.exclusive_slot_types = exclusive_slot_types or {}
         self.device_slots = device_slots or {}
@@ -545,8 +547,10 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
                 self.allocations[slot_name].items(),  # k: slot_name, v: per-device alloc
                 key=lambda pair: self.device_slots[pair[0]].amount - pair[1],
                 reverse=True)
-            log.debug('DiscretePropertyAllocMap: allocating {} {}', slot_name, alloc)
-            log.debug('DiscretePropertyAllocMap: current-alloc: {!r}', sorted_dev_allocs)
+
+            if log_alloc_map:
+                log.debug('DiscretePropertyAllocMap: allocating {} {}', slot_name, alloc)
+                log.debug('DiscretePropertyAllocMap: current-alloc: {!r}', sorted_dev_allocs)
 
             slot_type = self.slot_types.get(slot_name, SlotTypes.COUNT)
             if slot_type in (SlotTypes.COUNT, SlotTypes.BYTES):
@@ -667,8 +671,10 @@ class FractionAllocMap(AbstractAllocMap):
                 self.allocations[slot_name].items(),
                 key=lambda pair: self.device_slots[pair[0]].amount - pair[1],
                 reverse=True)
-            log.debug('FractionAllocMap: allocating {} {}', slot_name, alloc)
-            log.debug('FractionAllocMap: current-alloc: {!r}', sorted_dev_allocs)
+
+            if log_alloc_map:
+                log.debug('FractionAllocMap: allocating {} {}', slot_name, alloc)
+                log.debug('FractionAllocMap: current-alloc: {!r}', sorted_dev_allocs)
 
             slot_type = self.slot_types.get(slot_name, SlotTypes.COUNT)
             if slot_type in (SlotTypes.COUNT, SlotTypes.BYTES):
@@ -792,8 +798,9 @@ class FractionAllocMap(AbstractAllocMap):
                 lambda pair: self.device_slots[pair[0]].amount - pair[1] >= min_memory,
                 sorted_dev_allocs))
 
-            log.debug('FractionAllocMap: allocating {} {}', slot_name, alloc)
-            log.debug('FractionAllocMap: current-alloc: {!r}', sorted_dev_allocs)
+            if log_alloc_map:
+                log.debug('FractionAllocMap: allocating {} {}', slot_name, alloc)
+                log.debug('FractionAllocMap: current-alloc: {!r}', sorted_dev_allocs)
 
             # check if there is enough resource for allocation
             total_allocatable = Decimal(0)
