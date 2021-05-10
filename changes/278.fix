@@ -1,0 +1,11 @@
+Stabilize container lifecycle management.
+- Let the container cleanup task to explicitly wait for the container destruction task
+  because the clean event may be fired and handled before the docker's container destroy API returns.
+- Do not create/destroy libzmq contexts for individual containers and reuse a single
+  global context, because doing so may hang up when there are many concurrent
+  creation/destruction operations going on.
+- Explicitly clean up async generators related to log collection.
+- Limit the concurrency of container creation and destruction to 4 using async semaphore.
+- Add more category switches to control verbosity of debug logs. (`events`, `alloc-map`, `kernel-config`)
+- Add explicit timeouts when calling the docker stats API because it may hang under high loads,
+  but this seems to be not a complete solution yet.

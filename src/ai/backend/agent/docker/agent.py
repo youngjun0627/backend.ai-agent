@@ -14,6 +14,7 @@ import secrets
 import shutil
 import signal
 import struct
+from subprocess import CalledProcessError
 import sys
 from typing import (
     Any,
@@ -253,6 +254,7 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
         for container in (await self.docker.containers.list()):
 
             async def _fetch_container_info(container):
+                kernel_id = "(unknown)"
                 try:
                     kernel_id = await get_kernel_id_from_container(container)
                     if kernel_id is None:
@@ -266,11 +268,12 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                             )
                         )
                 except asyncio.CancelledError:
-                    raise
+                    pass
                 except Exception:
                     log.exception(
-                        'error while fetching container information (cid: {})',
-                        container._id)
+                        "error while fetching container information (cid:{}, k:{})",
+                        container._id, kernel_id,
+                    )
 
             fetch_tasks.append(_fetch_container_info(container))
 
@@ -914,7 +917,8 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                 image_labels['ai.backend.service-ports'] + ',' + encoded_preopen_ports
         update_nested_dict(container_config, ctx.computer_docker_args)
         kernel_name = f"kernel.{ctx.image_ref.name.split('/')[-1]}.{ctx.kernel_id}"
-        log.debug('full container config: {!r}', pretty(container_config))
+        if self.local_config['debug']['log-kernel-config']:
+            log.debug('full container config: {!r}', pretty(container_config))
 
         # We are all set! Create and start the container.
         try:
@@ -1060,29 +1064,33 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
             container = self.docker.containers.container(container_id)
 
             async def log_iter():
-                async for line in container.log(
+                it = container.log(
                     stdout=True, stderr=True, follow=True,
-                ):
-                    yield line.encode('utf-8')
+                )
+                async with aiotools.aclosing(it):
+                    async for line in it:
+                        yield line.encode('utf-8')
 
             try:
                 with timeout(60):
                     await self.collect_logs(kernel_id, container_id, log_iter())
             except asyncio.TimeoutError:
-                log.warning('timeout for collecting container logs (cid:{})', container_id)
+                log.warning('timeout for collecting container logs (k:{}, cid:{})',
+                            kernel_id, container_id)
             except Exception as e:
-                log.warning('error while collecting container logs (cid:{})',
-                            container_id, exc_info=e)
+                log.warning('error while collecting container logs (k:{}, cid:{})',
+                            kernel_id, container_id, exc_info=e)
 
         kernel_obj = self.kernel_registry.get(kernel_id)
         if kernel_obj is not None:
             for domain_socket_proxy in kernel_obj.get('domain_socket_proxies', []):
-                domain_socket_proxy.proxy_server.close()
-                await domain_socket_proxy.proxy_server.wait_closed()
-                try:
-                    domain_socket_proxy.host_proxy_path.unlink()
-                except IOError:
-                    pass
+                if domain_socket_proxy.proxy_server.is_serving():
+                    domain_socket_proxy.proxy_server.close()
+                    await domain_socket_proxy.proxy_server.wait_closed()
+                    try:
+                        domain_socket_proxy.host_proxy_path.unlink()
+                    except IOError:
+                        pass
 
         if not self.local_config['debug']['skip-container-deletion'] and container_id is not None:
             container = self.docker.containers.container(container_id)
@@ -1113,6 +1121,8 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                     await destroy_scratch_filesystem(tmp_dir)
                     await loop.run_in_executor(None, shutil.rmtree, tmp_dir)
                 await loop.run_in_executor(None, shutil.rmtree, scratch_dir)
+            except CalledProcessError:
+                pass
             except FileNotFoundError:
                 pass
 
@@ -1187,13 +1197,16 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                         if evdata['Type'] != 'container':
                             # Our interest is the container-related events
                             continue
-                        if self.local_config['debug']['log-docker-events']:
-                            log.debug('docker-event: action={}, actor={}',
-                                      evdata['Action'], evdata['Actor'])
                         container_name = evdata['Actor']['Attributes']['name']
                         kernel_id = await get_kernel_id_from_container(container_name)
                         if kernel_id is None:
                             continue
+                        if (
+                            self.local_config['debug']['log-docker-events']
+                            and evdata['Action'] in ('start', 'die')
+                        ):
+                            log.debug('docker-event: action={}, actor={}',
+                                      evdata['Action'], evdata['Actor'])
                         if evdata['Action'] == 'start':
                             await asyncio.shield(handle_action_start(kernel_id, evdata))
                         elif evdata['Action'] == 'die':

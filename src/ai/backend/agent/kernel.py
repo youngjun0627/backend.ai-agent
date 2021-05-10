@@ -187,10 +187,10 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
 
     @abstractmethod
     async def close(self) -> None:
-        '''
+        """
         Release internal resources used for interacting with the kernel.
         Note that this does NOT terminate the container.
-        '''
+        """
         pass
 
     # We don't have "allocate_slots()" method here because:
@@ -200,10 +200,10 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
     #   "restore_from_container"
 
     def release_slots(self, computer_ctxs) -> None:
-        '''
+        """
         Release the resource slots occupied by the kernel
         to the allocation maps.
-        '''
+        """
         for accel_key, accel_alloc in self.resource_spec.allocations.items():
             computer_ctxs[accel_key].alloc_map.free(accel_alloc)
 
@@ -294,6 +294,9 @@ class AbstractKernel(UserDict, aobject, metaclass=ABCMeta):
             self._tasks.remove(myself)
 
 
+_zctx = zmq.asyncio.Context()
+
+
 class AbstractCodeRunner(aobject, metaclass=ABCMeta):
 
     kernel_id: KernelId
@@ -318,6 +321,8 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
     status_task: Optional[asyncio.Task]
     watchdog_task: Optional[asyncio.Task]
 
+    _closed: bool
+
     def __init__(self, kernel_id: KernelId, *,
                  exec_timeout: float = 0,
                  client_features: FrozenSet[str] = None) -> None:
@@ -329,7 +334,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         self.exec_timeout = exec_timeout
         self.max_record_size = 10 * (2 ** 20)  # 10 MBytes
         self.client_features = client_features or frozenset()
-        self.zctx = zmq.asyncio.Context()
+        self.zctx = _zctx  # share the global context
         self.input_sock = self.zctx.socket(zmq.PUSH)
         self.output_sock = self.zctx.socket(zmq.PULL)
         self.completion_queue = asyncio.Queue(maxsize=128)
@@ -342,6 +347,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         self.read_task = None
         self.status_task = None
         self.watchdog_task = None
+        self._closed = False
 
     async def __ainit__(self) -> None:
         loop = current_loop()
@@ -370,11 +376,12 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         del props['read_task']
         del props['status_task']
         del props['watchdog_task']
+        del props['_closed']
         return props
 
     def __setstate__(self, props):
         self.__dict__.update(props)
-        self.zctx = zmq.asyncio.Context()
+        self.zctx = _zctx  # share the global context
         self.input_sock = self.zctx.socket(zmq.PUSH)
         self.output_sock = self.zctx.socket(zmq.PULL)
         self.completion_queue = asyncio.Queue(maxsize=128)
@@ -386,6 +393,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         self.read_task = None
         self.status_task = None
         self.watchdog_task = None
+        self._closed = False
         # __ainit__() is called by the caller.
 
     @abstractmethod
@@ -397,26 +405,34 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         raise NotImplementedError
 
     async def close(self) -> None:
-        if self.watchdog_task and not self.watchdog_task.done():
-            self.watchdog_task.cancel()
-            await self.watchdog_task
-        if self.status_task and not self.status_task.done():
-            self.status_task.cancel()
-            await self.status_task
-        if self.input_sock:
-            self.input_sock.close()
-        if self.output_sock:
-            self.output_sock.close()
-        if self.read_task and not self.read_task.done():
-            self.read_task.cancel()
-            await self.read_task
-        self.zctx.destroy()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.watchdog_task and not self.watchdog_task.done():
+                self.watchdog_task.cancel()
+                await self.watchdog_task
+            if self.status_task and not self.status_task.done():
+                self.status_task.cancel()
+                await self.status_task
+            if self.read_task and not self.read_task.done():
+                self.read_task.cancel()
+                await self.read_task
+            if self.input_sock:
+                self.input_sock.close()
+            if self.output_sock:
+                self.output_sock.close()
+            # WARNING:
+            # destroying zmq contexts here with possibility of re-entrance
+            # may cause deadlocks.
+        except Exception:
+            log.exception("AbstractCodeRunner.close(): unexpected error")
 
     async def ping_status(self):
-        '''
+        """
         This is to keep the REPL in/out port mapping in the Linux
         kernel's NAT table alive.
-        '''
+        """
         try:
             while True:
                 ret = await self.feed_and_get_status()
@@ -426,7 +442,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         except asyncio.CancelledError:
             pass
         except Exception:
-            log.exception('unexpected error')
+            log.exception("AbstractCodeRunner.ping_status(): unexpected error")
 
     async def feed_batch(self, opts):
         if self.input_sock.closed:
@@ -734,22 +750,22 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         assert self.output_queue is q
 
     def resume_output_queue(self) -> None:
-        '''
+        """
         Use this to conclude get_next_result() when the execution should be
         continued from the client.
 
         At that time, we need to reuse the current run ID and its output queue.
         We don't change self.output_queue here so that we can continue to read
         outputs while the client sends the continuation request.
-        '''
+        """
         if self.current_run_id is None:
             return
         self.pending_queues.move_to_end(self.current_run_id, last=False)
 
     def next_output_queue(self) -> None:
-        '''
+        """
         Use this to conclude get_next_result() when we have finished a "run".
-        '''
+        """
         assert self.current_run_id is not None
         self.pending_queues.pop(self.current_run_id, None)
         self.current_run_id = None
