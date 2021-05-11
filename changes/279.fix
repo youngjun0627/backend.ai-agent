@@ -1,0 +1,1 @@
+Refine the stability update by explicitly skipping over being-terminated containers when syncing container lifecycles periodically
