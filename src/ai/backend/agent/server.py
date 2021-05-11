@@ -337,10 +337,12 @@ class AgentRPCServer(aobject):
                     cluster_info,
                 ))
             results = await asyncio.gather(*coros, return_exceptions=True)
-            errors = [*filter(lambda item: isinstance(item, Exception), results)]
-            if errors:
-                # Raise up the first error.
+        errors = [*filter(lambda item: isinstance(item, Exception), results)]
+        if errors:
+            # Raise up the first error.
+            if len(errors) == 1:
                 raise errors[0]
+            raise aiotools.MultiError("agent.create_kernels() failed", errors=errors)
         raw_results = [
             {
                 'id': str(result['id']),
