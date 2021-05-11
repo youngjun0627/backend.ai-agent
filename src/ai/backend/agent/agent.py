@@ -191,6 +191,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
     zmq_ctx: zmq.asyncio.Context
 
     restarting_kernels: MutableMapping[KernelId, RestartTracker]
+    terminating_kernels: Set[KernelId]
     timer_tasks: MutableSequence[asyncio.Task]
     container_lifecycle_queue: asyncio.Queue[ContainerLifecycleEvent | Sentinel]
 
@@ -222,6 +223,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         self.computers = {}
         self.images = {}  # repoTag -> digest
         self.restarting_kernels = {}
+        self.terminating_kernels = set()
         self.stat_ctx = StatContext(
             self, mode=StatModes(local_config['container']['stats-type']),
         )
@@ -489,6 +491,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             assert current_task is not None
             if ev.kernel_id not in self._ongoing_destruction_tasks:
                 self._ongoing_destruction_tasks[ev.kernel_id] = current_task
+            self.terminating_kernels.add(ev.kernel_id)
             kernel_obj = self.kernel_registry.get(ev.kernel_id)
             if kernel_obj is None:
                 log.warning('destroy_kernel(k:{0}) kernel missing (already dead?)',
@@ -576,6 +579,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                         await self.produce_event(
                             KernelTerminatedEvent(ev.kernel_id, ev.reason)
                         )
+                self.terminating_kernels.discard(ev.kernel_id)
 
     async def process_lifecycle_events(self) -> None:
         async with aiotools.TaskGroup() as tg:
@@ -686,7 +690,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             try:
                 # Check if: there are dead containers
                 for kernel_id, container in (await self.enumerate_containers(DEAD_STATUS_SET)):
-                    if kernel_id in self.restarting_kernels:
+                    if kernel_id in self.restarting_kernels or kernel_id in self.terminating_kernels:
                         continue
                     log.info('detected dead container during lifeycle sync (k:{}, c:{})',
                             kernel_id, container.id)
@@ -702,7 +706,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                     known_kernels[kernel_id] = kernel_obj['container_id']
                 # Check if: kernel_registry has the container but it's gone.
                 for kernel_id in (known_kernels.keys() - alive_kernels.keys()):
-                    if kernel_id in self.restarting_kernels:
+                    if kernel_id in self.restarting_kernels or kernel_id in self.terminating_kernels:
                         continue
                     terminated_kernels[kernel_id] = ContainerLifecycleEvent(
                         kernel_id,
