@@ -16,6 +16,24 @@ Changes
 
 .. towncrier release notes start
 
+20.09.8 (2021-05-14)
+--------------------
+
+### Fixes
+* Stabilize container lifecycle management. ([#278](https://github.com/lablup/backend.ai-agent/issues/278))
+  - Let the container cleanup task to explicitly wait for the container destruction task
+    because the clean event may be fired and handled before the docker's container destroy API returns.
+  - Do not create/destroy libzmq contexts for individual containers and reuse a single
+    global context, because doing so may hang up when there are many concurrent
+    creation/destruction operations going on.
+  - Explicitly clean up async generators related to log collection.
+  - Limit the concurrency of container creation and destruction to 4 using async semaphore.
+  - Add more category switches to control verbosity of debug logs. (`events`, `alloc-map`, `kernel-config`)
+  - Add explicit timeouts when calling the docker stats API because it may hang under high loads,
+    but this seems to be not a complete solution yet.
+* Refine the stability update by explicitly skipping over being-terminated containers when syncing container lifecycles periodically ([#279](https://github.com/lablup/backend.ai-agent/issues/279))
+
+
 20.09.7 (2021-03-29)
 --------------------
 
