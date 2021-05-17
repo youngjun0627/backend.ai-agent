@@ -16,6 +16,16 @@ Changes
 
 .. towncrier release notes start
 
+20.09.9 (2021-05-17)
+--------------------
+
+### Features
+* Place a mardkwon file inside a container under /home/work/ which warns data saving on homedir. ([#281](https://github.com/lablup/backend.ai-agent/issues/281))
+
+### Miscellaneous
+* Increase the maximum allowed overcommit factor of CPU cores from 4 to 10. ([#282](https://github.com/lablup/backend.ai-agent/issues/282))
+
+
 20.09.8 (2021-05-14)
 --------------------
 
