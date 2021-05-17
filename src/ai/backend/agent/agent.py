@@ -1156,6 +1156,9 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         dotfile_extractor_path = Path(pkg_resources.resource_filename(
             'ai.backend.runner', 'extract_dotfiles.py'
         ))
+        persistent_files_warning_doc_path = Path(pkg_resources.resource_filename(
+            'ai.backend.runner', 'DO_NOT_STORE_PERSISTENT_FILES_HERE.md'
+        ))
 
         if matched_libc_style == 'musl':
             terminfo_path = Path(pkg_resources.resource_filename(
@@ -1175,6 +1178,8 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         _mount(MountTypes.BIND, tmux_path.resolve(), '/opt/kernel/tmux')
         _mount(MountTypes.BIND, sftp_server_path.resolve(), '/usr/libexec/sftp-server')
         _mount(MountTypes.BIND, scp_path.resolve(), '/usr/bin/scp')
+        _mount(MountTypes.BIND, persistent_files_warning_doc_path.resolve(),
+               '/home/work/DO_NOT_STORE_PERSISTENT_FILES_HERE.md')
 
         _mount(MountTypes.VOLUME, krunner_volume, '/opt/backend.ai')
         pylib_path = f'/opt/backend.ai/lib/python{krunner_pyver}/site-packages/'
