@@ -117,7 +117,7 @@ class CPUPlugin(AbstractComputePlugin):
     async def list_devices(self) -> Collection[CPUDevice]:
         cores = await libnuma.get_available_cores()
         overcommit_factor = int(os.environ.get('BACKEND_CPU_OVERCOMMIT_FACTOR', '1'))
-        assert 1 <= overcommit_factor <= 4
+        assert 1 <= overcommit_factor <= 10
         return [
             CPUDevice(
                 device_id=DeviceId(str(core_idx)),
