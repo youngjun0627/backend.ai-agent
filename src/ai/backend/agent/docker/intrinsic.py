@@ -329,11 +329,12 @@ class MemoryPlugin(AbstractComputePlugin):
     async def list_devices(self) -> Collection[MemoryDevice]:
         # TODO: support NUMA?
         memory_size = psutil.virtual_memory().total
+        overcommit_factor = int(os.environ.get('BACKEND_MEM_OVERCOMMIT_FACTOR', '1'))
         return [MemoryDevice(
             device_id=DeviceId('root'),
             hw_location='root',
             numa_node=0,
-            memory_size=memory_size,
+            memory_size=overcommit_factor * memory_size,
             processing_units=0,
         )]
 
