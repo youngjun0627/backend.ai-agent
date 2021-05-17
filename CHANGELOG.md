@@ -16,6 +16,17 @@ Changes
 
 .. towncrier release notes start
 
+21.03.2 (2021-05-17)
+--------------------
+
+### Features
+* Add support for `BACKEND_MEM_OVERCOMMIT_FACTOR` environment variable to allow overriding the capacity of main memory for the scheduler, while reporting statistics as-is. ([#280](https://github.com/lablup/backend.ai-agent/issues/280))
+* Place a mardkwon file inside a container under /home/work/ which warns data saving on homedir. ([#281](https://github.com/lablup/backend.ai-agent/issues/281))
+
+### Miscellaneous
+* Increase the maximum allowed overcommit factor of CPU cores from 4 to 10. ([#282](https://github.com/lablup/backend.ai-agent/issues/282))
+
+
 21.03.1 (2021-05-14)
 --------------------
 
