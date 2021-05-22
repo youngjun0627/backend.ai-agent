@@ -711,7 +711,7 @@ class FractionAllocMap(AbstractAllocMap):
             if any(value.remainder_near(self.quantum_size) != 0 for value in slot_allocation.values()):
                 alloc_repr = ", ".join(f"{k}={v}" for k, v in slot_allocation.items())
                 raise InsufficientResource(
-                    f"Could not assign multiple-of-quantum amounts to devices ({alloc_repr})"
+                    f"Device allocation ({alloc_repr}) is not a multiple of {self.quantum_size}"
                 )
             allocation[slot_name] = slot_allocation
         return allocation
@@ -881,7 +881,7 @@ class FractionAllocMap(AbstractAllocMap):
             if any(value.remainder_near(self.quantum_size) != 0 for value in slot_allocation.values()):
                 alloc_repr = ", ".join(f"{k}={v}" for k, v in slot_allocation.items())
                 raise InsufficientResource(
-                    f"Could not assign multiple-of-quantum amounts to devices ({alloc_repr})"
+                    f"Device allocation ({alloc_repr}) is not a multiple of {self.quantum_size}"
                 )
             for dev_id, value in slot_allocation.items():
                 self.allocations[slot_name][dev_id] += value

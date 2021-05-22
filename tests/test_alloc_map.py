@@ -481,7 +481,7 @@ def test_quantum_size(alloc_strategy):
 
     if alloc_strategy == FractionAllocationStrategy.EVENLY:
         # input IS multiple of 0.25 but the CALCULATED allocations are not multiple of 0.25
-        with pytest.raises(InsufficientResource, match="multiple-of-quantum"):
+        with pytest.raises(InsufficientResource, match="not a multiple of"):
             alloc_map.allocate({
                 SlotName('x'): Decimal("1.75"),  # divided to 0.88 and 0.87
             })
@@ -507,7 +507,7 @@ def test_quantum_size(alloc_strategy):
             alloc_map.allocate({
                 SlotName('x'): Decimal("0.5"),
             })
-        with pytest.raises(InsufficientResource, match="multiple-of-quantum"):
+        with pytest.raises(InsufficientResource, match="not a multiple of"):
             alloc_map.allocate({
                 SlotName('x'): Decimal("1.2"),
             })
