@@ -1,0 +1,1 @@
+Clarify the error message for quantum size check failure after dividing the request amount into even slices in the allocation map
