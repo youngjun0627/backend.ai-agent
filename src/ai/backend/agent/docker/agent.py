@@ -576,19 +576,42 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
 
         # scratch/config/tmp mounts
         mounts: List[Mount] = [
-            Mount(MountTypes.BIND, ctx.config_dir, Path('/home/config'),
+            Mount(MountTypes.BIND, ctx.config_dir, Path("/home/config"),
                   MountPermission.READ_ONLY),
-            Mount(MountTypes.BIND, ctx.work_dir, Path('/home/work'),
+            Mount(MountTypes.BIND, ctx.work_dir, Path("/home/work"),
                   MountPermission.READ_WRITE),
         ]
-        if (sys.platform.startswith('linux') and
-            self.local_config['container']['scratch-type'] == 'memory'):
+        if (sys.platform.startswith("linux") and
+            self.local_config["container"]["scratch-type"] == "memory"):
             mounts.append(Mount(
                 MountTypes.BIND,
                 ctx.tmp_dir,
-                Path('/tmp'),
+                Path("/tmp"),
                 MountPermission.READ_WRITE,
             ))
+
+        # lxcfs mounts
+        if Path("/var/lib/lxcfs").is_dir():
+            mounts.extend(
+                Mount(
+                    MountTypes.BIND,
+                    Path(f"/var/lib/lxcfs{path}"),
+                    Path(path),
+                    MountPermission.READ_WRITE,
+                )
+                for path in [
+                    "/proc/cpuinfo",
+                    "/proc/meminfo",
+                    "/proc/diskstats",
+                    "/proc/stat",
+                    "/proc/swaps",
+                    "/proc/uptime",
+                    "/proc/slabinfo",
+                    "/sys/devices/system/cpu",
+                    "/sys/devices/system/cpu/online",
+                ]
+                if Path(f"/var/lib/lxcfs{path}").exists()
+            )
 
         # extra mounts
         extra_mount_list = await get_extra_volumes(self.docker, ctx.image_ref.short)
