@@ -591,26 +591,29 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
             ))
 
         # lxcfs mounts
-        if Path("/var/lib/lxcfs").is_dir():
+        lxcfs_root = Path("/var/lib/lxcfs")
+        if lxcfs_root.is_dir():
             mounts.extend(
                 Mount(
                     MountTypes.BIND,
-                    Path(f"/var/lib/lxcfs{path}"),
-                    Path(path),
+                    lxcfs_proc_path,
+                    "/" / lxcfs_proc_path.relative_to(lxcfs_root),
+                    MountPermission.READ_WRITE,
+                )
+                for lxcfs_proc_path in (lxcfs_root / "proc").iterdir()
+            )
+            mounts.extend(
+                Mount(
+                    MountTypes.BIND,
+                    lxcfs_root / path,
+                    "/" / Path(path),
                     MountPermission.READ_WRITE,
                 )
                 for path in [
-                    "/proc/cpuinfo",
-                    "/proc/meminfo",
-                    "/proc/diskstats",
-                    "/proc/stat",
-                    "/proc/swaps",
-                    "/proc/uptime",
-                    "/proc/slabinfo",
-                    "/sys/devices/system/cpu",
-                    "/sys/devices/system/cpu/online",
+                    "sys/devices/system/cpu",
+                    "sys/devices/system/cpu/online",
                 ]
-                if Path(f"/var/lib/lxcfs{path}").exists()
+                if Path(lxcfs_root / path).exists()
             )
 
         # extra mounts
