@@ -676,8 +676,8 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                     uid = self.local_config['container']['kernel-uid']
                     gid = self.local_config['container']['kernel-gid']
                     if os.geteuid() == 0:  # only possible when I am root.
-                        priv_key_path.chown(uid, gid)
-                        pub_key_path.chown(uid, gid)
+                        os.chown(str(priv_key_path), uid, gid)
+                        os.chown(str(pub_key_path), uid, gid)
                 priv_key_path.chmod(0o600)
             except Exception:
                 log.exception('error while writing cluster keypair')
