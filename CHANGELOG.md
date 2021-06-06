@@ -16,6 +16,14 @@ Changes
 
 .. towncrier release notes start
 
+21.03.4 (2021-06-07)
+--------------------
+
+### Fixes
+* "PosixPath object has no attribute chown" error in changing the ownership of cluster SSH-keypair. ([#285](https://github.com/lablup/backend.ai-agent/issues/285))
+* Make the lxcfs support to be more future-proof ([#287](https://github.com/lablup/backend.ai-agent/issues/287))
+
+
 21.03.3 (2021-06-07)
 --------------------
 
