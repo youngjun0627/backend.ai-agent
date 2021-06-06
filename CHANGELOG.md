@@ -16,6 +16,17 @@ Changes
 
 .. towncrier release notes start
 
+21.03.3 (2021-06-07)
+--------------------
+
+### Features
+* An improved, colorized shell prompt with cluster hostname and session name. ([#283](https://github.com/lablup/backend.ai-agent/issues/283))
+* Add support for lxcfs to provide a consistent view of `/proc/cpuinfo`, `/proc/meminfo`, `/proc/stat`, etc. inside containers ([#286](https://github.com/lablup/backend.ai-agent/issues/286))
+
+### Fixes
+* Clarify the error message for quantum size check failure after dividing the request amount into even slices in the allocation map ([#284](https://github.com/lablup/backend.ai-agent/issues/284))
+
+
 21.03.2 (2021-05-17)
 --------------------
 
