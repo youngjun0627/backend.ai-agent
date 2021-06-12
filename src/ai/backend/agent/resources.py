@@ -25,6 +25,7 @@ from typing import (
     TextIO,
     Tuple,
     Type,
+    TypeVar,
     cast,
     TYPE_CHECKING,
 )
@@ -62,7 +63,7 @@ log_alloc_map: bool = False
 known_slot_types: Mapping[SlotName, SlotTypes] = {}
 
 
-class FractionAllocationStrategy(enum.Enum):
+class AllocationStrategy(enum.Enum):
     FILL = 0
     EVENLY = 1
 
@@ -510,6 +511,17 @@ def bitmask2set(mask: int) -> FrozenSet[int]:
     return frozenset(bset)
 
 
+T = TypeVar("T")
+
+
+def distribute(num_items: int, groups: Sequence[T]) -> Mapping[T, int]:
+    base, extra = divmod(num_items, len(groups))
+    return dict(zip(
+        groups,
+        ((base + (1 if i < extra else 0)) for i in range(len(groups)))
+    ))
+
+
 class DiscretePropertyAllocMap(AbstractAllocMap):
     """
     An allocation map using discrete property.
@@ -520,7 +532,17 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
     (no fractions allowed)
     """
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        allocation_strategy: AllocationStrategy = AllocationStrategy.EVENLY,
+        **kwargs,
+    ) -> None:
+        self.allocation_strategy = allocation_strategy
+        self._allocate_impl = {
+            AllocationStrategy.FILL: self._allocate_by_filling,
+            AllocationStrategy.EVENLY: self._allocate_evenly,
+        }
         super().__init__(*args, **kwargs)
 
     def allocate(
@@ -539,6 +561,28 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
                     raise InvalidResourceCombination(
                         f"Slots {slot_name_a} and {slot_name_b} cannot be allocated at the same time.")
 
+        # check unique
+        for slot_name, alloc in requested_slots.items():
+            slot_type = self.slot_types.get(slot_name, SlotTypes.COUNT)
+            if slot_type in (SlotTypes.COUNT, SlotTypes.BYTES):
+                pass
+            elif slot_type == SlotTypes.UNIQUE:
+                if alloc != Decimal(1):
+                    raise InvalidResourceArgument(
+                        f"You may allocate only 1 for the unique-type slot {slot_name}"
+                    )
+
+        return self._allocate_impl[self.allocation_strategy](
+            requested_slots,
+            context_tag=context_tag,
+        )
+
+    def _allocate_by_filling(
+        self,
+        requested_slots: Mapping[SlotName, Decimal],
+        *,
+        context_tag: str = None,
+    ) -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
         allocation = {}
         for slot_name, alloc in requested_slots.items():
             slot_allocation: MutableMapping[DeviceId, Decimal] = {}
@@ -552,14 +596,6 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
                 log.debug('DiscretePropertyAllocMap: allocating {} {}', slot_name, alloc)
                 log.debug('DiscretePropertyAllocMap: current-alloc: {!r}', sorted_dev_allocs)
 
-            slot_type = self.slot_types.get(slot_name, SlotTypes.COUNT)
-            if slot_type in (SlotTypes.COUNT, SlotTypes.BYTES):
-                pass
-            elif slot_type == SlotTypes.UNIQUE:
-                if alloc != Decimal(1):
-                    raise InvalidResourceArgument(
-                        f"You may allocate only 1 for the unique-type slot {slot_name}"
-                    )
             total_allocatable = int(0)
             remaining_alloc = Decimal(alloc).normalize()
 
@@ -585,6 +621,64 @@ class DiscretePropertyAllocMap(AbstractAllocMap):
             allocation[slot_name] = slot_allocation
         return allocation
 
+    def _allocate_evenly(
+        self,
+        requested_slots: Mapping[SlotName, Decimal],
+        *,
+        context_tag: str = None,
+    ) -> Mapping[SlotName, Mapping[DeviceId, Decimal]]:
+        allocation = {}
+
+        for slot_name, requested_alloc in requested_slots.items():
+            new_alloc: MutableMapping[DeviceId, Decimal] = defaultdict(Decimal)
+            remaining_alloc = int(Decimal(requested_alloc))
+
+            while remaining_alloc > 0:
+                # calculate remaining slots per device
+                total_allocatable = int(sum(
+                    self.device_slots[dev_id].amount - current_alloc - new_alloc[dev_id]
+                    for dev_id, current_alloc in self.allocations[slot_name].items()
+                ))
+                # if the sum of remaining slot is less than the remaining alloc, fail.
+                if total_allocatable < remaining_alloc:
+                    raise InsufficientResource(
+                        "DiscretePropertyAllocMap: insufficient allocatable amount!",
+                        context_tag, slot_name, str(requested_alloc), str(total_allocatable)
+                    )
+
+                # calculate the amount to spread out
+                nonzero_devs = [
+                    dev_id
+                    for dev_id, current_alloc in self.allocations[slot_name].items()
+                    if self.device_slots[dev_id].amount - current_alloc - new_alloc[dev_id] > 0
+                ]
+                initial_diffs = distribute(remaining_alloc, nonzero_devs)
+                diffs = {
+                    dev_id: min(
+                        int(self.device_slots[dev_id].amount - current_alloc - new_alloc[dev_id]),
+                        initial_diffs.get(dev_id, 0),
+                    )
+                    for dev_id, current_alloc in self.allocations[slot_name].items()
+                }
+
+                # distribute the remainig alloc to the remaining slots.
+                sorted_dev_allocs = sorted(
+                    self.allocations[slot_name].items(),  # k: slot_name, v: per-device alloc
+                    key=lambda pair: self.device_slots[pair[0]].amount - pair[1],
+                    reverse=True)
+                for dev_id, current_alloc in sorted_dev_allocs:
+                    diff = diffs[dev_id]
+                    new_alloc[dev_id] += diff
+                    remaining_alloc -= diff
+                    if remaining_alloc == 0:
+                        break
+
+            for dev_id, allocated in new_alloc.items():
+                self.allocations[slot_name][dev_id] += allocated
+            allocation[slot_name] = {k: v for k, v in new_alloc.items() if v > 0}
+
+        return allocation
+
     def apply_allocation(
         self,
         existing_alloc: Mapping[SlotName, Mapping[DeviceId, Decimal]],
@@ -607,7 +701,7 @@ class FractionAllocMap(AbstractAllocMap):
     def __init__(
         self,
         *args,
-        allocation_strategy: FractionAllocationStrategy = FractionAllocationStrategy.EVENLY,
+        allocation_strategy: AllocationStrategy = AllocationStrategy.EVENLY,
         quantum_size: Decimal = Decimal("0.01"),
         enforce_physical_continuity: bool = True,
         **kwargs,
@@ -616,8 +710,8 @@ class FractionAllocMap(AbstractAllocMap):
         self.quantum_size = quantum_size
         self.enforce_physical_continuity = enforce_physical_continuity
         self._allocate_impl = {
-            FractionAllocationStrategy.FILL: self._allocate_by_filling,
-            FractionAllocationStrategy.EVENLY: self._allocate_evenly,
+            AllocationStrategy.FILL: self._allocate_by_filling,
+            AllocationStrategy.EVENLY: self._allocate_evenly,
         }
         super().__init__(*args, **kwargs)
         self.digits = Decimal(10) ** -2  # decimal points that is supported by agent
