@@ -16,6 +16,16 @@ Changes
 
 .. towncrier release notes start
 
+21.03.5 (2021-06-13)
+--------------------
+
+### Features
+* Implement an evenly-distributed allocation algorithm for `DiscretePropertyAllocMap`, which allows use of CPU overcommits by spreading out oversubscribed core assignments ([#288](https://github.com/lablup/backend.ai-agent/issues/288))
+
+### Fixes
+* Add explicit dependencies of type annotation packages required by latest mypy (≥0.900) ([#289](https://github.com/lablup/backend.ai-agent/issues/289))
+
+
 21.03.4 (2021-06-07)
 --------------------
 
