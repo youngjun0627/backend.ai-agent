@@ -13,6 +13,9 @@ import pkg_resources
 import platform
 import re
 import signal
+import sys
+import traceback
+from types import TracebackType
 from typing import (
     Any,
     AsyncIterator,
@@ -31,6 +34,7 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    Type,
     TypeVar,
     Union,
     TYPE_CHECKING,
@@ -77,6 +81,7 @@ from ai.backend.common.types import (
 from ai.backend.common.events import (
     EventProducer,
     AbstractEvent,
+    AgentErrorEvent,
     AgentHeartbeatEvent,
     AgentStartedEvent,
     AgentTerminatedEvent,
@@ -199,8 +204,8 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
     stat_sync_sockpath: Path
     stat_sync_task: asyncio.Task
 
-    stats_monitor: StatsPluginContext
-    error_monitor: ErrorPluginContext
+    stats_monitor: StatsPluginContext  # unused currently
+    error_monitor: ErrorPluginContext  # unused in favor of produce_error_event()
 
     _pending_creation_tasks: Dict[KernelId, Set[asyncio.Task]]
     _ongoing_destruction_tasks: weakref.WeakValueDictionary[KernelId, asyncio.Task]
@@ -361,42 +366,51 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                         await t
         await self.event_producer.produce_event(event, source=self.local_config['agent']['id'])
 
+    async def produce_error_event(
+        self,
+        exc_info: Tuple[Type[BaseException], BaseException, TracebackType] = None,
+    ) -> None:
+        exc_type, exc, tb = sys.exc_info() if exc_info is None else exc_info
+        pretty_message = ''.join(traceback.format_exception_only(exc_type, exc)).strip()
+        pretty_tb = ''.join(traceback.format_tb(tb)).strip()
+        await self.produce_event(AgentErrorEvent(pretty_message, pretty_tb))
+
     async def heartbeat(self, interval: float):
         """
         Send my status information and available kernel images to the manager(s).
         """
         res_slots = {}
-        for cctx in self.computers.values():
-            for slot_key, slot_type in cctx.instance.slot_types:
-                res_slots[slot_key] = (
-                    slot_type,
-                    str(self.slots.get(slot_key, 0)),
-                )
-        agent_info = {
-            'ip': str(self.local_config['agent']['rpc-listen-addr'].host),
-            'region': self.local_config['agent']['region'],
-            'scaling_group': self.local_config['agent']['scaling-group'],
-            'addr': f"tcp://{self.local_config['agent']['rpc-listen-addr']}",
-            'resource_slots': res_slots,
-            'version': VERSION,
-            'compute_plugins': {
-                key: {
-                    'version': computer.instance.get_version(),
-                    **(await computer.instance.extra_info())
-                }
-                for key, computer in self.computers.items()
-            },
-            'images': snappy.compress(msgpack.packb([
-                (repo_tag, digest) for repo_tag, digest in self.images.items()
-            ])),
-        }
         try:
+            for cctx in self.computers.values():
+                for slot_key, slot_type in cctx.instance.slot_types:
+                    res_slots[slot_key] = (
+                        slot_type,
+                        str(self.slots.get(slot_key, 0)),
+                    )
+            agent_info = {
+                'ip': str(self.local_config['agent']['rpc-listen-addr'].host),
+                'region': self.local_config['agent']['region'],
+                'scaling_group': self.local_config['agent']['scaling-group'],
+                'addr': f"tcp://{self.local_config['agent']['rpc-listen-addr']}",
+                'resource_slots': res_slots,
+                'version': VERSION,
+                'compute_plugins': {
+                    key: {
+                        'version': computer.instance.get_version(),
+                        **(await computer.instance.extra_info())
+                    }
+                    for key, computer in self.computers.items()
+                },
+                'images': snappy.compress(msgpack.packb([
+                    (repo_tag, digest) for repo_tag, digest in self.images.items()
+                ])),
+            }
             await self.produce_event(AgentHeartbeatEvent(agent_info))
         except asyncio.TimeoutError:
             log.warning('event dispatch timeout: instance_heartbeat')
         except Exception:
             log.exception('instance_heartbeat failure')
-            await self.error_monitor.capture_exception()
+            await self.produce_error_event()
 
     async def collect_logs(
         self,
@@ -456,7 +470,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             pass
         except Exception:
             log.exception('unhandled exception while syncing node stats')
-            await self.error_monitor.capture_exception()
+            await self.produce_error_event()
 
     async def collect_container_stat(self, interval: float):
         if self.local_config['debug']['log-stats']:
@@ -477,7 +491,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             pass
         except Exception:
             log.exception('unhandled exception while syncing container stats')
-            await self.error_monitor.capture_exception()
+            await self.produce_error_event()
 
     async def _handle_start_event(self, ev: ContainerLifecycleEvent) -> None:
         kernel_obj = self.kernel_registry.get(ev.kernel_id)
@@ -523,7 +537,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             pass
         except Exception:
             log.exception('unhandled exception while processing DESTROY event')
-            await self.error_monitor.capture_exception()
+            await self.produce_error_event()
         finally:
             if ev.done_event is not None:
                 ev.done_event.set()
@@ -546,7 +560,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                 ev.kernel_id in self.restarting_kernels,
             )
         except Exception:
-            await self.error_monitor.capture_exception()
+            await self.produce_error_event()
         finally:
             try:
                 kernel_obj = self.kernel_registry.get(ev.kernel_id)
