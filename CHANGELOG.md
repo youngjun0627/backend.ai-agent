@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+21.03.6 (2021-06-18)
+--------------------
+
+### Fixes
+* Unify handling of unhandled exceptions to produce AgentError events and depreacte use of agent-side error monitor plugins ([#290](https://github.com/lablup/backend.ai-agent/issues/290))
+
+
 21.03.5 (2021-06-13)
 --------------------
 
