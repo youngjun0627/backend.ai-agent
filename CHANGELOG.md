@@ -16,6 +16,19 @@ Changes
 
 .. towncrier release notes start
 
+20.09.10 (2021-06-18)
+---------------------
+
+### Features
+* An improved, colorized shell prompt with cluster hostname and session name. ([#283](https://github.com/lablup/backend.ai-agent/issues/283))
+
+### Fixes
+* Clarify the error message for quantum size check failure after dividing the request amount into even slices in the allocation map ([#284](https://github.com/lablup/backend.ai-agent/issues/284))
+* "PosixPath object has no attribute chown" error in changing the ownership of cluster SSH-keypair. ([#285](https://github.com/lablup/backend.ai-agent/issues/285))
+* Add explicit dependencies of type annotation packages required by latest mypy (≥0.900) ([#289](https://github.com/lablup/backend.ai-agent/issues/289))
+* Unify handling of unhandled exceptions to produce AgentError events and depreacte use of agent-side error monitor plugins ([#290](https://github.com/lablup/backend.ai-agent/issues/290))
+
+
 20.09.9 (2021-05-17)
 --------------------
 
