@@ -10,7 +10,6 @@ from pathlib import Path
 from pprint import pformat, pprint
 import signal
 import sys
-import traceback
 from typing import (
     Any,
     AsyncGenerator,
@@ -38,7 +37,6 @@ from trafaret.dataerror import DataError as TrafaretDataError
 
 from ai.backend.common import config, utils, identity, msgpack
 from ai.backend.common.etcd import AsyncEtcd, ConfigScopes
-from ai.backend.common.events import AgentErrorEvent
 from ai.backend.common.logging import Logger, BraceStyleAdapter
 from ai.backend.common.plugin.monitor import ErrorPluginContext, StatsPluginContext
 from ai.backend.common.types import (
@@ -112,10 +110,7 @@ def collect_error(meth: Callable) -> Callable:
         try:
             return await meth(self, *args, **kwargs)
         except Exception:
-            exc_type, exc, tb = sys.exc_info()
-            pretty_message = ''.join(traceback.format_exception_only(exc_type, exc)).strip()
-            pretty_tb = ''.join(traceback.format_tb(tb)).strip()
-            await self.agent.produce_event(AgentErrorEvent(pretty_message, pretty_tb))
+            await self.agent.produce_error_event()
             raise
     return _inner
 
