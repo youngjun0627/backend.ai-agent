@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+21.03.7 (2021-06-28)
+--------------------
+
+### Features
+* Now individual container's hostname is set to the corresponding hostname in cluster sessions such as `main1`, `sub1`, etc. ([#291](https://github.com/lablup/backend.ai-agent/issues/291))
+
+
 21.03.6 (2021-06-18)
 --------------------
 
