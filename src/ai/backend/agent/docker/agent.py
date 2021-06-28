@@ -870,7 +870,8 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
             'EntryPoint': ["/opt/kernel/entrypoint.sh"],
             'Cmd': cmdargs,
             'Env': [f'{k}={v}' for k, v in environ.items()],
-            'WorkingDir': '/home/work',
+            'WorkingDir': "/home/work",
+            'Hostname': ctx.kernel_config['cluster_hostname'],
             'Labels': {
                 'ai.backend.kernel-id': str(ctx.kernel_id),
                 'ai.backend.internal.block-service-ports':
