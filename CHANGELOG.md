@@ -16,6 +16,13 @@ Changes
 
 .. towncrier release notes start
 
+21.03.8 (2021-07-13)
+--------------------
+
+### Fixes
+* Fix the regression of batch-type sessions by moving `startup_command` invocation to agents ([#293](https://github.com/lablup/backend.ai-agent/issues/293))
+
+
 21.03.7 (2021-06-28)
 --------------------
 
