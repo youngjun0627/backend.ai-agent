@@ -16,6 +16,16 @@ Changes
 
 .. towncrier release notes start
 
+20.09.11 (2021-07-13)
+---------------------
+
+### Features
+* Now individual container's hostname is set to the corresponding hostname in cluster sessions such as `main1`, `sub1`, etc. ([#291](https://github.com/lablup/backend.ai-agent/issues/291))
+
+### Fixes
+* Fix the regression of batch-type sessions by moving `startup_command` invocation to agents ([#293](https://github.com/lablup/backend.ai-agent/issues/293))
+
+
 20.09.10 (2021-06-18)
 ---------------------
 
