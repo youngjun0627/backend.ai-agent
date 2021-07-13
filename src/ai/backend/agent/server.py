@@ -447,7 +447,7 @@ class AgentRPCServer(aobject):
         kernel_id,          # type: str
         startup_command,    # type: str
     ) -> None:
-        # TODO: use task-group to keep track of completion/cancellation
+        # DEPRECATED
         asyncio.create_task(self.agent.execute_batch(
             KernelId(UUID(kernel_id)),
             startup_command,
