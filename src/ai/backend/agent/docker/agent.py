@@ -958,9 +958,9 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
             with open(ctx.config_dir / 'resource.txt', 'w') as f:
                 await loop.run_in_executor(None, resource_spec.write_to_file, f)
             async with AsyncFileWriter(
-                    loop=loop,
-                    target_filename=ctx.config_dir / 'resource.txt',
-                    access_mode='a') as writer:
+                target_filename=ctx.config_dir / 'resource.txt',
+                access_mode='a'
+            ) as writer:
                 for dev_name, device_alloc in resource_spec.allocations.items():
                     computer_ctx = self.computers[dev_name]
                     kvpairs = \
