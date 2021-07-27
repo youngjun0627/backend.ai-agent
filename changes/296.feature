@@ -1,0 +1,1 @@
+Add `~/.local/bin` to the default PATH.
