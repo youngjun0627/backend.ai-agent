@@ -26,6 +26,7 @@ from typing import (
 )
 from uuid import UUID
 
+import aiomonitor
 import aiotools
 from aiotools import aclosing
 from callosum.rpc import Peer, RPCMessage
@@ -621,6 +622,16 @@ async def server_main(
     # Pre-load compute plugin configurations.
     local_config['plugins'] = await etcd.get_prefix_dict('config/plugins/accelerator')
 
+    # Start aiomonitor.
+    # Port is set by config (default=50002).
+    monitor = aiomonitor.Monitor(
+        loop,
+        port=local_config['agent']['aiomonitor-port'],
+        console_enabled=False
+    )
+    monitor.prompt = "monitor (agent) >>> "
+    monitor.start()
+
     # Start RPC server.
     global agent_instance
     agent = await AgentRPCServer.new(
@@ -630,9 +641,12 @@ async def server_main(
     agent_instance = agent
 
     # Run!
-    async with agent:
-        stop_signal = yield
-        agent.mark_stop_signal(stop_signal)
+    try:
+        async with agent:
+            stop_signal = yield
+            agent.mark_stop_signal(stop_signal)
+    finally:
+        monitor.close()
 
 
 @click.group(invoke_without_command=True)
