@@ -141,6 +141,10 @@ class BaseRunner(metaclass=ABCMeta):
         except Exception:
             log.exception('Reading /home/config/environ.txt failed!')
 
+        # Add ~/.local/bin to the default PATH
+        self.child_env["PATH"] += os.pathsep + '~/.local/bin'
+        os.environ["PATH"] += os.pathsep + '~/.local/bin'
+
         self.started_at: float = time.monotonic()
         self.services_running = {}
 
