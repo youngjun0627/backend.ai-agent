@@ -99,7 +99,7 @@ from ai.backend.common.events import (
     SessionFailureEvent,
     SessionSuccessEvent,
 )
-from ai.backend.common.utils import current_loop
+from ai.backend.common.utils import cancel_tasks, current_loop
 from ai.backend.common.plugin.monitor import ErrorPluginContext, StatsPluginContext
 from ai.backend.common.service_ports import parse_service_ports
 from . import __version__ as VERSION
@@ -208,6 +208,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
     error_monitor: ErrorPluginContext  # unused in favor of produce_error_event()
 
     _pending_creation_tasks: Dict[KernelId, Set[asyncio.Task]]
+    _ongoing_exec_batch_tasks: weakref.WeakSet[asyncio.Task]
     _ongoing_destruction_tasks: weakref.WeakValueDictionary[KernelId, asyncio.Task]
 
     def __init__(
@@ -241,6 +242,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         self.error_monitor = error_monitor
         self._rx_distro = re.compile(r"\.([a-z-]+\d+\.\d+)\.")
         self._pending_creation_tasks = defaultdict(set)
+        self._ongoing_exec_batch_tasks = weakref.WeakSet()
         self._ongoing_destruction_tasks = weakref.WeakValueDictionary()
 
     async def __ainit__(self) -> None:
@@ -315,6 +317,8 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         An implementation of AbstractAgent would define its own ``shutdown()`` method.
         It must call this super method in an appropriate order, only once.
         """
+        await cancel_tasks(self._ongoing_exec_batch_tasks)
+
         # Close all pending kernel runners.
         for kernel_obj in self.kernel_registry.values():
             if kernel_obj.runner is not None:
@@ -324,10 +328,8 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             await self.clean_all_kernels(blocking=True)
 
         # Stop timers.
-        for task in self.timer_tasks:
-            task.cancel()
-        timer_cancel_results = await asyncio.gather(*self.timer_tasks, return_exceptions=True)
-        for result in timer_cancel_results:
+        cancel_results = await cancel_tasks(self.timer_tasks)
+        for result in cancel_results:
             if isinstance(result, Exception):
                 log.error('timer cancellation error: {}', result)
 
@@ -1526,6 +1528,13 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         await self.produce_event(
             KernelStartedEvent(kernel_id, creation_id)
         )
+
+        if kernel_config['session_type'] == 'batch' and kernel_config['cluster_role'] == 'main':
+            self._ongoing_exec_batch_tasks.add(
+                asyncio.create_task(
+                    self.execute_batch(kernel_id, kernel_config['startup_command'] or "")
+                )
+            )
 
         # The startup command for the batch-type sessions will be executed by the manager
         # upon firing of the "session_started" event.
