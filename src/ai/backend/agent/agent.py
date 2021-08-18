@@ -151,25 +151,11 @@ DEAD_STATUS_SET = frozenset([
 ])
 
 
-@attr.s(auto_attribs=True, slots=True)
-class KernelCreationContext:
-
-    kspec_version: int
-    kernel_id: KernelId
-    kernel_config: KernelCreationConfig
-    kernel_features: FrozenSet[str]
-    image_ref: ImageRef
-    internal_data: Mapping[str, Any]
-    computers: MutableMapping[str, ComputerContext]
-    restarting: bool
-    cancellation_handlers: Sequence[Callable[[], Awaitable[None]]]
-
-
 class AbstractKernelCreationContext:
     kspec_version: int
     kernel_id: KernelId
     kernel_config: KernelCreationConfig
-    kernel_config: Mapping[str, Any]
+    local_config: Mapping[str, Any]
     kernel_features: FrozenSet[str]
     image_ref: ImageRef
     internal_data: Mapping[str, Any]
@@ -178,12 +164,12 @@ class AbstractKernelCreationContext:
     _rx_distro = re.compile(r"\.([a-z-]+\d+\.\d+)\.")
 
     def __init__(
-        self, 
+        self,
         kernel_id: KernelId,
         kernel_config: KernelCreationConfig,
         local_config: Mapping[str, Any],
         computers: MutableMapping[str, ComputerContext],
-        restarting = False
+        restarting: bool = False
     ):
         self.image_labels = kernel_config['image']['labels']
         self.kspec_version = int(self.image_labels.get('ai.backend.kernelspec', '1'))
@@ -488,9 +474,8 @@ class AbstractKernelCreationContext:
                     already_injected_hooks.add(hook_path)
 
 
-
-KernelCreationContextType = TypeVar('KernelCreationContextType', bound=KernelCreationContext)
 KernelObjectType = TypeVar('KernelObjectType', bound=AbstractKernel)
+KernelCreationContextType = TypeVar('KernelCreationContextType', bound=AbstractKernelCreationContext)
 
 
 @attr.s(auto_attribs=True, slots=True)
@@ -1208,6 +1193,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                      computer_name,
                      dict(computer_ctx.alloc_map.allocations))
 
+    @abstractmethod
     async def init_kernel_context(
         self,
         kernel_id: KernelId,
@@ -1215,10 +1201,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         *,
         restarting: bool = False,
     ) -> AbstractKernelCreationContext:
-        return AbstractKernelCreationContext(
-            kernel_id, kernel_config, self.local_config, self.computers,
-            restarting=restarting
-        )
+        raise NotImplementedError
 
     async def execute_batch(
         self,
@@ -1383,7 +1366,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
 
         # Mount vfolders and krunner stuffs.
         await ctx.mount_vfolders(kernel_config['mounts'], resource_spec)
-        await ctx.mount_krunner(resource_spec, environ, self.computers)
+        await ctx.mount_krunner(resource_spec, environ)
 
         # Inject Backend.AI-intrinsic env-variables for libbaihook and gosu
         label_envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
@@ -1472,7 +1455,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         if self.local_config['debug']['log-kernel-config']:
             log.info('kernel starting with resource spec: \n{0}',
                      pretty(attr.asdict(resource_spec)))
-        kernel_obj = await ctx.spawn(
+        kernel_obj: KernelObjectType = await ctx.spawn(
             resource_spec,
             resource_opts,
             environ,

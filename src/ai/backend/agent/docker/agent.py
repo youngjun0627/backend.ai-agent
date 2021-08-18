@@ -18,7 +18,6 @@ from subprocess import CalledProcessError
 import sys
 from typing import (
     Any,
-    Callable,
     FrozenSet,
     Dict,
     List,
@@ -35,7 +34,6 @@ from aiodocker.docker import Docker, DockerContainer
 from aiodocker.exceptions import DockerError, DockerContainerError
 import aiotools
 from async_timeout import timeout
-import attr
 import zmq
 
 from ai.backend.common.docker import (
@@ -167,7 +165,7 @@ class DockerKernelCreationContext(AbstractKernelCreationContext):
         agent_sockpath: Path,
         resource_lock: asyncio.Lock,
         docker: Docker,
-        restarting = False
+        restarting: bool = False
     ):
         super().__init__(kernel_id, kernel_config, local_config, computers, restarting=restarting)
         scratch_dir = (self.local_config['container']['scratch-root'] / str(kernel_id)).resolve()
@@ -177,7 +175,7 @@ class DockerKernelCreationContext(AbstractKernelCreationContext):
         self.tmp_dir = tmp_dir
         self.config_dir = scratch_dir / 'config'
         self.work_dir = scratch_dir / 'work'
-        
+
         self.docker = docker
         self.port_pool = port_pool
         self.agent_sockpath = agent_sockpath
@@ -187,13 +185,11 @@ class DockerKernelCreationContext(AbstractKernelCreationContext):
         with open(filename, 'r') as f:
             resource_spec = KernelResourceSpec.read_from_file(f)
         return resource_spec
-    
+
     async def get_extra_envs(self) -> Mapping[str, str]:
         return {}
 
-    async def prepare_resource_spec(
-        self,
-        ) -> Tuple[KernelResourceSpec, Optional[Mapping[str, Any]]]:
+    async def prepare_resource_spec(self) -> Tuple[KernelResourceSpec, Optional[Mapping[str, Any]]]:
         loop = current_loop()
         if self.restarting:
             resource_spec = await loop.run_in_executor(
@@ -223,7 +219,7 @@ class DockerKernelCreationContext(AbstractKernelCreationContext):
             )
             resource_opts = self.kernel_config.get('resource_opts', {})
         return resource_spec, resource_opts
-    
+
     async def prepare_scratch(self) -> None:
         loop = current_loop()
 
@@ -396,7 +392,7 @@ class DockerKernelCreationContext(AbstractKernelCreationContext):
                     },
                 },
             })
-    
+
     async def install_ssh_keypair(self, cluster_info: ClusterInfo) -> None:
         sshkey = cluster_info['ssh_keypair']
         if sshkey is None:
@@ -419,8 +415,8 @@ class DockerKernelCreationContext(AbstractKernelCreationContext):
             except Exception:
                 log.exception('error while writing cluster keypair')
 
-        current_loop().run_in_executor(None, _write_keypair) # ???
-    
+        current_loop().run_in_executor(None, _write_keypair)  # ???
+
     async def process_mounts(self, mounts: Sequence[Mount]):
         def fix_unsupported_perm(folder_perm: MountPermission) -> MountPermission:
             if folder_perm == MountPermission.RW_DELETE:
@@ -445,19 +441,19 @@ class DockerKernelCreationContext(AbstractKernelCreationContext):
             }
         }
         self.container_configs.append(container_config)
-    
+
     async def apply_accelerator_allocation(self, computer, device_alloc) -> None:
         update_nested_dict(
             self.computer_docker_args,
             await computer.generate_docker_args(self.docker, device_alloc))
-    
+
     async def spawn(
-        self, 
-        resource_spec: KernelResourceSpec, 
-        resource_opts, 
-        environ: Mapping[str, str], 
-        service_ports, 
-        preopen_ports, 
+        self,
+        resource_spec: KernelResourceSpec,
+        resource_opts,
+        environ: Mapping[str, str],
+        service_ports,
+        preopen_ports,
         cmdargs: List[str]
     ) -> DockerKernel:
         loop = current_loop()
@@ -725,6 +721,7 @@ class DockerKernelCreationContext(AbstractKernelCreationContext):
                 'block_service_ports': self.internal_data.get('block_service_ports', False)
             })
         return kernel_obj
+
 
 class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
 
@@ -1250,4 +1247,3 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                         log.exception("monitor_docker_events(): unexpected error")
             finally:
                 await asyncio.shield(self.docker.events.stop())
-
