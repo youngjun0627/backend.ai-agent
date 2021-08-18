@@ -57,7 +57,7 @@ net.ipv4.tcp_fin_timeout=10
 net.ipv4.tcp_window_scaling=1
 net.ipv4.tcp_tw_reuse=1
 net.ipv4.tcp_early_retrans=1
-net.ipv4.ip_local_port_range="40000 65000"
+net.ipv4.ip_local_port_range=40000 65000
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
 net.ipv4.tcp_rmem=4096 12582912 16777216
@@ -71,6 +71,9 @@ net.netfilter.nf_conntrack_tcp_timeout_time_wait=10
 
 The `ip_local_port_range` should not overlap with the container port range pool
 (default: 30000 to 31000).
+
+To apply netfilter settings during the boot time, you may need to add `nf_conntrack` to `/etc/modules`
+so that `sysctl` could set the `net.netfilter.nf_conntrack_*` values.
 
 
 ### For development
