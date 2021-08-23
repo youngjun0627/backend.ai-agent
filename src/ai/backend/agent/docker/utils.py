@@ -3,7 +3,6 @@ import gzip
 import logging
 from pathlib import Path
 import pkg_resources
-import platform
 import subprocess
 from typing import Any, BinaryIO, Mapping, Tuple, cast
 
@@ -12,7 +11,7 @@ from aiodocker.exceptions import DockerError
 
 from ai.backend.common.logging import BraceStyleAdapter
 
-from ..utils import update_nested_dict
+from ..utils import get_arch_name, update_nested_dict
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
@@ -29,7 +28,7 @@ class PersistentServiceContainer:
     ) -> None:
         self.docker = docker
         self.image_ref = image_ref
-        arch = platform.machine()
+        arch = get_arch_name()
         default_container_name = image_ref.split(':')[0].rsplit('/', maxsplit=1)[-1]
         if name is None:
             self.container_name = default_container_name

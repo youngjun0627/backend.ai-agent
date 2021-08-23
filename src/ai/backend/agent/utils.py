@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 from pathlib import Path
+import platform
 import re
 from typing import (
     Any, Optional,
@@ -42,6 +43,18 @@ NotHostPID: Final = HostPID(PID(-1))
 
 def generate_local_instance_id(hint: str) -> str:
     return hashlib.md5(hint.encode('utf-8')).hexdigest()[:12]
+
+
+def get_arch_name() -> str:
+    ret = platform.machine().lower()
+    aliases = {
+        "arm64": "aarch64",  # macOS with LLVM
+        "amd64": "x86_64",   # Windows/Linux
+        "x64": "x86_64",     # Windows
+        "x32": "x86",        # Windows
+        "i686": "x86",       # Windows
+    }
+    return aliases.get(ret, ret)
 
 
 def update_nested_dict(dest: MutableMapping, additions: Mapping) -> None:

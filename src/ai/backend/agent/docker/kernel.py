@@ -3,7 +3,6 @@ import logging
 import lzma
 from pathlib import Path
 import pkg_resources
-import platform
 import re
 import subprocess
 import textwrap
@@ -23,6 +22,7 @@ from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.utils import current_loop
 from ..resources import KernelResourceSpec
 from ..kernel import AbstractKernel, AbstractCodeRunner
+from ..utils import get_arch_name
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
@@ -236,7 +236,7 @@ async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
             raise ValueError('Unrecognized "distro[version]" format string.')
         distro_name = m.group(1)
     docker = Docker()
-    arch = platform.machine()
+    arch = get_arch_name()
     current_version = int(Path(
         pkg_resources.resource_filename(
             f'ai.backend.krunner.{distro_name}',
