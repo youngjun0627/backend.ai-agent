@@ -16,6 +16,17 @@ Changes
 
 .. towncrier release notes start
 
+21.03.9 (2021-08-23)
+--------------------
+
+### Features
+* Add aiomonitor module for manager ([#295](https://github.com/lablup/backend.ai-agent/issues/295))
+* Add `~/.local/bin` to the default PATH. ([#296](https://github.com/lablup/backend.ai-agent/issues/296))
+
+### Miscellaneous
+* Update package dependencies ([#297](https://github.com/lablup/backend.ai-agent/issues/297))
+
+
 21.03.8 (2021-07-13)
 --------------------
 
