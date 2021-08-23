@@ -3,6 +3,7 @@ import gzip
 import logging
 from pathlib import Path
 import pkg_resources
+import platform
 import subprocess
 from typing import Any, BinaryIO, Mapping, Tuple, cast
 
@@ -28,6 +29,7 @@ class PersistentServiceContainer:
     ) -> None:
         self.docker = docker
         self.image_ref = image_ref
+        arch = platform.machine()
         default_container_name = image_ref.split(':')[0].rsplit('/', maxsplit=1)[-1]
         if name is None:
             self.container_name = default_container_name
@@ -40,7 +42,7 @@ class PersistentServiceContainer:
         )).read_text())
         self.img_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent.docker',
-            f'{default_container_name}.img.tar.gz',
+            f'{default_container_name}.img.{arch}.tar.gz',
         ))
 
     async def get_container_version_and_status(self) -> Tuple[int, bool]:

@@ -254,7 +254,7 @@ async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
         else:
             log.info('preparing the Docker image for krunner extractor...')
             extractor_archive = pkg_resources.resource_filename(
-                'ai.backend.runner', 'krunner-extractor.img.tar.xz')
+                'ai.backend.runner', f'krunner-extractor.img.{arch}.tar.xz')
             with lzma.open(extractor_archive, 'rb') as reader:
                 proc = await asyncio.create_subprocess_exec(
                     *['docker', 'load'], stdin=reader)
