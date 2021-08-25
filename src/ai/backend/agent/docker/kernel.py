@@ -3,7 +3,6 @@ import logging
 import lzma
 from pathlib import Path
 import pkg_resources
-import platform
 import re
 import subprocess
 import textwrap
@@ -23,6 +22,7 @@ from ai.backend.common.logging import BraceStyleAdapter
 from ai.backend.common.utils import current_loop
 from ..resources import KernelResourceSpec
 from ..kernel import AbstractKernel, AbstractCodeRunner
+from ..utils import get_arch_name
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
@@ -236,13 +236,13 @@ async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
             raise ValueError('Unrecognized "distro[version]" format string.')
         distro_name = m.group(1)
     docker = Docker()
-    arch = platform.machine()
+    arch = get_arch_name()
     current_version = int(Path(
         pkg_resources.resource_filename(
             f'ai.backend.krunner.{distro_name}',
             f'./krunner-version.{distro}.txt'))
         .read_text().strip())
-    volume_name = f'backendai-krunner.v{current_version}.{distro}'
+    volume_name = f'backendai-krunner.v{current_version}.{arch}.{distro}'
     extractor_image = 'backendai-krunner-extractor:latest'
 
     try:
@@ -254,7 +254,7 @@ async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
         else:
             log.info('preparing the Docker image for krunner extractor...')
             extractor_archive = pkg_resources.resource_filename(
-                'ai.backend.runner', 'krunner-extractor.img.tar.xz')
+                'ai.backend.runner', f'krunner-extractor.img.{arch}.tar.xz')
             with lzma.open(extractor_archive, 'rb') as reader:
                 proc = await asyncio.create_subprocess_exec(
                     *['docker', 'load'], stdin=reader)
@@ -266,33 +266,41 @@ async def prepare_krunner_env_impl(distro: str) -> Tuple[str, Optional[str]]:
         try:
             vol = DockerVolume(docker, volume_name)
             await vol.show()
+            # Instead of checking the version from txt files inside the volume,
+            # we check the version via the volume name and its existence.
+            # This is because:
+            # - to avoid overwriting of volumes in use.
+            # - the name comparison is quicker than reading actual files.
         except DockerError as e:
             if e.status == 404:
                 do_create = True
         if do_create:
-            log.info('populating {} volume version {}',
-                     volume_name, current_version)
-            await docker.volumes.create({
-                'Name': volume_name,
-                'Driver': 'local',
-            })
             archive_path = Path(pkg_resources.resource_filename(
                 f'ai.backend.krunner.{distro_name}',
                 f'krunner-env.{distro}.{arch}.tar.xz')).resolve()
-            extractor_path = Path(pkg_resources.resource_filename(
-                'ai.backend.runner',
-                'krunner-extractor.sh')).resolve()
-            proc = await asyncio.create_subprocess_exec(*[
-                'docker', 'run', '--rm', '-i',
-                '-v', f'{archive_path}:/root/archive.tar.xz',
-                '-v', f'{extractor_path}:/root/krunner-extractor.sh',
-                '-v', f'{volume_name}:/root/volume',
-                '-e', f'KRUNNER_VERSION={current_version}',
-                extractor_image,
-                '/root/krunner-extractor.sh',
-            ])
-            if (await proc.wait() != 0):
-                raise RuntimeError('extracting krunner environment has failed!')
+            if not archive_path.exists():
+                log.warning("krunner environment for {} ({}) is not supported!", distro, arch)
+            else:
+                log.info('populating {} volume version {}',
+                         volume_name, current_version)
+                await docker.volumes.create({
+                    'Name': volume_name,
+                    'Driver': 'local',
+                })
+                extractor_path = Path(pkg_resources.resource_filename(
+                    'ai.backend.runner',
+                    'krunner-extractor.sh')).resolve()
+                proc = await asyncio.create_subprocess_exec(*[
+                    'docker', 'run', '--rm', '-i',
+                    '-v', f'{archive_path}:/root/archive.tar.xz',
+                    '-v', f'{extractor_path}:/root/krunner-extractor.sh',
+                    '-v', f'{volume_name}:/root/volume',
+                    '-e', f'KRUNNER_VERSION={current_version}',
+                    extractor_image,
+                    '/root/krunner-extractor.sh',
+                ])
+                if (await proc.wait() != 0):
+                    raise RuntimeError('extracting krunner environment has failed!')
     except Exception:
         log.exception('unexpected error')
         return distro, None
