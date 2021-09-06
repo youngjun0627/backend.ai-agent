@@ -402,7 +402,7 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                 if not terminating:
                     log.info("handle_agent_socket(): rebinding the socket")
 
-    async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry) -> None:
+    async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry, reporter) -> None:
         auth_config = None
         reg_user = registry_conf.get('username')
         reg_passwd = registry_conf.get('password')
@@ -414,9 +414,30 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                 'auth': encoded_creds,
             }
         log.info('pulling image {} from registry', image_ref.canonical)
-        await self.docker.images.pull(
-            image_ref.canonical,
-            auth=auth_config)
+        downloading_layers = {}
+        extracting_layers = {}
+        async for msg in self.docker.images.pull(image_ref.canonical,
+            auth=auth_config,
+            stream=True):
+            if msg['status'] == 'Downloading':
+                downloading_layers[msg['id']] = msg['progressDetail']
+            elif msg['status'] == 'Extracting':
+                extracting_layers[msg['id']] = msg['progressDetail']
+            elif msg['status'] == 'Pulling fs layer':
+                # we can detect the layer IDs upfront here.
+                pass
+            elif msg['status'].startswith('Digest: '):
+                # done
+                pass
+            current = (
+                sum(p['current'] for p in downloading_layers.values())
+                + sum(p['current'] for p in extracting_layers.values())
+            )
+            total = (
+                sum(p['total'] for p in downloading_layers.values())
+                + sum(p['total'] for p in extracting_layers.values())
+            )
+            await reporter(current, total)
 
     async def check_image(self, image_ref: ImageRef, image_id: str, auto_pull: AutoPullBehavior) -> bool:
         try:
