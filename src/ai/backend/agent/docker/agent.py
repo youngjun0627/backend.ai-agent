@@ -1228,6 +1228,9 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                         kernel_id = await get_kernel_id_from_container(container_name)
                         if kernel_id is None:
                             continue
+                        if evdata['Action'] == 'oom':
+                            kernel_obj = self.kernel_registry.get(kernel_id)
+                            kernel_obj.termination_reason = 'out-of-memory'
                         if (
                             self.local_config['debug']['log-docker-events']
                             and evdata['Action'] in ('start', 'die')
