@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import lzma
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import pkg_resources
 import re
 import subprocess
@@ -138,14 +138,14 @@ class DockerKernel(AbstractKernel):
     async def download_file(self, filepath: str):
         container_id = self.data['container_id']
         container = self._docker.containers.container(container_id)
-        home_path = Path('/home/work')
+        home_path = PurePosixPath('/home/work')
         try:
-            abspath = (home_path / filepath).resolve()
+            abspath = (home_path / filepath)
             abspath.relative_to(home_path)
         except ValueError:
             raise PermissionError('You cannot download files outside /home/work')
         try:
-            with await container.get_archive(abspath) as tarobj:
+            with await container.get_archive(str(abspath)) as tarobj:
                 tarobj.fileobj.seek(0, 2)
                 fsize = tarobj.fileobj.tell()
                 if fsize > 1048576:
