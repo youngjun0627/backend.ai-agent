@@ -817,7 +817,12 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         self.images = await self.scan_images()
 
     @abstractmethod
-    async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry) -> None:
+    async def pull_image(
+        self,
+        image_ref: ImageRef,
+        registry_conf: ImageRegistry,
+        reporter: Callable[[Union[int, float], Union[int, float]], Awaitable[None]],
+    ) -> None:
         '''
         Pull the given image from the given registry.
         '''
@@ -1331,10 +1336,15 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             AutoPullBehavior(kernel_config.get('auto_pull', 'digest')),
         )
 
-        async def reporter(current, total):
+        # create reporter for kernel-pull-process
+        async def reporter(
+            current: Union[int, float],
+            total: Union[int, float],
+        ) -> None:
             await self.produce_event(
                 KernelPullProgressEvent(kernel_id, current, total, 'kernel_pull_progress..')
             )
+
         if do_pull:
             await self.produce_event(
                 KernelPullingEvent(kernel_id, creation_id, ctx.image_ref.canonical)
@@ -1342,7 +1352,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
 
             await self.pull_image(ctx.image_ref, kernel_config['image']['registry'], reporter)
         else:
-            await reporter(1,1)
+            await reporter(1, 1)
         if not restarting:
             await self.produce_event(
                 KernelCreatingEvent(kernel_id, creation_id)

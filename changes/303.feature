@@ -1,1 +1,1 @@
-feat: Add reporter to produce KernelPullProgressEvent containing progress infos(current, total) from docker-api
+Add reporter to produce KernelPullProgressEvent containing the progress infos(current, total) from dockerAPI

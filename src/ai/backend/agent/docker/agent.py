@@ -100,6 +100,7 @@ from ..utils import (
 
 if TYPE_CHECKING:
     from ai.backend.common.etcd import AsyncEtcd
+    from typing import Callable, Union, Awaitable
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 eof_sentinel = Sentinel.TOKEN
@@ -402,7 +403,12 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                 if not terminating:
                     log.info("handle_agent_socket(): rebinding the socket")
 
-    async def pull_image(self, image_ref: ImageRef, registry_conf: ImageRegistry, reporter) -> None:
+    async def pull_image(
+        self,
+        image_ref: ImageRef,
+        registry_conf: ImageRegistry,
+        reporter: Callable[[Union[int, float], Union[int, float]], Awaitable[None]],
+    ) -> None:
         auth_config = None
         reg_user = registry_conf.get('username')
         reg_passwd = registry_conf.get('password')
@@ -416,9 +422,11 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
         log.info('pulling image {} from registry', image_ref.canonical)
         downloading_layers = {}
         extracting_layers = {}
-        async for msg in self.docker.images.pull(image_ref.canonical,
-            auth=auth_config,
-            stream=True):
+        async for msg in self.docker.images.pull(
+                image_ref.canonical,
+                auth=auth_config,
+                stream=True,
+        ):
             if msg['status'] == 'Downloading':
                 downloading_layers[msg['id']] = msg['progressDetail']
             elif msg['status'] == 'Extracting':
