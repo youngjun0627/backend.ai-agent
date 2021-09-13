@@ -710,6 +710,20 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                     },
                 },
             })
+            # RDMA mounts
+            ib_root = Path("/dev/infiniband")
+            if ib_root.is_dir() and (ib_root / "uverbs0").exists():
+                ctx.container_configs.append({
+                    'HostConfig': {
+                        'Devices': [
+                            {
+                                'PathOnHost': "/dev/infiniband",
+                                'PathInContainer': "/dev/infiniband",
+                                'CgroupPermissions': "rwm",
+                            },
+                        ],
+                    },
+                })
 
     async def create_kernel__install_ssh_keypair(
         self,
@@ -940,6 +954,13 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                     for eport, hport in zip(exposed_ports, host_ports)
                 },
                 'PublishAllPorts': False,  # we manage port mapping manually!
+                'CapAdd': [
+                    'IPC_LOCK',  # for hugepages and RDMA
+                ],
+                'Ulimits': [
+                    {"Name": "nofile", "Soft": 1048576, "Hard": 1048576},
+                    {"Name": "memlock", "Soft": -1, "Hard": -1},
+                ],
                 'LogConfig': {
                     'Type': 'local',  # for efficient docker-specific storage
                     'Config': {
@@ -975,6 +996,20 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
         kernel_name = f"kernel.{ctx.image_ref.name.split('/')[-1]}.{ctx.kernel_id}"
         if self.local_config['debug']['log-kernel-config']:
             log.debug('full container config: {!r}', pretty(container_config))
+
+        # optional local override of docker config
+        extra_container_opts_name = 'agent-docker-container-opts.json'
+        for extra_container_opts_file in [
+            Path('/etc/backend.ai') / extra_container_opts_name,
+            Path.home() / '.config' / 'backend.ai' / extra_container_opts_name,
+            Path.cwd() / extra_container_opts_name,
+        ]:
+            if extra_container_opts_file.is_file():
+                try:
+                    extra_container_opts = json.loads(extra_container_opts_file.read_bytes())
+                    update_nested_dict(container_config, extra_container_opts)
+                except IOError:
+                    pass
 
         # We are all set! Create and start the container.
         try:

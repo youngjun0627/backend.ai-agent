@@ -11,7 +11,7 @@ from aiodocker.exceptions import DockerError
 
 from ai.backend.common.logging import BraceStyleAdapter
 
-from ..utils import update_nested_dict
+from ..utils import get_arch_name, update_nested_dict
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
 
@@ -28,6 +28,7 @@ class PersistentServiceContainer:
     ) -> None:
         self.docker = docker
         self.image_ref = image_ref
+        arch = get_arch_name()
         default_container_name = image_ref.split(':')[0].rsplit('/', maxsplit=1)[-1]
         if name is None:
             self.container_name = default_container_name
@@ -40,7 +41,7 @@ class PersistentServiceContainer:
         )).read_text())
         self.img_path = Path(pkg_resources.resource_filename(
             'ai.backend.agent.docker',
-            f'{default_container_name}.img.tar.gz',
+            f'{default_container_name}.img.{arch}.tar.gz',
         ))
 
     async def get_container_version_and_status(self) -> Tuple[int, bool]:

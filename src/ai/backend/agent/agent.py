@@ -10,7 +10,6 @@ import logging
 from pathlib import Path
 import pickle
 import pkg_resources
-import platform
 import re
 import signal
 import sys
@@ -130,6 +129,7 @@ from .types import (
 )
 from .utils import (
     generate_local_instance_id,
+    get_arch_name,
 )
 
 if TYPE_CHECKING:
@@ -1088,7 +1088,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         log.debug('selected libc style: {}', matched_libc_style)
         log.debug('krunner volume: {}', krunner_volume)
         log.debug('krunner python: {}', krunner_pyver)
-        arch = platform.machine()
+        arch = get_arch_name()
         return arch, matched_distro, matched_libc_style, krunner_volume, krunner_pyver
 
     async def _create_kernel__mount_krunner(
@@ -1416,7 +1416,7 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
         label_envs_corecount = image_labels.get('ai.backend.envs.corecount', '')
         envs_corecount = label_envs_corecount.split(',') if label_envs_corecount else []
         cpu_core_count = len(resource_spec.allocations[DeviceName('cpu')][SlotName('cpu')])
-        environ.update({k: str(cpu_core_count) for k in envs_corecount})
+        environ.update({k: str(cpu_core_count) for k in envs_corecount if k not in environ})
 
         # Realize mounts.
         await self.create_kernel__process_mounts(
