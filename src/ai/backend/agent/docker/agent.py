@@ -150,9 +150,9 @@ class DockerKernelCreationContext(AbstractKernelCreationContext[DockerKernel]):
     config_dir: Path
     work_dir: Path
     docker: Docker
-    container_configs: List[Mapping[str, Any]] = []
-    domain_socket_proxies: List[DomainSocketProxy] = []
-    computer_docker_args: Dict[str, Any] = {}
+    container_configs: List[Mapping[str, Any]]
+    domain_socket_proxies: List[DomainSocketProxy]
+    computer_docker_args: Dict[str, Any]
     port_pool: Set[int]
     agent_sockpath: Path
     resource_lock: asyncio.Lock
@@ -182,6 +182,10 @@ class DockerKernelCreationContext(AbstractKernelCreationContext[DockerKernel]):
         self.port_pool = port_pool
         self.agent_sockpath = agent_sockpath
         self.resource_lock = resource_lock
+
+        self.container_configs = []
+        self.domain_socket_proxies = []
+        self.computer_docker_args  = {}
 
     def _kernel_resource_spec_read(self, filename):
         with open(filename, 'r') as f:
