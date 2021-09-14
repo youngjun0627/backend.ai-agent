@@ -65,8 +65,8 @@ def update_nested_dict(dest: MutableMapping, additions: Mapping) -> None:
             if isinstance(dest[k], MutableMapping):
                 assert isinstance(v, MutableMapping)
                 update_nested_dict(dest[k], v)
-            elif isinstance(dest[k], Sequence):
-                assert isinstance(v, Sequence)
+            elif isinstance(dest[k], List):
+                assert isinstance(v, List)
                 dest[k].extend(v)
             else:
                 dest[k] = v
