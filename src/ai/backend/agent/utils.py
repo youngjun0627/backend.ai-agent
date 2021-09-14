@@ -12,7 +12,7 @@ from typing import (
     Any, Optional,
     Iterable,
     Mapping, MutableMapping,
-    List, Sequence, Tuple, Union,
+    List, Tuple, Union,
     Type, overload,
 )
 from typing_extensions import Final
