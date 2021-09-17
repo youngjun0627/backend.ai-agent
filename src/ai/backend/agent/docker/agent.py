@@ -612,7 +612,8 @@ class DockerKernelCreationContext(AbstractKernelCreationContext[DockerKernel]):
                 tmp = tmp.parent
 
         # PHASE 4: Run!
-        kernel_host = self.local_config['container']['kernel-host']
+        container_bind_host = self.local_config['container']['bind-host']
+        advertised_kernel_host = self.local_config['container'].get('advertised-host')
         if len(exposed_ports) > len(self.port_pool):
             raise RuntimeError('Container ports are not sufficiently available.')
         host_ports = []
@@ -646,7 +647,7 @@ class DockerKernelCreationContext(AbstractKernelCreationContext[DockerKernel]):
                 'Init': True,
                 'PortBindings': {
                     f'{eport}/tcp': [{'HostPort': str(hport),
-                                      'HostIp': str(kernel_host)}]
+                                      'HostIp': str(container_bind_host)}]
                     for eport, hport in zip(exposed_ports, host_ports)
                 },
                 'PublishAllPorts': False,  # we manage port mapping manually!
@@ -776,7 +777,7 @@ class DockerKernelCreationContext(AbstractKernelCreationContext[DockerKernel]):
             resource_spec=resource_spec,
             data={
                 'container_id': container._id,
-                'kernel_host': kernel_host,
+                'kernel_host': advertised_kernel_host or container_bind_host,
                 'repl_in_port': repl_in_port,
                 'repl_out_port': repl_out_port,
                 'stdin_port': stdin_port,    # legacy
