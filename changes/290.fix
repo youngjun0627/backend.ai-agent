@@ -1,1 +1,0 @@
-Unify handling of unhandled exceptions to produce AgentError events and depreacte use of agent-side error monitor plugins

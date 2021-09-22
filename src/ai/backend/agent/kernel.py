@@ -35,6 +35,7 @@ from ai.backend.common.docker import ImageRef
 from ai.backend.common.types import aobject, KernelId
 from ai.backend.common.utils import current_loop, StringSetFlag
 from ai.backend.common.logging import BraceStyleAdapter
+from .exception import UnsupportedBaseDistroError
 from .resources import KernelResourceSpec
 
 log = BraceStyleAdapter(logging.getLogger(__name__))
@@ -331,6 +332,7 @@ class AbstractCodeRunner(aobject, metaclass=ABCMeta):
         self.finished_at = None
         if not math.isfinite(exec_timeout) or exec_timeout < 0:
             raise ValueError('execution timeout must be a zero or finite positive number.')
+        self.kernel_id = kernel_id
         self.exec_timeout = exec_timeout
         self.max_record_size = 10 * (2 ** 20)  # 10 MBytes
         self.client_features = client_features or frozenset()
@@ -897,4 +899,5 @@ def match_distro_data(data: Mapping[str, Any], distro: str) -> Tuple[str, Any]:
         for distro_key, value in match_list:
             if distro_key == distro:
                 return (distro_key, value)
-    raise RuntimeError('no match found', distro)
+        return match_list[0]  # fallback to the latest of its kind
+    raise UnsupportedBaseDistroError(distro)

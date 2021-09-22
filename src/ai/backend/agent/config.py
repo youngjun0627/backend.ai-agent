@@ -36,16 +36,19 @@ agent_local_config_iv = t.Dict({
     t.Key('container'): t.Dict({
         t.Key('kernel-uid', default=-1): tx.UserID,
         t.Key('kernel-gid', default=-1): tx.GroupID,
-        t.Key('kernel-host', default=''): t.String(allow_blank=True),
+        t.Key('bind-host', default=''): t.String(allow_blank=True),
+        t.Key('advertised-host', default=None): t.Null | t.String(),
         t.Key('port-range', default=(30000, 31000)): tx.PortRange,
         t.Key('stats-type', default='docker'):
             t.Null | t.Enum(*[e.value for e in StatModes]),
         t.Key('sandbox-type', default='docker'): t.Enum('docker', 'jail'),
         t.Key('jail-args', default=[]): t.List(t.String),
-        t.Key('scratch-type'): t.Enum('hostdir', 'memory'),
+        t.Key('scratch-type'): t.Enum('hostdir', 'memory', 'k8s-nfs'),
         t.Key('scratch-root', default='./scratches'):
             tx.Path(type='dir', auto_create=True),
         t.Key('scratch-size', default='0'): tx.BinarySize,
+        t.Key('scratch-nfs-address', default=None): t.Null | t.String,
+        t.Key('scratch-nfs-options', default=None): t.Null | t.String,
     }).allow_extra('*'),
     t.Key('logging'): t.Any,  # checked in ai.backend.common.logging
     t.Key('resource'): t.Dict({
@@ -90,36 +93,6 @@ agent_etcd_config_iv = t.Dict({
         t.Key('max-length', default=default_container_logs_config['max-length']): tx.BinarySize(),
         t.Key('chunk-size', default=default_container_logs_config['chunk-size']): tx.BinarySize(),
     }).allow_extra('*')
-}).allow_extra('*')
-
-k8s_extra_config_iv = t.Dict({
-    t.Key('registry'): t.Dict({
-        t.Key('type'): t.String
-    }).allow_extra('*'),
-    t.Key('baistatic'): t.Null | t.Dict({
-        t.Key('nfs-addr'): t.String,
-        t.Key('path'): t.String,
-        t.Key('capacity'): tx.BinarySize,
-        t.Key('options'): t.Null | t.String,
-        t.Key('mounted-at'): t.String
-    }),
-    t.Key('vfolder-pv'): t.Null | t.Dict({
-        t.Key('nfs-addr'): t.String,
-        t.Key('path'): t.String,
-        t.Key('capacity'): tx.BinarySize,
-        t.Key('options'): t.Null | t.String
-    }),
-}).merge(agent_local_config_iv).allow_extra('*')
-
-registry_local_config_iv = t.Dict({
-    t.Key('type'): t.String,
-    t.Key('addr'): tx.HostPortPair()
-}).allow_extra('*')
-
-registry_ecr_config_iv = t.Dict({
-    t.Key('type'): t.String,
-    t.Key('profile'): t.String,
-    t.Key('registry-id'): t.String
 }).allow_extra('*')
 
 container_etcd_config_iv = t.Dict({

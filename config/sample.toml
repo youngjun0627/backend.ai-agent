@@ -7,6 +7,7 @@ password = ""				    # env: BACKEND_ETCD_PASSWORD
 
 [agent]
 # Agent mode; required
+# One of: "kubernetes", "docker"
 mode = "docker"
 
 # Change the reported host/address of the agent.
@@ -68,7 +69,12 @@ kernel-gid = -1
 # to the current host.
 # For mobile environments such as developer laptops which roam around different networks,
 # it is HIGHLY RECOMMENDED to set this to "127.0.0.1" manually.
-# kernel-host = "127.0.0.1"   # env: BACKEND_KERNEL_HOST_OVERRIDE
+# bind-host = "127.0.0.1"   # env: BACKEND_KERNEL_HOST_OVERRIDE
+
+# Alias string to tell manager as a "kernel-host" value.
+# Useful when wsproxy can't access kernel with bind-host IP.
+# Optional, defaults to "bind-host" value when not specified.
+# advertised-host ""
 
 # One of: "docker", "cgroup"
 # "docker" uses the Docker API to retrieve container statistics.
@@ -86,13 +92,15 @@ sandbox-type = "docker"
 # Additional arguments passed to the jail executable in containers.
 jail-args = []
 
-# One of: "hostdir", "memory"
+# One of: "hostdir", "memory", "k8s-nfs"
 # "hostdir": creates an empty host directory and mount it as /home/work of containers.
 # "memory": creates an in-memory tmpfs and mount it as /home/work of containers. (only supported in Linux)
+# "k8s-nfs": creates Kubernetes PV/PVC and mounts it when creating Pods. (only supported in Kubernetes mode)
 scratch-type = "hostdir"        # env: BACKEND_SANDBOX_TYPE
 
-# Only meaningful when scratch-type = "hostdir"
-# If not exists, it is auto-created.
+# Only meaningful when scratch-type is "hostdir" or "k8s-nfs".
+# "hostdir": If not exists, it is auto-created.
+# "k8s-nfs": Source NFS device should be mounted to this location.
 scratch-root = "./scratches"    # env: BACKEND_SCRATCH_ROOT
 
 # Limit the maximum size of the scratch space.
@@ -102,6 +110,13 @@ scratch-size = "1G"
 # Enable legacy swarm mode.
 # This should be true to let this agent handles multi-container session.
 swarm-enabled = false
+
+# Only meaningful when scratch-type is "k8s-nfs".
+# Mount point of source NFS disk should match with scratch-root folder's mount point.
+scratch-nfs-address = ""
+
+# Only meaningful when scratch-type is "k8s-nfs".
+scratch-nfs-options = ""
 
 
 [watcher]

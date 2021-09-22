@@ -1,9 +1,10 @@
+# C extensions
+*.so
+!src/ai/backend/runner/**/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-
-# C extensions
-*.so
 
 # Distribution / packaging
 .Python
@@ -76,6 +77,7 @@ scratches/
 
 # Local config
 agent.toml
+cuda-mock.toml
 
 # auto-generated files
 scripts/*.dockerfile
