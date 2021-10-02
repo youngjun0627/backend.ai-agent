@@ -1230,6 +1230,37 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                 except FileNotFoundError:
                     pass
 
+    async def pause_kernel(
+        self,
+        kernel_id: KernelId,
+        container_id: Optional[ContainerId],
+    ) -> None:
+        if container_id is None:
+            return
+        try:
+            async with closing_async(Docker()) as docker:
+                container = docker.containers.container(container_id)
+                await container.pause()
+
+        except DockerError as e:
+            log.exception(e)
+            self.error_monitor.capture_exception()
+
+    async def unpause_kernel(
+        self,
+        kernel_id: KernelId,
+        container_id: Optional[ContainerId],
+    ) -> None:
+        if container_id is None:
+            return
+        try:
+            async with closing_async(Docker()) as docker:
+                container = docker.containers.container(container_id)
+                await container.unpause()
+        except DockerError as e:
+            log.exception(e)
+            self.error_monitor.capture_exception()
+
     async def create_overlay_network(self, network_name: str) -> None:
         if not self.heartbeat_extra_info['swarm_enabled']:
             raise RuntimeError("This agent has not joined to a swarm cluster.")
@@ -1294,6 +1325,17 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                 exit_code=exit_code,
             )
 
+        async def handle_action_oom(kernel_id: KernelId, evdata: Mapping[str, Any]) -> None:
+            # When OOM event occurs in containers, we immediately pause them.
+            # And, status info is changed to 'out-of-memory'.
+            reason = 'out-of-memory'
+            await self.inject_container_lifecycle_event(
+                kernel_id,
+                LifecycleEvent.PAUSE,
+                reason,
+                container_id=ContainerId(evdata['Actor']['ID']),
+            )
+
         while True:
             async with closing_async(Docker()) as docker:
                 subscriber = docker.events.subscribe(create_task=True)
@@ -1316,9 +1358,6 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                             kernel_id = await get_kernel_id_from_container(container_name)
                             if kernel_id is None:
                                 continue
-                            if evdata['Action'] == 'oom':
-                                kernel_obj = self.kernel_registry.get(kernel_id)
-                                kernel_obj.termination_reason = 'out-of-memory'
                             if (
                                 self.local_config['debug']['log-docker-events']
                                 and evdata['Action'] in ('start', 'die')
@@ -1327,6 +1366,8 @@ class DockerAgent(AbstractAgent[DockerKernel, DockerKernelCreationContext]):
                                           evdata['Action'], evdata['Actor'])
                             if evdata['Action'] == 'start':
                                 await asyncio.shield(handle_action_start(kernel_id, evdata))
+                            elif evdata['Action'] == 'oom':
+                                await asyncio.shield(handle_action_oom(kernel_id, evdata))
                             elif evdata['Action'] == 'die':
                                 await asyncio.shield(handle_action_die(kernel_id, evdata))
                         except asyncio.CancelledError:

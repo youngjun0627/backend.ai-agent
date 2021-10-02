@@ -94,6 +94,7 @@ from ai.backend.common.events import (
     KernelPreparingEvent,
     KernelPullingEvent,
     KernelStartedEvent,
+    KernelPausedEvent,
     KernelTerminatedEvent,
     SessionFailureEvent,
     SessionSuccessEvent,
@@ -910,6 +911,25 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                         )
                 self.terminating_kernels.discard(ev.kernel_id)
 
+    async def _handle_pause_event(self, ev: ContainerLifecycleEvent) -> None:
+        try:
+            await self.pause_kernel(ev.kernel_id, ev.container_id)
+            await self.produce_event(
+                KernelPausedEvent(ev.kernel_id, ev.reason)
+            )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception('unhandled exception while processing PAUSE event')
+
+    async def _handle_unpause_event(self, ev: ContainerLifecycleEvent) -> None:
+        try:
+            await self.unpause_kernel(ev.kernel_id, ev.container_id)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception('unhandled exception while processing PAUSE event')
+
     async def process_lifecycle_events(self) -> None:
         async with aiotools.TaskGroup() as tg:
             while True:
@@ -929,6 +949,8 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
                         tg.create_task(self._handle_destroy_event(ev))
                     elif ev.event == LifecycleEvent.CLEAN:
                         tg.create_task(self._handle_clean_event(ev))
+                    elif ev.event == LifecycleEvent.PAUSE:
+                        tg.create_task(self._handle_pause_event(ev))
                     else:
                         log.warning('unsupported lifecycle event: {!r}', ev)
                 except Exception:
@@ -1732,7 +1754,6 @@ class AbstractAgent(aobject, Generic[KernelObjectType, KernelCreationContextType
             # This situation is handled in the lifecycle management subsystem.
             raise RuntimeError(f'The container for kernel {kernel_id} is not found! '
                                 '(might be terminated--try it again)') from None
-
         if result['status'] in ('finished', 'exec-timeout'):
             log.debug('_execute({0}) {1}', kernel_id, result['status'])
         if result['status'] == 'finished':
