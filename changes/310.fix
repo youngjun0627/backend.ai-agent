@@ -1,1 +1,1 @@
-Change a option 'kernel-host' to 'bind-host' of container
+Fix a missing update for renaming `kernel-host` to `bind-host` in the initialization codes that auto-fills the value when not specified
