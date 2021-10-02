@@ -603,11 +603,13 @@ async def server_main(
             rpc_addr.port,
         )
     if 'kernel-host' in local_config['container']:
-        log.warning("The configuration parameter `container.kernel-host` is deprecated; use `container.bind-host` instead!")
+        log.warning("The configuration parameter `container.kernel-host` is deprecated; "
+                    "use `container.bind-host` instead!")
         # fallback for legacy configs
         local_config['container']['bind-host'] = local_config['container']['kernel-host']
     if not local_config['container']['bind-host']:
-        log.debug('auto-detecting `container.bind-host` from container subnet config and agent.rpc-listen-addr')
+        log.debug("auto-detecting `container.bind-host` from container subnet config "
+                  "and agent.rpc-listen-addr")
         local_config['container']['bind-host'] = await get_subnet_ip(
             etcd, 'container', fallback_addr=local_config['agent']['rpc-listen-addr'].host
         )
