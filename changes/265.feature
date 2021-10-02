@@ -1,1 +1,1 @@
-Add status info of 'Out-of-memory' when the event occurs, using docker-events-subscriber.
+Put 'out-of-memory' as the termination reason when we detect the containers OOM death via our docker event subscriber.
